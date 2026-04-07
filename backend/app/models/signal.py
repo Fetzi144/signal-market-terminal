@@ -15,7 +15,9 @@ class Signal(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     signal_type: Mapped[str] = mapped_column(String(64), nullable=False)
     market_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    outcome_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    outcome_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("outcomes.id", ondelete="SET NULL")
+    )
     fired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -52,6 +52,28 @@ class TestThresholdValidation:
             _make(volume_spike_multiplier=-1.0)
 
 
+class TestAlertRankThresholdBounds:
+    def test_valid_threshold(self):
+        s = _make(alert_rank_threshold=0.7)
+        assert s.alert_rank_threshold == 0.7
+
+    def test_zero_threshold_allowed(self):
+        s = _make(alert_rank_threshold=0.0)
+        assert s.alert_rank_threshold == 0.0
+
+    def test_one_threshold_allowed(self):
+        s = _make(alert_rank_threshold=1.0)
+        assert s.alert_rank_threshold == 1.0
+
+    def test_above_one_rejected(self):
+        with pytest.raises(ValidationError, match="alert_rank_threshold must be between 0.0 and 1.0"):
+            _make(alert_rank_threshold=1.1)
+
+    def test_negative_rejected(self):
+        with pytest.raises(ValidationError, match="alert_rank_threshold must be between 0.0 and 1.0"):
+            _make(alert_rank_threshold=-0.1)
+
+
 class TestLimitValidation:
     def test_valid_limits(self):
         s = _make(alert_batch_limit=10, market_pagination_cap=3000)

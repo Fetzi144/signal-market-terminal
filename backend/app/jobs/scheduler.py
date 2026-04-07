@@ -59,12 +59,12 @@ async def _run_signal_detection():
                 all_candidates.extend(candidates)
 
             if all_candidates:
-                created = await persist_signals(session, all_candidates)
+                created, new_signals = await persist_signals(session, all_candidates)
                 logger.info("Job: signal_detection done, %d new signals", created)
 
                 # Broadcast new signals via SSE
                 if created > 0:
-                    await _broadcast_new_signals(session, all_candidates[:created])
+                    await _broadcast_new_signals(session, new_signals)
                     await _alert_high_rank_signals(session)
             else:
                 logger.info("Job: signal_detection done, no candidates")
@@ -72,19 +72,19 @@ async def _run_signal_detection():
             logger.error("Job: signal_detection failed", exc_info=True)
 
 
-async def _broadcast_new_signals(session, candidates):
+async def _broadcast_new_signals(session, signals):
     """Publish new signal events to SSE subscribers."""
     try:
         from app.api.sse import broadcaster
         if broadcaster.subscriber_count == 0:
             return
-        for c in candidates:
+        for s in signals:
             await broadcaster.publish("new_signal", {
-                "signal_type": c.signal_type,
-                "market_question": (c.details or {}).get("market_question", ""),
-                "rank_score": float(c.rank_score) if hasattr(c, "rank_score") else 0,
-                "outcome_name": (c.details or {}).get("outcome_name", ""),
-                "direction": (c.details or {}).get("direction", ""),
+                "signal_type": s.signal_type,
+                "market_question": (s.details or {}).get("market_question", ""),
+                "rank_score": float(s.rank_score),
+                "outcome_name": (s.details or {}).get("outcome_name", ""),
+                "direction": (s.details or {}).get("direction", ""),
             })
     except Exception:
         logger.warning("Failed to broadcast SSE events", exc_info=True)

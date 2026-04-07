@@ -37,8 +37,9 @@ async def test_full_pipeline_snapshot_to_signal(session):
     assert float(candidate.confidence) > 0
 
     # Step 2: Persist
-    created = await persist_signals(session, candidates)
+    created, new_signals = await persist_signals(session, candidates)
     assert created >= 1
+    assert len(new_signals) == created
 
     # Step 3: Verify in DB
     result = await session.execute(
@@ -73,12 +74,14 @@ async def test_dedupe_prevents_duplicate_signals(session):
     assert len(candidates) >= 1
 
     # Persist once
-    created1 = await persist_signals(session, candidates)
+    created1, new_signals1 = await persist_signals(session, candidates)
     assert created1 >= 1
+    assert len(new_signals1) == created1
 
     # Persist same candidates again — should be deduped
-    created2 = await persist_signals(session, candidates)
+    created2, new_signals2 = await persist_signals(session, candidates)
     assert created2 == 0
+    assert new_signals2 == []
 
     # Only one signal in DB
     result = await session.execute(select(Signal).where(Signal.market_id == market.id))

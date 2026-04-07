@@ -89,13 +89,20 @@ class Settings(BaseSettings):
     @field_validator(
         "price_move_threshold_pct", "volume_spike_multiplier",
         "spread_change_threshold_ratio", "liquidity_vacuum_depth_ratio_threshold",
-        "deadline_near_price_threshold_pct", "alert_rank_threshold",
+        "deadline_near_price_threshold_pct",
         "min_volume_24h", "connector_timeout_seconds",
     )
     @classmethod
     def thresholds_must_be_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("Threshold must be > 0")
+        return v
+
+    @field_validator("alert_rank_threshold")
+    @classmethod
+    def alert_rank_threshold_bounds(cls, v: float) -> float:
+        if v < 0.0 or v > 1.0:
+            raise ValueError("alert_rank_threshold must be between 0.0 and 1.0")
         return v
 
     @field_validator("alert_batch_limit", "market_pagination_cap", "orderbook_sample_size", "cleanup_interval_hours")

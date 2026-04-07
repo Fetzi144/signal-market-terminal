@@ -28,11 +28,11 @@ def _dedupe_bucket(dt: datetime) -> datetime:
     return dt.replace(minute=minute, second=0, microsecond=0)
 
 
-async def persist_signals(session: AsyncSession, candidates: list[SignalCandidate]) -> int:
-    """Persist signal candidates with dedupe. Returns number of new signals created."""
+async def persist_signals(session: AsyncSession, candidates: list[SignalCandidate]) -> tuple[int, list[Signal]]:
+    """Persist signal candidates with dedupe. Returns (count, list of new Signal objects)."""
     now = datetime.now(timezone.utc)
     bucket = _dedupe_bucket(now)
-    created = 0
+    new_signals: list[Signal] = []
 
     for c in candidates:
         # Check dedupe: same type + outcome + bucket already exists?
@@ -62,10 +62,10 @@ async def persist_signals(session: AsyncSession, candidates: list[SignalCandidat
             price_at_fire=c.price_at_fire,
         )
         session.add(signal)
-        created += 1
+        new_signals.append(signal)
 
-    if created:
+    if new_signals:
         await session.commit()
-        logger.info("Persisted %d new signals (dedupe filtered %d)", created, len(candidates) - created)
+        logger.info("Persisted %d new signals (dedupe filtered %d)", len(new_signals), len(candidates) - len(new_signals))
 
-    return created
+    return len(new_signals), new_signals

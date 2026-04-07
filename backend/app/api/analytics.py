@@ -101,7 +101,7 @@ async def correlated_signals(
     db: AsyncSession = Depends(get_db),
 ):
     """Find signals across different platforms that fired on the same category within a time window."""
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(hours, 1) * 24)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max(hours, 1))
 
     # Get recent signals with market info
     result = await db.execute(
