@@ -86,3 +86,47 @@ export function getSignalAccuracyWithDays(days) {
   if (days) params.set("days", days);
   return fetchJson(`${API_BASE}/analytics/signal-accuracy?${params}`);
 }
+
+// Backtest API
+export function createBacktest(body) {
+  return fetch(`${API_BASE}/backtests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((res) => {
+    if (!res.ok) return res.json().then((e) => { throw new Error(e.detail || `API ${res.status}`); });
+    return res.json();
+  });
+}
+
+export function createSweep(body) {
+  return fetch(`${API_BASE}/backtests/sweep`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((res) => {
+    if (!res.ok) return res.json().then((e) => { throw new Error(e.detail || `API ${res.status}`); });
+    return res.json();
+  });
+}
+
+export function getBacktests() {
+  return fetchJson(`${API_BASE}/backtests`);
+}
+
+export function getBacktest(id) {
+  return fetchJson(`${API_BASE}/backtests/${id}`);
+}
+
+export function getBacktestSignals(id, { signalType, resolvedCorrectly, page = 1, pageSize = 100 } = {}) {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  if (signalType) params.set("signal_type", signalType);
+  if (resolvedCorrectly !== undefined && resolvedCorrectly !== "") params.set("resolved_correctly", resolvedCorrectly);
+  return fetchJson(`${API_BASE}/backtests/${id}/signals?${params}`);
+}
+
+export function deleteBacktest(id) {
+  return fetch(`${API_BASE}/backtests/${id}`, { method: "DELETE" }).then((res) => {
+    if (!res.ok) throw new Error(`API ${res.status}`);
+  });
+}

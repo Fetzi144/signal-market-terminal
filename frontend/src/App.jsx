@@ -5,6 +5,8 @@ import SignalDetail from "./pages/SignalDetail";
 import MarketDetail from "./pages/MarketDetail";
 import Markets from "./pages/Markets";
 import Analytics from "./pages/Analytics";
+import Backtest from "./pages/Backtest";
+import BacktestResult from "./pages/BacktestResult";
 import Alerts from "./pages/Alerts";
 import Health from "./pages/Health";
 
@@ -57,6 +59,7 @@ export default function App() {
           <Link to="/">Feed</Link>
           <Link to="/markets">Markets</Link>
           <Link to="/analytics">Analytics</Link>
+          <Link to="/backtests">Backtest</Link>
           <Link to="/alerts">Alerts</Link>
           <Link to="/health">Health</Link>
           <ThemeToggle />
@@ -68,6 +71,8 @@ export default function App() {
         <Route path="/markets" element={<Markets />} />
         <Route path="/markets/:id" element={<MarketDetail />} />
         <Route path="/analytics" element={<Analytics />} />
+        <Route path="/backtests" element={<Backtest />} />
+        <Route path="/backtests/:id" element={<BacktestResult />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/health" element={<Health />} />
       </Routes>
