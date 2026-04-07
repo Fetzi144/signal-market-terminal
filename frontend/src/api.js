@@ -59,3 +59,15 @@ export function exportSignalsCsv({ signalType } = {}) {
 export function exportMarketsCsv() {
   window.open(`${API_BASE}/markets/export/csv`, "_blank");
 }
+
+export function getPlatformSummary() {
+  return fetchJson(`${API_BASE}/analytics/platform-summary`);
+}
+
+export function getSignalAccuracy() {
+  return fetchJson(`${API_BASE}/analytics/signal-accuracy`);
+}
+
+export function getCorrelatedSignals(hours = 1) {
+  return fetchJson(`${API_BASE}/analytics/correlated-signals?hours=${hours}`);
+}

@@ -1,10 +1,39 @@
+import { useState, useEffect } from "react";
 import { Routes, Route, Link } from "react-router-dom";
 import SignalFeed from "./pages/SignalFeed";
 import SignalDetail from "./pages/SignalDetail";
 import MarketDetail from "./pages/MarketDetail";
 import Markets from "./pages/Markets";
+import Analytics from "./pages/Analytics";
 import Alerts from "./pages/Alerts";
 import Health from "./pages/Health";
+
+function ThemeToggle() {
+  const [theme, setTheme] = useState(() => localStorage.getItem("smt-theme") || "dark");
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("smt-theme", theme);
+  }, [theme]);
+
+  return (
+    <button
+      onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+      style={{
+        background: "transparent",
+        border: "1px solid var(--border)",
+        color: "var(--text-dim)",
+        borderRadius: 6,
+        padding: "4px 8px",
+        fontSize: 13,
+        cursor: "pointer",
+      }}
+      title="Toggle theme"
+    >
+      {theme === "dark" ? "\u2600" : "\u263E"}
+    </button>
+  );
+}
 
 export default function App() {
   return (
@@ -24,11 +53,13 @@ export default function App() {
             Signal Market Terminal
           </h1>
         </Link>
-        <nav style={{ display: "flex", gap: 16, fontSize: 14 }}>
+        <nav style={{ display: "flex", gap: 16, fontSize: 14, alignItems: "center" }}>
           <Link to="/">Feed</Link>
           <Link to="/markets">Markets</Link>
+          <Link to="/analytics">Analytics</Link>
           <Link to="/alerts">Alerts</Link>
           <Link to="/health">Health</Link>
+          <ThemeToggle />
         </nav>
       </header>
       <Routes>
@@ -36,6 +67,7 @@ export default function App() {
         <Route path="/signals/:id" element={<SignalDetail />} />
         <Route path="/markets" element={<Markets />} />
         <Route path="/markets/:id" element={<MarketDetail />} />
+        <Route path="/analytics" element={<Analytics />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/health" element={<Health />} />
       </Routes>
