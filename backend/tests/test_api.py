@@ -239,6 +239,194 @@ async def test_markets_export_csv(client, engine):
     assert len(lines) >= 2
 
 
+# ── resolved_correctly filter ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_signals_filter_resolved_correctly(client, engine):
+    """Filter signals by resolved_correctly."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        market = make_market(session)
+        await session.flush()
+        outcome = make_outcome(session, market.id)
+        await session.flush()
+        now = datetime.now(timezone.utc)
+        bucket = now.replace(minute=0, second=0, microsecond=0)
+        make_signal(session, market.id, outcome.id, signal_type="price_move",
+                    dedupe_bucket=bucket, resolved_correctly=True)
+        make_signal(session, market.id, outcome.id, signal_type="volume_spike",
+                    dedupe_bucket=bucket - timedelta(minutes=15), resolved_correctly=False)
+        make_signal(session, market.id, outcome.id, signal_type="spread_change",
+                    dedupe_bucket=bucket - timedelta(minutes=30), resolved_correctly=None)
+        await session.commit()
+
+    # Filter for correct calls
+    resp = await client.get("/api/v1/signals?resolved_correctly=true")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["signals"][0]["signal_type"] == "price_move"
+    assert data["signals"][0]["resolved_correctly"] is True
+
+    # Filter for wrong calls
+    resp = await client.get("/api/v1/signals?resolved_correctly=false")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["signals"][0]["signal_type"] == "volume_spike"
+    assert data["signals"][0]["resolved_correctly"] is False
+
+
+@pytest.mark.asyncio
+async def test_signal_detail_includes_resolved_correctly(client, engine):
+    """GET /signals/{id} includes resolved_correctly."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        market = make_market(session)
+        await session.flush()
+        outcome = make_outcome(session, market.id)
+        await session.flush()
+        signal = make_signal(session, market.id, outcome.id, resolved_correctly=True)
+        await session.commit()
+        signal_id = str(signal.id)
+
+    resp = await client.get(f"/api/v1/signals/{signal_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["resolved_correctly"] is True
+
+
+@pytest.mark.asyncio
+async def test_signals_csv_includes_resolved_correctly(client, engine):
+    """CSV export includes resolved_correctly column."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        market = make_market(session)
+        await session.flush()
+        outcome = make_outcome(session, market.id)
+        await session.flush()
+        make_signal(session, market.id, outcome.id, resolved_correctly=True)
+        await session.commit()
+
+    resp = await client.get("/api/v1/signals/export/csv")
+    assert resp.status_code == 200
+    lines = resp.text.strip().split("\n")
+    assert "resolved_correctly" in lines[0]
+
+
+# ── Signal types endpoint ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_signal_types_empty(client):
+    resp = await client.get("/api/v1/signals/types")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["types"] == []
+
+
+@pytest.mark.asyncio
+async def test_signal_types_returns_distinct(client, engine):
+    """GET /signals/types returns distinct signal types."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        market = make_market(session)
+        await session.flush()
+        outcome = make_outcome(session, market.id)
+        await session.flush()
+        now = datetime.now(timezone.utc)
+        bucket = now.replace(minute=0, second=0, microsecond=0)
+        make_signal(session, market.id, outcome.id, signal_type="price_move", dedupe_bucket=bucket)
+        make_signal(session, market.id, outcome.id, signal_type="volume_spike", dedupe_bucket=bucket - timedelta(minutes=15))
+        make_signal(session, market.id, outcome.id, signal_type="price_move", dedupe_bucket=bucket - timedelta(minutes=30))
+        await session.commit()
+
+    resp = await client.get("/api/v1/signals/types")
+    data = resp.json()
+    assert sorted(data["types"]) == ["price_move", "volume_spike"]
+
+
+# ── Market platforms endpoint ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_market_platforms_empty(client):
+    resp = await client.get("/api/v1/markets/platforms")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["platforms"] == []
+
+
+@pytest.mark.asyncio
+async def test_market_platforms_returns_distinct(client, engine):
+    """GET /markets/platforms returns distinct platforms."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        make_market(session, platform="polymarket")
+        make_market(session, platform="kalshi")
+        make_market(session, platform="polymarket", question="Another PM market?")
+        await session.commit()
+
+    resp = await client.get("/api/v1/markets/platforms")
+    data = resp.json()
+    assert sorted(data["platforms"]) == ["kalshi", "polymarket"]
+
+
+# ── Analytics accuracy updated schema ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_analytics_accuracy_schema(client, engine):
+    """Signal accuracy endpoint returns both resolution and price-direction fields."""
+    from app.models.signal import SignalEvaluation
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        market = make_market(session)
+        await session.flush()
+        outcome = make_outcome(session, market.id)
+        await session.flush()
+        signal = make_signal(session, market.id, outcome.id, resolved_correctly=True)
+        await session.flush()
+        ev = SignalEvaluation(
+            id=uuid.uuid4(),
+            signal_id=signal.id,
+            horizon="15m",
+            price_at_eval=Decimal("0.550"),
+            price_change=Decimal("0.050"),
+            price_change_pct=Decimal("10.00"),
+        )
+        session.add(ev)
+        await session.commit()
+
+    resp = await client.get("/api/v1/analytics/signal-accuracy")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["accuracy"]) >= 1
+    row = data["accuracy"][0]
+    # Ground-truth fields
+    assert "accuracy_pct" in row
+    assert "resolution_rate_pct" in row
+    assert "resolved_count" in row
+    assert "total_signals" in row
+    # Price-direction field
+    assert "price_direction_accuracy_pct" in row
+    assert "avg_abs_change_pct" in row
+
+
+@pytest.mark.asyncio
+async def test_analytics_accuracy_days_filter(client, engine):
+    """Signal accuracy endpoint supports days filter."""
+    resp = await client.get("/api/v1/analytics/signal-accuracy?days=30")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "accuracy" in data
+
+
 # ── Root endpoint ───────────────────────────────────────
 
 

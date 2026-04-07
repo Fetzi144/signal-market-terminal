@@ -32,42 +32,61 @@ function Stat({ label, value }) {
   );
 }
 
+function colorForPct(pct) {
+  return pct >= 60 ? "var(--green)" : pct >= 40 ? "var(--yellow)" : "var(--red)";
+}
+
 function AccuracyTable({ data }) {
   if (!data || data.length === 0) {
     return <div style={{ color: "var(--text-dim)", padding: 20 }}>No evaluation data yet.</div>;
   }
 
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-      <thead>
-        <tr style={{ borderBottom: "1px solid var(--border)" }}>
-          <th style={{ textAlign: "left", padding: 8, color: "var(--text-dim)" }}>Signal Type</th>
-          <th style={{ textAlign: "center", padding: 8, color: "var(--text-dim)" }}>Horizon</th>
-          <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Evaluations</th>
-          <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Accuracy</th>
-          <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Avg |Change|</th>
-        </tr>
-      </thead>
-      <tbody>
-        {data.map((row, i) => {
-          const accColor = row.accuracy_pct >= 60 ? "var(--green)"
-            : row.accuracy_pct >= 40 ? "var(--yellow)" : "var(--red)";
-          return (
-            <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-              <td style={{ padding: 8, fontWeight: 600, textTransform: "uppercase", fontSize: 11, color: "var(--accent)" }}>
-                {row.signal_type.replace("_", " ")}
-              </td>
-              <td style={{ textAlign: "center", padding: 8, fontFamily: "var(--mono)" }}>{row.horizon}</td>
-              <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>{row.total_evaluations}</td>
-              <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)", color: accColor, fontWeight: 600 }}>
-                {row.accuracy_pct}%
-              </td>
-              <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>{row.avg_abs_change_pct}%</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ borderBottom: "1px solid var(--border)" }}>
+            <th style={{ textAlign: "left", padding: 8, color: "var(--text-dim)" }}>Signal Type</th>
+            <th style={{ textAlign: "center", padding: 8, color: "var(--text-dim)" }}>Horizon</th>
+            <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Evaluations</th>
+            <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Resolution Accuracy</th>
+            <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Resolution Rate</th>
+            <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Price Dir. Accuracy</th>
+            <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Avg |Change|</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row, i) => {
+            const resAccColor = colorForPct(row.accuracy_pct);
+            const pdAccColor = colorForPct(row.price_direction_accuracy_pct);
+            return (
+              <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                <td style={{ padding: 8, fontWeight: 600, textTransform: "uppercase", fontSize: 11, color: "var(--accent)" }}>
+                  {row.signal_type.replace("_", " ")}
+                </td>
+                <td style={{ textAlign: "center", padding: 8, fontFamily: "var(--mono)" }}>{row.horizon}</td>
+                <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>{row.total_evaluations}</td>
+                <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)", color: resAccColor, fontWeight: 600 }}>
+                  {row.accuracy_pct}%
+                </td>
+                <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>
+                  {row.resolution_rate_pct}%
+                </td>
+                <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)", color: pdAccColor }}>
+                  {row.price_direction_accuracy_pct}%
+                </td>
+                <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>{row.avg_abs_change_pct}%</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{ fontSize: 12, color: "var(--text-dim)", padding: "12px 8px 4px", lineHeight: 1.5 }}>
+        <strong>Resolution Accuracy</strong> uses ground-truth market outcomes (did the signal correctly predict the winning side?).{" "}
+        <strong>Price Direction Accuracy</strong> measures whether the price moved in the signaled direction at each evaluation horizon.{" "}
+        Resolution accuracy is only available for resolved markets.
+      </div>
+    </>
   );
 }
 

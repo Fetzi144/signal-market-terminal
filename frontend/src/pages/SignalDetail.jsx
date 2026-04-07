@@ -70,6 +70,26 @@ export default function SignalDetail() {
           <Stat label="Rank Score" value={`${Math.round(s.rank_score * 100)}%`} />
           {s.price_at_fire && <Stat label="Price at Fire" value={`$${s.price_at_fire}`} />}
           <Stat label="Resolved" value={s.resolved ? "Yes" : "No"} />
+          <div
+            style={{
+              background: "var(--bg)",
+              borderRadius: 6,
+              padding: "10px 14px",
+            }}
+          >
+            <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Resolution</div>
+            <div style={{ fontSize: 15, fontFamily: "var(--mono)", fontWeight: 600 }}>
+              {s.resolved_correctly === true && (
+                <span style={{ color: "var(--green)" }}>&#10003; Called it</span>
+              )}
+              {s.resolved_correctly === false && (
+                <span style={{ color: "var(--red)" }}>&#10007; Wrong call</span>
+              )}
+              {s.resolved_correctly == null && (
+                <span style={{ color: "var(--text-dim)" }}>&#8226; Pending</span>
+              )}
+            </div>
+          </div>
         </div>
 
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Details</h3>

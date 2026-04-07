@@ -38,6 +38,7 @@ class SignalOut(BaseModel):
     details: dict
     price_at_fire: Decimal | None
     resolved: bool
+    resolved_correctly: bool | None = None
     market_question: str | None = None
     platform: str | None = None
     evaluations: list[EvaluationOut] = []
@@ -55,6 +56,7 @@ async def list_signals(
     signal_type: str | None = None,
     market_id: uuid.UUID | None = None,
     platform: str | None = None,
+    resolved_correctly: bool | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -71,6 +73,9 @@ async def list_signals(
     if platform:
         count_query = count_query.join(Market, Signal.market_id == Market.id).where(Market.platform == platform)
         query = query.where(Market.platform == platform)
+    if resolved_correctly is not None:
+        query = query.where(Signal.resolved_correctly == resolved_correctly)
+        count_query = count_query.where(Signal.resolved_correctly == resolved_correctly)
 
     total = (await db.execute(count_query)).scalar() or 0
 
@@ -94,11 +99,21 @@ async def list_signals(
             details=signal.details,
             price_at_fire=signal.price_at_fire,
             resolved=signal.resolved,
+            resolved_correctly=signal.resolved_correctly,
             market_question=question,
             platform=mkt_platform,
         ))
 
     return SignalListOut(signals=signals, total=total, page=page, page_size=page_size)
+
+
+@router.get("/types")
+async def list_signal_types(db: AsyncSession = Depends(get_db)):
+    """Return distinct signal_type values from the database."""
+    result = await db.execute(
+        select(Signal.signal_type).distinct().order_by(Signal.signal_type)
+    )
+    return {"types": [row for row in result.scalars().all()]}
 
 
 @router.get("/{signal_id}", response_model=SignalOut)
@@ -141,6 +156,7 @@ async def get_signal(signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         details=signal.details,
         price_at_fire=signal.price_at_fire,
         resolved=signal.resolved,
+        resolved_correctly=signal.resolved_correctly,
         market_question=question,
         platform=mkt_platform,
         evaluations=evals,
@@ -171,8 +187,12 @@ async def export_signals_csv(
     writer.writerow([
         "id", "signal_type", "market_question", "rank_score",
         "signal_score", "confidence", "price_at_fire", "fired_at", "resolved",
+        "resolved_correctly",
     ])
     for signal, question in rows:
+        resolved_correctly_val = ""
+        if signal.resolved_correctly is not None:
+            resolved_correctly_val = signal.resolved_correctly
         writer.writerow([
             str(signal.id), signal.signal_type, question,
             float(signal.rank_score), float(signal.signal_score),
@@ -180,6 +200,7 @@ async def export_signals_csv(
             float(signal.price_at_fire) if signal.price_at_fire else "",
             signal.fired_at.isoformat() if signal.fired_at else "",
             signal.resolved,
+            resolved_correctly_val,
         ])
 
     output.seek(0)

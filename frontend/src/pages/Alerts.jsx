@@ -1,25 +1,10 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { getRecentAlerts } from "../api";
+import { getRecentAlerts, getSignalTypes, getMarketPlatforms } from "../api";
 
-const TYPE_OPTIONS = [
-  { value: "", label: "All Types" },
-  { value: "price_move", label: "Price Move" },
-  { value: "volume_spike", label: "Volume Spike" },
-  { value: "spread_change", label: "Spread Change" },
-  { value: "liquidity_vacuum", label: "Liquidity Vacuum" },
-  { value: "deadline_near", label: "Deadline Near" },
-];
-
-const PLATFORM_OPTIONS = [
-  { value: "", label: "All Platforms" },
-  { value: "polymarket", label: "Polymarket" },
-  { value: "kalshi", label: "Kalshi" },
-];
-
-const TYPE_LABELS = Object.fromEntries(
-  TYPE_OPTIONS.filter((o) => o.value).map((o) => [o.value, o.label])
-);
+function formatTypeLabel(t) {
+  return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 const PLATFORM_COLORS = { polymarket: "#6366f1", kalshi: "#f59e0b" };
 const PAGE_SIZE = 50;
@@ -46,6 +31,27 @@ export default function Alerts() {
   const [platformFilter, setPlatformFilter] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState(null);
+  const [typeOptions, setTypeOptions] = useState([{ value: "", label: "All Types" }]);
+  const [platformOptions, setPlatformOptions] = useState([{ value: "", label: "All Platforms" }]);
+
+  useEffect(() => {
+    getSignalTypes()
+      .then((d) => {
+        setTypeOptions([
+          { value: "", label: "All Types" },
+          ...d.types.map((t) => ({ value: t, label: formatTypeLabel(t) })),
+        ]);
+      })
+      .catch(() => {});
+    getMarketPlatforms()
+      .then((d) => {
+        setPlatformOptions([
+          { value: "", label: "All Platforms" },
+          ...d.platforms.map((p) => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) })),
+        ]);
+      })
+      .catch(() => {});
+  }, []);
 
   const fetchData = useCallback(() => {
     const params = { page, pageSize: PAGE_SIZE };
@@ -71,10 +77,10 @@ export default function Alerts() {
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
         <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} style={selectStyle}>
-          {TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {typeOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
         <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)} style={selectStyle}>
-          {PLATFORM_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {platformOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
       </div>
 
@@ -111,7 +117,7 @@ export default function Alerts() {
           </thead>
           <tbody>
             {data.alerts.map((a) => {
-              const typeLabel = TYPE_LABELS[a.signal_type] || a.signal_type;
+              const typeLabel = formatTypeLabel(a.signal_type);
               const rank = Math.round(a.rank_score * 100);
               const score = Math.round(a.signal_score * 100);
               const time = a.fired_at ? new Date(a.fired_at).toLocaleString() : "";

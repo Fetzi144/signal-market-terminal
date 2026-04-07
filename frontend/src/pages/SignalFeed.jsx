@@ -1,27 +1,20 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { getSignals, exportSignalsCsv } from "../api";
+import { getSignals, exportSignalsCsv, getSignalTypes, getMarketPlatforms } from "../api";
 import SignalEvaluationBar from "../components/SignalEvaluationBar";
 import useSSE from "../hooks/useSSE";
 
-const TYPE_OPTIONS = [
+const DEFAULT_TYPE_OPTIONS = [
   { value: "", label: "All Types" },
-  { value: "price_move", label: "Price Move" },
-  { value: "volume_spike", label: "Volume Spike" },
-  { value: "spread_change", label: "Spread Change" },
-  { value: "liquidity_vacuum", label: "Liquidity Vacuum" },
-  { value: "deadline_near", label: "Deadline Near" },
 ];
 
-const PLATFORM_OPTIONS = [
+const DEFAULT_PLATFORM_OPTIONS = [
   { value: "", label: "All Platforms" },
-  { value: "polymarket", label: "Polymarket" },
-  { value: "kalshi", label: "Kalshi" },
 ];
 
-const TYPE_LABELS = Object.fromEntries(
-  TYPE_OPTIONS.filter((o) => o.value).map((o) => [o.value, o.label])
-);
+function formatTypeLabel(t) {
+  return t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 const REFRESH_INTERVAL = 120_000;  // Extended since SSE provides real-time updates
 const PAGE_SIZE = 50;
@@ -69,6 +62,28 @@ function PlatformBadge({ platform }) {
   );
 }
 
+function ResolutionBadge({ resolved_correctly }) {
+  if (resolved_correctly === true) {
+    return (
+      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--green)", display: "flex", alignItems: "center", gap: 3 }}>
+        &#10003; Called it
+      </span>
+    );
+  }
+  if (resolved_correctly === false) {
+    return (
+      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--red)", display: "flex", alignItems: "center", gap: 3 }}>
+        &#10007; Wrong call
+      </span>
+    );
+  }
+  return (
+    <span style={{ fontSize: 12, color: "var(--text-dim)", display: "flex", alignItems: "center", gap: 3 }}>
+      &#8226; Pending
+    </span>
+  );
+}
+
 function SkeletonCard() {
   return (
     <div className="skeleton" style={{ borderRadius: 8, height: 100, marginBottom: 8 }} />
@@ -79,7 +94,7 @@ function SignalCard({ signal }) {
   const s = signal;
   const d = s.details || {};
   const time = new Date(s.fired_at).toLocaleString();
-  const typeLabel = TYPE_LABELS[s.signal_type] || s.signal_type;
+  const typeLabel = formatTypeLabel(s.signal_type);
 
   // Build detail snippet based on type
   let snippet = null;
@@ -122,6 +137,7 @@ function SignalCard({ signal }) {
           <ScoreBadge value={parseFloat(s.signal_score)} label="Str" />
           <ScoreBadge value={parseFloat(s.confidence)} label="Conf" />
           <ScoreBadge value={parseFloat(s.rank_score)} label="Rank" />
+          <ResolutionBadge resolved_correctly={s.resolved_correctly} />
           {s.evaluations && s.evaluations.length > 0 && (
             <div style={{ marginLeft: "auto" }}>
               <SignalEvaluationBar evaluations={s.evaluations} />
@@ -137,18 +153,40 @@ export default function SignalFeed() {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("");
   const [platformFilter, setPlatformFilter] = useState("");
+  const [resolvedFilter, setResolvedFilter] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [paused, setPaused] = useState(false);
+  const [typeOptions, setTypeOptions] = useState(DEFAULT_TYPE_OPTIONS);
+  const [platformOptions, setPlatformOptions] = useState(DEFAULT_PLATFORM_OPTIONS);
   const intervalRef = useRef(null);
   const { connected, addEventListener } = useSSE();
+
+  // Fetch dynamic filter options on mount
+  useEffect(() => {
+    getSignalTypes()
+      .then((d) => {
+        setTypeOptions([
+          { value: "", label: "All Types" },
+          ...d.types.map((t) => ({ value: t, label: formatTypeLabel(t) })),
+        ]);
+      })
+      .catch(() => {});
+    getMarketPlatforms()
+      .then((d) => {
+        setPlatformOptions([
+          { value: "", label: "All Platforms" },
+          ...d.platforms.map((p) => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) })),
+        ]);
+      })
+      .catch(() => {});
+  }, []);
 
   // Auto-fetch when SSE reports new signals
   useEffect(() => {
     const unsub = addEventListener("new_signal", () => {
       if (page === 1 && !paused) {
-        // Slight delay to let DB commit
         setTimeout(() => fetchData(), 500);
       }
     });
@@ -159,6 +197,7 @@ export default function SignalFeed() {
     const params = { page, pageSize: PAGE_SIZE };
     if (filter) params.signalType = filter;
     if (platformFilter) params.platform = platformFilter;
+    if (resolvedFilter !== "") params.resolvedCorrectly = resolvedFilter;
     getSignals(params)
       .then((d) => {
         setData(d);
@@ -166,7 +205,7 @@ export default function SignalFeed() {
         setError(null);
       })
       .catch((e) => setError(e.message));
-  }, [filter, platformFilter, page]);
+  }, [filter, platformFilter, resolvedFilter, page]);
 
   // Fetch on filter/page change
   useEffect(() => {
@@ -186,7 +225,7 @@ export default function SignalFeed() {
   // Reset page on filter change
   useEffect(() => {
     setPage(1);
-  }, [filter, platformFilter]);
+  }, [filter, platformFilter, resolvedFilter]);
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
@@ -207,7 +246,7 @@ export default function SignalFeed() {
             cursor: "pointer",
           }}
         >
-          {TYPE_OPTIONS.map((o) => (
+          {typeOptions.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
@@ -225,9 +264,27 @@ export default function SignalFeed() {
             cursor: "pointer",
           }}
         >
-          {PLATFORM_OPTIONS.map((o) => (
+          {platformOptions.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
+        </select>
+
+        <select
+          value={resolvedFilter}
+          onChange={(e) => setResolvedFilter(e.target.value)}
+          style={{
+            padding: "6px 12px",
+            fontSize: 13,
+            background: "var(--bg-card)",
+            color: "var(--text)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          <option value="">All Resolutions</option>
+          <option value="true">Correct Calls Only</option>
+          <option value="false">Wrong Calls Only</option>
         </select>
 
         <button

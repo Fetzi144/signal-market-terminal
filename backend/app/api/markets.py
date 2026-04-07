@@ -115,6 +115,15 @@ async def list_markets(
     )
 
 
+@router.get("/platforms")
+async def list_platforms(db: AsyncSession = Depends(get_db)):
+    """Return distinct platform values from the database."""
+    result = await db.execute(
+        select(Market.platform).distinct().order_by(Market.platform)
+    )
+    return {"platforms": [row for row in result.scalars().all()]}
+
+
 @router.get("/{market_id}", response_model=MarketOut)
 async def get_market(market_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Market).where(Market.id == market_id))
