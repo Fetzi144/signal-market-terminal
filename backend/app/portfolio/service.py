@@ -203,12 +203,20 @@ async def resolve_positions(session: AsyncSession) -> int:
 async def get_position(session: AsyncSession, position_id: UUID) -> Position | None:
     """Get a position with its trades."""
     stmt = (
-        select(Position)
+        select(Position, Market.question, Outcome.name)
+        .join(Market, Position.market_id == Market.id)
+        .join(Outcome, Position.outcome_id == Outcome.id)
         .options(selectinload(Position.trades))
         .where(Position.id == position_id)
     )
     result = await session.execute(stmt)
-    return result.scalar_one_or_none()
+    row = result.one_or_none()
+    if row is None:
+        return None
+    pos, market_question, outcome_name = row
+    pos.market_question = market_question
+    pos.outcome_name = outcome_name
+    return pos
 
 
 async def list_positions(
@@ -235,9 +243,22 @@ async def list_positions(
 
     total = (await session.execute(count_base)).scalar_one()
 
-    stmt = base.order_by(Position.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    stmt = (
+        base.join(Market, Position.market_id == Market.id)
+        .join(Outcome, Position.outcome_id == Outcome.id)
+        .add_columns(Market.question, Outcome.name)
+        .order_by(Position.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     result = await session.execute(stmt)
-    return result.scalars().all(), total
+    rows = result.all()
+    enriched = []
+    for pos, market_question, outcome_name in rows:
+        pos.market_question = market_question
+        pos.outcome_name = outcome_name
+        enriched.append(pos)
+    return enriched, total
 
 
 async def get_portfolio_summary(session: AsyncSession) -> dict:

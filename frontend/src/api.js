@@ -135,3 +135,46 @@ export function deleteBacktest(id) {
 export function getPerformanceSummary() {
   return fetchJson(`${API_BASE}/performance/summary`);
 }
+
+// Portfolio API
+export function getPortfolioSummary() {
+  return fetchJson(`${API_BASE}/portfolio/summary`);
+}
+
+export function getPositions({ page = 1, pageSize = 50, status, platform, marketId } = {}) {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  if (status) params.set("status", status);
+  if (platform) params.set("platform", platform);
+  if (marketId) params.set("market_id", marketId);
+  return fetchJson(`${API_BASE}/positions?${params}`);
+}
+
+export function getPosition(id) {
+  return fetchJson(`${API_BASE}/positions/${id}`);
+}
+
+export function createPosition(body) {
+  return fetch(`${API_BASE}/positions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((res) => {
+    if (!res.ok) return res.json().then((e) => { throw new Error(e.detail || `API ${res.status}`); });
+    return res.json();
+  });
+}
+
+export function closePosition(positionId, body) {
+  return fetch(`${API_BASE}/positions/${positionId}/close`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((res) => {
+    if (!res.ok) return res.json().then((e) => { throw new Error(e.detail || `API ${res.status}`); });
+    return res.json();
+  });
+}
+
+export function exportPortfolioCsv() {
+  window.open(`${API_BASE}/portfolio/export/csv`, "_blank");
+}

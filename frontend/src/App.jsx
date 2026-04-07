@@ -10,6 +10,7 @@ import BacktestResult from "./pages/BacktestResult";
 import Alerts from "./pages/Alerts";
 import Performance from "./pages/Performance";
 import Health from "./pages/Health";
+import Portfolio from "./pages/Portfolio";
 
 function ThemeToggle() {
   const [theme, setTheme] = useState(() => localStorage.getItem("smt-theme") || "dark");
@@ -59,6 +60,7 @@ export default function App() {
         <nav style={{ display: "flex", gap: 16, fontSize: 14, alignItems: "center" }}>
           <Link to="/">Feed</Link>
           <Link to="/performance">Performance</Link>
+          <Link to="/portfolio">Portfolio</Link>
           <Link to="/markets">Markets</Link>
           <Link to="/analytics">Analytics</Link>
           <Link to="/backtests">Backtest</Link>
@@ -73,6 +75,7 @@ export default function App() {
         <Route path="/markets" element={<Markets />} />
         <Route path="/markets/:id" element={<MarketDetail />} />
         <Route path="/performance" element={<Performance />} />
+        <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/backtests" element={<Backtest />} />
         <Route path="/backtests/:id" element={<BacktestResult />} />

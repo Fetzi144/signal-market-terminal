@@ -76,6 +76,8 @@ class PositionOut(BaseModel):
     realized_pnl: float | None = None
     notes: str | None = None
     signal_id: uuid.UUID | None = None
+    market_question: str | None = None
+    outcome_name: str | None = None
 
 
 class PositionDetailOut(PositionOut):

@@ -50,12 +50,28 @@ export default function SignalDetail() {
 
         <h2 style={{ fontSize: 18, marginBottom: 8 }}>{s.market_question}</h2>
 
-        <Link
-          to={`/markets/${s.market_id}`}
-          style={{ fontSize: 13, display: "inline-block", marginBottom: 16 }}
-        >
-          View market &rarr;
-        </Link>
+        <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+          <Link
+            to={`/markets/${s.market_id}`}
+            style={{ fontSize: 13 }}
+          >
+            View market &rarr;
+          </Link>
+          <Link
+            to={`/portfolio?signal_id=${s.id}&market_id=${s.market_id}${s.outcome_id ? `&outcome_id=${s.outcome_id}` : ""}${d.direction === "down" || d.direction === "sell" ? "&side=no" : "&side=yes"}`}
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              padding: "4px 12px",
+              background: "var(--accent)",
+              color: "#fff",
+              borderRadius: 6,
+              textDecoration: "none",
+            }}
+          >
+            Track Position
+          </Link>
+        </div>
 
         <div
           style={{
