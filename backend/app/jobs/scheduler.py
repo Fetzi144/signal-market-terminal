@@ -159,6 +159,26 @@ def _build_alerters():
     return alerters
 
 
+async def _run_resolution():
+    from app.connectors import get_connector, get_enabled_platforms
+    from app.ingestion.resolution import resolve_signals
+
+    logger.info("Job: resolution starting")
+    async with async_session() as session:
+        total = 0
+        for platform in get_enabled_platforms():
+            try:
+                connector = get_connector(platform)
+                resolved_markets = await connector.fetch_resolved_markets(since_hours=24)
+                if resolved_markets:
+                    count = await resolve_signals(session, platform, resolved_markets)
+                    total += count
+                await connector.close()
+            except Exception:
+                logger.error("Job: resolution failed for %s", platform, exc_info=True)
+        logger.info("Job: resolution done, %d signals resolved", total)
+
+
 async def _run_evaluation():
     from app.evaluation.evaluator import evaluate_signals
 
@@ -211,6 +231,13 @@ def start_scheduler():
         "interval",
         seconds=settings.evaluation_interval_seconds,
         id="evaluation",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _run_resolution,
+        "interval",
+        minutes=15,
+        id="resolution",
         replace_existing=True,
     )
     scheduler.add_job(

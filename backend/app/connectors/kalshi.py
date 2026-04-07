@@ -142,6 +142,53 @@ class KalshiConnector(BaseConnector):
 
         return raw_markets, next_cursor
 
+    async def fetch_resolved_markets(self, since_hours: int = 24) -> list[dict]:
+        """Fetch recently settled Kalshi markets.
+
+        Returns list of {platform_id, winning_outcome} dicts.
+        Kalshi markets have a 'result' field ('yes' or 'no') when settled.
+        """
+        resolved: list[dict] = []
+        cursor = None
+        pages = 0
+        while True:
+            try:
+                params: dict = {
+                    "limit": 200,
+                    "status": "settled",
+                }
+                if cursor:
+                    params["cursor"] = cursor
+
+                resp = await self._request_with_retry(
+                    "get", f"{self.api_base}/markets", params=params,
+                )
+                data = resp.json()
+                markets_data = data.get("markets") or []
+                if not markets_data:
+                    break
+
+                for mkt in markets_data:
+                    result = mkt.get("result")
+                    if result is None:
+                        continue
+                    resolved.append({
+                        "platform_id": mkt.get("ticker", ""),
+                        "winning_outcome": result,  # "yes" or "no"
+                    })
+
+                next_cursor = data.get("cursor")
+                pages += 1
+                if not next_cursor or pages >= 5:
+                    break
+                cursor = next_cursor
+            except Exception:
+                logger.warning("Failed to fetch resolved Kalshi markets", exc_info=True)
+                break
+
+        logger.info("Kalshi: fetched %d resolved markets", len(resolved))
+        return resolved
+
     async def fetch_midpoints(self, token_ids: list[str]) -> dict[str, Decimal]:
         """Fetch current midpoints for Kalshi outcomes.
 

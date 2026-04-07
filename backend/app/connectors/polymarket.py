@@ -147,6 +147,49 @@ class PolymarketConnector(BaseConnector):
 
         return RawOrderbook(token_id=token_id, bids=bids, asks=asks, spread=spread)
 
+    async def fetch_resolved_markets(self, since_hours: int = 24) -> list[dict]:
+        """Fetch recently resolved markets from Gamma API.
+
+        Returns list of {platform_id, winning_outcome_id, winner} dicts.
+        """
+        resolved: list[dict] = []
+        offset = 0
+        limit = 100
+        while True:
+            try:
+                resp = await self._request_with_retry(
+                    "get",
+                    f"{self.gamma_base}/markets",
+                    params={
+                        "closed": "true",
+                        "limit": limit,
+                        "offset": offset,
+                    },
+                )
+                markets_data = resp.json()
+                if not markets_data:
+                    break
+
+                for mkt in markets_data:
+                    winner = mkt.get("winner")
+                    if winner is None:
+                        continue
+                    resolved.append({
+                        "platform_id": str(mkt["id"]),
+                        "winning_outcome_id": winner,
+                        "winner": winner,
+                    })
+
+                offset += limit
+                if len(markets_data) < limit or offset >= 1000:
+                    break
+            except Exception:
+                logger.warning("Failed to fetch resolved Polymarket markets at offset %d", offset, exc_info=True)
+                break
+
+        logger.info("Polymarket: fetched %d resolved markets", len(resolved))
+        return resolved
+
     def _parse_market(self, mkt: dict) -> RawMarket:
         import json as _json
 

@@ -29,6 +29,7 @@ class Signal(Base):
     details: Mapped[dict] = mapped_column(JSONB, nullable=False)
     price_at_fire: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
     resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    resolved_correctly: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     alerted: Mapped[bool] = mapped_column(Boolean, default=False)
 
     evaluations: Mapped[list["SignalEvaluation"]] = relationship(back_populates="signal")
