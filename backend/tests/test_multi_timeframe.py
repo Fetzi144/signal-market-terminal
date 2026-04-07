@@ -184,8 +184,7 @@ async def test_confluence_across_2_timeframes_applies_bonus(session):
     count, signals = await persist_signals(session, candidates)
     assert count == 2
 
-    # Refresh from DB to get updated values
-    session.expire_all()
+    # Re-query to get updated values (expire_all + sync attr access breaks async SQLAlchemy)
     from sqlalchemy import select
     from app.models.signal import Signal
     result = await session.execute(
@@ -254,7 +253,6 @@ async def test_confluence_across_3_timeframes_capped_at_1(session):
     count, signals = await persist_signals(session, candidates)
     assert count == 3
 
-    session.expire_all()
     from sqlalchemy import select
     from app.models.signal import Signal
     result = await session.execute(
