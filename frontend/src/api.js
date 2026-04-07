@@ -130,3 +130,8 @@ export function deleteBacktest(id) {
     if (!res.ok) throw new Error(`API ${res.status}`);
   });
 }
+
+// Performance API
+export function getPerformanceSummary() {
+  return fetchJson(`${API_BASE}/performance/summary`);
+}
