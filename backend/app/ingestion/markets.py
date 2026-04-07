@@ -11,7 +11,7 @@ from app.config import settings
 from app.connectors import get_connector, get_enabled_platforms
 from app.connectors.base import BaseConnector, RawMarket
 from app.models.ingestion import IngestionRun
-from app.models.market import Market, Outcome
+from app.models.market import Market, Outcome, normalize_question_slug
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,8 @@ async def _upsert_market(session: AsyncSession, rm: RawMarket):
         except (ValueError, TypeError):
             pass
 
+    q_slug = normalize_question_slug(rm.question)
+
     if market is None:
         market = Market(
             id=uuid.uuid4(),
@@ -129,6 +131,7 @@ async def _upsert_market(session: AsyncSession, rm: RawMarket):
             platform_id=rm.platform_id,
             slug=rm.slug,
             question=rm.question,
+            question_slug=q_slug,
             category=rm.category,
             end_date=end_date,
             active=rm.active,
@@ -140,6 +143,7 @@ async def _upsert_market(session: AsyncSession, rm: RawMarket):
         await session.flush()
     else:
         market.question = rm.question
+        market.question_slug = q_slug
         market.active = rm.active
         market.end_date = end_date
         market.last_volume_24h = rm.volume_24h

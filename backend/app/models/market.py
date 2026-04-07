@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -9,6 +10,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
 
+def normalize_question_slug(question: str) -> str:
+    """Normalize a market question to a lowercase slug for cross-platform matching."""
+    slug = question.lower()
+    slug = re.sub(r"[^\w\s]", "", slug)  # strip punctuation
+    slug = re.sub(r"\s+", " ", slug).strip()  # collapse whitespace
+    return slug
+
+
 class Market(Base):
     __tablename__ = "markets"
 
@@ -17,6 +26,7 @@ class Market(Base):
     platform_id: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str | None] = mapped_column(String(512))
     question: Mapped[str] = mapped_column(Text, nullable=False)
+    question_slug: Mapped[str | None] = mapped_column(String(512))
     category: Mapped[str | None] = mapped_column(String(128))
     end_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -38,6 +48,7 @@ class Market(Base):
         UniqueConstraint("platform", "platform_id", name="uq_market_platform_id"),
         Index("ix_market_active_platform", "active", "platform"),
         Index("ix_market_end_date", "end_date"),
+        Index("ix_market_question_slug", "question_slug"),
     )
 
 

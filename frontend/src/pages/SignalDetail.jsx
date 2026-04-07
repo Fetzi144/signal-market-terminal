@@ -92,6 +92,54 @@ export default function SignalDetail() {
           </div>
         </div>
 
+        {s.signal_type === "arbitrage" && (
+          <div
+            style={{
+              background: "var(--bg)",
+              border: "1px solid var(--accent)",
+              borderRadius: 8,
+              padding: 16,
+              marginBottom: 20,
+            }}
+          >
+            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "var(--accent)" }}>
+              Cross-Platform Arbitrage
+            </h3>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr auto 1fr",
+                gap: 12,
+                alignItems: "center",
+                textAlign: "center",
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>
+                  {d.buy_platform?.toUpperCase() || "BUY"}
+                </div>
+                <div style={{ fontSize: 20, fontFamily: "var(--mono)", fontWeight: 700, color: "var(--green)" }}>
+                  ${d[`${d.buy_platform}_price`] || d.polymarket_price || "—"}
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                <div>spread</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--accent)" }}>
+                  {d.spread_pct || "—"}pp
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>
+                  {d.sell_platform?.toUpperCase() || "SELL"}
+                </div>
+                <div style={{ fontSize: 20, fontFamily: "var(--mono)", fontWeight: 700, color: "var(--red)" }}>
+                  ${d[`${d.sell_platform}_price`] || d.kalshi_price || "—"}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Details</h3>
         <div
           style={{
@@ -176,6 +224,13 @@ const DETAIL_LABELS = {
   baseline_avg: "Baseline Avg",
   current_value: "Current Value",
   window_minutes: "Window (min)",
+  question_slug: "Question Slug",
+  spread: "Spread",
+  spread_pct: "Spread (pp)",
+  buy_platform: "Buy On",
+  sell_platform: "Sell On",
+  polymarket_price: "Polymarket Price",
+  kalshi_price: "Kalshi Price",
 };
 
 function DetailItem({ label, value }) {

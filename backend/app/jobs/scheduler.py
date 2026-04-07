@@ -37,6 +37,7 @@ async def _run_snapshot_capture():
 
 async def _run_signal_detection():
     from app.ranking.scorer import persist_signals
+    from app.signals.arbitrage import ArbitrageDetector
     from app.signals.deadline_near import DeadlineNearDetector
     from app.signals.liquidity_vacuum import LiquidityVacuumDetector
     from app.signals.price_move import PriceMoveDetector
@@ -52,6 +53,7 @@ async def _run_signal_detection():
                 SpreadChangeDetector(),
                 LiquidityVacuumDetector(),
                 DeadlineNearDetector(),
+                ArbitrageDetector(),
             ]
             all_candidates = []
             for detector in detectors:
