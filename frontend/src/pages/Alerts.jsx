@@ -105,7 +105,8 @@ export default function Alerts() {
       )}
 
       {data && data.alerts.length > 0 && (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <div className="table-scroll" style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", minWidth: 600, borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
               <th style={{ textAlign: "left", padding: 8, color: "var(--text-dim)" }}>Type</th>
@@ -151,6 +152,7 @@ export default function Alerts() {
             })}
           </tbody>
         </table>
+        </div>
       )}
 
       {data && totalPages > 1 && (

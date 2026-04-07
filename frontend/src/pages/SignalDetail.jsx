@@ -338,9 +338,11 @@ export default function SignalDetail() {
         {s.evaluations && s.evaluations.length > 0 && (
           <>
             <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Evaluations</h3>
+            <div className="table-scroll" style={{ overflowX: "auto" }}>
             <table
               style={{
                 width: "100%",
+                minWidth: 500,
                 borderCollapse: "collapse",
                 fontSize: 13,
                 fontFamily: "var(--mono)",
@@ -386,6 +388,7 @@ export default function SignalDetail() {
                 ))}
               </tbody>
             </table>
+            </div>
           </>
         )}
       </div>

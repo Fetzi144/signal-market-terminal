@@ -136,8 +136,8 @@ function CloseDialog({ position, onClose, onConfirm }) {
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
-      <form onSubmit={handleSubmit} style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 24, width: 360 }}>
+    <div className="dialog-overlay">
+      <form onSubmit={handleSubmit} className="dialog-content">
         <h3 style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Close Position</h3>
         <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 16 }}>
           {position.market_question || "Position"} — {position.side.toUpperCase()} x{position.quantity}
@@ -391,8 +391,8 @@ function PositionsTable({ positions, sortKey, sortDir, onSort, showClose, onClos
       ];
 
   return (
-    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+    <div className="table-scroll" style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 600 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)", background: "var(--bg)" }}>
             {columns.map((col) => (

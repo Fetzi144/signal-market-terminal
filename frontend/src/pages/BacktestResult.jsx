@@ -189,8 +189,8 @@ function SweepTable({ runs }) {
   }
 
   return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+    <div className="table-scroll" style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", minWidth: 500, borderCollapse: "collapse", fontSize: 12 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)" }}>
             <th style={{ textAlign: "left", padding: "8px 10px", color: "var(--text-dim)" }}>Name</th>
@@ -385,8 +385,8 @@ export default function BacktestResult() {
             ) : filteredSignals.length === 0 ? (
               <div style={{ color: "var(--text-dim)", fontSize: 13 }}>No signals match the current filter.</div>
             ) : (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <div className="table-scroll" style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", minWidth: 600, borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
                       <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--text-dim)" }}>Type</th>

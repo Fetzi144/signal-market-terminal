@@ -379,8 +379,8 @@ export default function Backtest() {
       ) : runs.length === 0 ? (
         <div style={{ color: "var(--text-dim)", fontSize: 13, padding: 20 }}>No backtest runs yet. Create one above.</div>
       ) : (
-        <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <div className="table-scroll" style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+          <table style={{ width: "100%", minWidth: 600, borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border)" }}>
                 <th style={{ textAlign: "left", padding: "8px 8px", color: "var(--text-dim)" }}>Name</th>

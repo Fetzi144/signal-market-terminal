@@ -43,7 +43,8 @@ function AccuracyTable({ data }) {
 
   return (
     <>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <div className="table-scroll" style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", minWidth: 600, borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)" }}>
             <th style={{ textAlign: "left", padding: 8, color: "var(--text-dim)" }}>Signal Type</th>
@@ -81,6 +82,7 @@ function AccuracyTable({ data }) {
           })}
         </tbody>
       </table>
+      </div>
       <div style={{ fontSize: 12, color: "var(--text-dim)", padding: "12px 8px 4px", lineHeight: 1.5 }}>
         <strong>Resolution Accuracy</strong> uses ground-truth market outcomes (did the signal correctly predict the winning side?).{" "}
         <strong>Price Direction Accuracy</strong> measures whether the price moved in the signaled direction at each evaluation horizon.{" "}
@@ -95,7 +97,8 @@ function TimeframeAccuracyTable({ data }) {
     return <div style={{ color: "var(--text-dim)", padding: 20 }}>No timeframe data yet.</div>;
   }
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+    <div className="table-scroll" style={{ overflowX: "auto" }}>
+    <table style={{ width: "100%", minWidth: 500, borderCollapse: "collapse", fontSize: 13 }}>
       <thead>
         <tr style={{ borderBottom: "1px solid var(--border)" }}>
           <th style={{ textAlign: "left", padding: 8, color: "var(--text-dim)" }}>Timeframe</th>
@@ -120,6 +123,7 @@ function TimeframeAccuracyTable({ data }) {
         })}
       </tbody>
     </table>
+    </div>
   );
 }
 

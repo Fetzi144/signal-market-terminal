@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Routes, Route, Link } from "react-router-dom";
+import { useState, useEffect, useCallback } from "react";
+import { Routes, Route, Link, useLocation } from "react-router-dom";
 import SignalFeed from "./pages/SignalFeed";
 import SignalDetail from "./pages/SignalDetail";
 import MarketDetail from "./pages/MarketDetail";
@@ -40,37 +40,84 @@ function ThemeToggle() {
   );
 }
 
+const NAV_LINKS = [
+  { to: "/", label: "Feed" },
+  { to: "/performance", label: "Performance" },
+  { to: "/portfolio", label: "Portfolio" },
+  { to: "/markets", label: "Markets" },
+  { to: "/analytics", label: "Analytics" },
+  { to: "/backtests", label: "Backtest" },
+  { to: "/alerts", label: "Alerts" },
+  { to: "/health", label: "Health" },
+];
+
 export default function App() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+
+  // Close mobile menu on navigation
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
+
+  // Close menu on Escape key
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handleKey = (e) => { if (e.key === "Escape") setMenuOpen(false); };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, [menuOpen]);
+
+  // Prevent body scroll when menu is open
+  useEffect(() => {
+    document.body.style.overflow = menuOpen ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [menuOpen]);
+
   return (
-    <div style={{ maxWidth: 960, margin: "0 auto", padding: "16px 20px" }}>
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          borderBottom: "1px solid var(--border)",
-          paddingBottom: 12,
-          marginBottom: 20,
-        }}
-      >
+    <div className="app-container">
+      <header className="app-header">
         <Link to="/" style={{ textDecoration: "none" }}>
           <h1 style={{ fontSize: 18, fontWeight: 600, color: "var(--text)" }}>
             Signal Market Terminal
           </h1>
         </Link>
-        <nav style={{ display: "flex", gap: 16, fontSize: 14, alignItems: "center" }}>
-          <Link to="/">Feed</Link>
-          <Link to="/performance">Performance</Link>
-          <Link to="/portfolio">Portfolio</Link>
-          <Link to="/markets">Markets</Link>
-          <Link to="/analytics">Analytics</Link>
-          <Link to="/backtests">Backtest</Link>
-          <Link to="/alerts">Alerts</Link>
-          <Link to="/health">Health</Link>
+
+        {/* Desktop navigation */}
+        <nav className="app-nav">
+          {NAV_LINKS.map((link) => (
+            <Link key={link.to} to={link.to}>{link.label}</Link>
+          ))}
           <PushNotificationToggle compact />
           <ThemeToggle />
         </nav>
+
+        {/* Hamburger button (visible on mobile via CSS) */}
+        <button className="hamburger" onClick={() => setMenuOpen(true)} aria-label="Open menu">
+          &#9776;
+        </button>
       </header>
+
+      {/* Mobile menu overlay */}
+      <div
+        className={`mobile-menu-overlay${menuOpen ? " open" : ""}`}
+        onClick={() => setMenuOpen(false)}
+      />
+
+      {/* Mobile slide-out menu */}
+      <nav className={`mobile-menu${menuOpen ? " open" : ""}`}>
+        <button className="mobile-menu-close" onClick={() => setMenuOpen(false)} aria-label="Close menu">
+          &times;
+        </button>
+        {NAV_LINKS.map((link) => (
+          <Link key={link.to} to={link.to}>{link.label}</Link>
+        ))}
+        <div className="mobile-menu-actions">
+          <PushNotificationToggle compact />
+          <ThemeToggle />
+        </div>
+      </nav>
+
       <Routes>
         <Route path="/" element={<SignalFeed />} />
         <Route path="/signals/:id" element={<SignalDetail />} />

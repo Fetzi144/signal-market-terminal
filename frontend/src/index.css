@@ -80,3 +80,209 @@ select option {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* ── Touch-friendly sizing ─────────────────────────────────────────────── */
+button, .btn {
+  min-height: 36px;
+  padding: 8px 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+input, select, textarea {
+  min-height: 40px;
+  padding: 8px 12px;
+  font-size: 14px;
+}
+
+/* ── Table scroll wrapper ──────────────────────────────────────────────── */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Responsive app container ──────────────────────────────────────────── */
+.app-container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 16px 20px;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+  margin-bottom: 20px;
+}
+
+.app-nav {
+  display: flex;
+  gap: 16px;
+  font-size: 14px;
+  align-items: center;
+}
+
+.app-nav a {
+  padding: 6px 4px;
+  white-space: nowrap;
+}
+
+/* ── Hamburger button (hidden on desktop) ──────────────────────────────── */
+.hamburger {
+  display: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  min-height: 36px;
+}
+
+/* ── Mobile menu overlay ───────────────────────────────────────────────── */
+.mobile-menu-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 999;
+}
+
+.mobile-menu-overlay.open {
+  display: block;
+}
+
+.mobile-menu {
+  display: none;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 260px;
+  max-width: 80vw;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  z-index: 1000;
+  padding: 20px;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.mobile-menu.open {
+  display: flex;
+}
+
+.mobile-menu a {
+  display: block;
+  padding: 12px 16px;
+  font-size: 15px;
+  border-radius: 6px;
+  color: var(--text);
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.mobile-menu a:hover {
+  background: var(--bg-hover);
+  text-decoration: none;
+}
+
+.mobile-menu-close {
+  align-self: flex-end;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-bottom: 8px;
+  min-height: 36px;
+}
+
+.mobile-menu-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  margin-top: auto;
+}
+
+/* ── Dialog responsive ─────────────────────────────────────────────────── */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.dialog-content {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  width: 100%;
+  max-width: 400px;
+}
+
+/* ── Breakpoint: 1024px — small desktop / tablet landscape ─────────────── */
+@media (max-width: 1024px) {
+  .app-container {
+    max-width: 100%;
+    padding: 12px 16px;
+  }
+}
+
+/* ── Breakpoint: 768px — tablet portrait ───────────────────────────────── */
+@media (max-width: 768px) {
+  .app-container {
+    padding: 10px 12px;
+  }
+
+  .app-nav {
+    display: none;
+  }
+
+  .hamburger {
+    display: block;
+  }
+
+  h2 {
+    font-size: 15px;
+  }
+}
+
+/* ── Breakpoint: 480px — mobile ────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .app-container {
+    padding: 8px 8px;
+  }
+
+  .app-header h1 {
+    font-size: 15px;
+  }
+
+  h2 {
+    font-size: 14px;
+  }
+
+  .dialog-content {
+    padding: 16px;
+    max-width: 100%;
+  }
+
+  button, .btn {
+    font-size: 12px;
+  }
+}

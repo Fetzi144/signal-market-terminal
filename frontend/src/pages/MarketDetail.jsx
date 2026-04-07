@@ -114,10 +114,11 @@ export default function MarketDetail() {
             <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
               Recent Snapshots ({snapshots.length})
             </h3>
-            <div style={{ maxHeight: 200, overflow: "auto" }}>
+            <div className="table-scroll" style={{ maxHeight: 200, overflow: "auto" }}>
               <table
                 style={{
                   width: "100%",
+                  minWidth: 500,
                   borderCollapse: "collapse",
                   fontSize: 12,
                   fontFamily: "var(--mono)",

@@ -95,8 +95,8 @@ function DetectorLeaderboard({ data, best, worst }) {
   }
 
   return (
-    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+    <div className="table-scroll" style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <table style={{ width: "100%", minWidth: 600, borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)", background: "var(--bg)" }}>
             <th style={{ textAlign: "left", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>#</th>
@@ -218,8 +218,8 @@ function RecentCalls({ calls }) {
   }
 
   return (
-    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+    <div className="table-scroll" style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <table style={{ width: "100%", minWidth: 500, borderCollapse: "collapse", fontSize: 13 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)", background: "var(--bg)" }}>
             <th style={{ textAlign: "left", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>Type</th>
