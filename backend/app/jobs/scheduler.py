@@ -96,7 +96,7 @@ async def _alert_high_rank_signals(session):
             Signal.rank_score >= threshold,
         )
         .order_by(Signal.fired_at.desc())
-        .limit(20)
+        .limit(settings.alert_batch_limit)
     )
     rows = result.all()
     for signal, question in rows:
@@ -186,7 +186,7 @@ def start_scheduler():
     scheduler.add_job(
         _run_cleanup,
         "interval",
-        hours=6,
+        hours=settings.cleanup_interval_hours,
         id="cleanup",
         replace_existing=True,
     )

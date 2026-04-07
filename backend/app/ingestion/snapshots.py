@@ -91,7 +91,8 @@ async def _capture_platform(session: AsyncSession, platform: str) -> int:
             total += 1
 
         # Fetch orderbooks (rate-limited, sample random subset)
-        ob_sample = random.sample(token_ids, min(50, len(token_ids)))
+        from app.config import settings as _settings
+        ob_sample = random.sample(token_ids, min(_settings.orderbook_sample_size, len(token_ids)))
         for tid in ob_sample:
             try:
                 ob = await connector.fetch_orderbook(tid)

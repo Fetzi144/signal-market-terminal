@@ -82,7 +82,7 @@ async def _paginate_offset(connector: BaseConnector, session: AsyncSession) -> i
             await _upsert_market(session, rm)
             total += 1
         offset += page_size
-        if offset >= 5000:
+        if offset >= settings.market_pagination_cap:
             break
     return total
 
@@ -102,7 +102,7 @@ async def _paginate_kalshi(connector, session: AsyncSession) -> int:
             await _upsert_market(session, rm)
             total += 1
         pages += 1
-        if not next_cursor or pages >= 25:  # safety cap: 25 pages * 200 = 5000
+        if not next_cursor or pages >= (settings.market_pagination_cap // 200):  # safety cap
             break
         cursor = next_cursor
     return total
