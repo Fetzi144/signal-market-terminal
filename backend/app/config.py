@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     deadline_near_hours: int = 48
     deadline_near_price_threshold_pct: float = 3.0
 
+    # Signals — Order Flow Imbalance
+    ofi_threshold: float = 0.3  # minimum abs(OFI) to fire
+    ofi_enabled: bool = True
+    ofi_min_snapshots: int = 3  # minimum orderbook snapshots needed
+    ofi_price_flat_window_minutes: int = 30  # price must be flat in this window
+
     # Signals — Arbitrage
     arb_spread_threshold: float = 0.04  # minimum spread to fire (4 percentage points)
     arb_enabled: bool = True
@@ -106,6 +112,13 @@ class Settings(BaseSettings):
     def thresholds_must_be_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("Threshold must be > 0")
+        return v
+
+    @field_validator("ofi_threshold")
+    @classmethod
+    def ofi_threshold_bounds(cls, v: float) -> float:
+        if v <= 0 or v >= 1:
+            raise ValueError("ofi_threshold must be > 0 and < 1")
         return v
 
     @field_validator("arb_spread_threshold")

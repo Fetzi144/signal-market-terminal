@@ -92,6 +92,62 @@ export default function SignalDetail() {
           </div>
         </div>
 
+        {s.signal_type === "order_flow_imbalance" && (
+          <div
+            style={{
+              background: "var(--bg)",
+              border: "1px solid var(--accent)",
+              borderRadius: 8,
+              padding: 16,
+              marginBottom: 20,
+            }}
+          >
+            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "var(--accent)" }}>
+              Order Flow Imbalance
+            </h3>
+            <OfiBar ofi={parseFloat(d.ofi_value || 0)} />
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+                marginTop: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Bid Depth</div>
+                <div style={{ fontSize: 16, fontFamily: "var(--mono)", fontWeight: 700, color: "var(--green)" }}>
+                  {d.bid_depth_current || "—"}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                  prev: {d.bid_depth_previous || "—"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Ask Depth</div>
+                <div style={{ fontSize: 16, fontFamily: "var(--mono)", fontWeight: 700, color: "var(--red)" }}>
+                  {d.ask_depth_current || "—"}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                  prev: {d.ask_depth_previous || "—"}
+                </div>
+              </div>
+            </div>
+            <div
+              style={{
+                marginTop: 12,
+                padding: "8px 12px",
+                background: "var(--bg-card)",
+                borderRadius: 6,
+                fontSize: 13,
+                color: "var(--accent)",
+              }}
+            >
+              Price flat — OFI suggests move {d.direction === "up" ? "upward" : "downward"} incoming
+            </div>
+          </div>
+        )}
+
         {s.signal_type === "arbitrage" && (
           <div
             style={{
@@ -212,6 +268,37 @@ export default function SignalDetail() {
   );
 }
 
+function OfiBar({ ofi }) {
+  // ofi ranges from -1 to 1; negative = sell pressure (red/left), positive = buy pressure (green/right)
+  const pct = Math.min(Math.max(ofi, -1), 1) * 50; // -50 to +50
+  const barColor = ofi > 0 ? "var(--green)" : "var(--red)";
+  const label = ofi > 0 ? "BUY PRESSURE" : "SELL PRESSURE";
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>
+        <span>Sell</span>
+        <span style={{ fontFamily: "var(--mono)", fontWeight: 600, color: barColor }}>{label} ({(ofi * 100).toFixed(1)}%)</span>
+        <span>Buy</span>
+      </div>
+      <div style={{ position: "relative", height: 16, background: "var(--bg-card)", borderRadius: 8, overflow: "hidden" }}>
+        <div style={{ position: "absolute", left: "50%", top: 0, bottom: 0, width: 1, background: "var(--border)" }} />
+        <div
+          style={{
+            position: "absolute",
+            top: 2,
+            bottom: 2,
+            borderRadius: 6,
+            background: barColor,
+            ...(pct > 0
+              ? { left: "50%", width: `${pct}%` }
+              : { right: "50%", width: `${-pct}%` }),
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
 const DETAIL_LABELS = {
   direction: "Direction",
   outcome_name: "Outcome",
@@ -231,6 +318,12 @@ const DETAIL_LABELS = {
   sell_platform: "Sell On",
   polymarket_price: "Polymarket Price",
   kalshi_price: "Kalshi Price",
+  ofi_value: "OFI Value",
+  bid_depth_current: "Bid Depth (Current)",
+  ask_depth_current: "Ask Depth (Current)",
+  bid_depth_previous: "Bid Depth (Previous)",
+  ask_depth_previous: "Ask Depth (Previous)",
+  price_current: "Price (Current)",
 };
 
 function DetailItem({ label, value }) {

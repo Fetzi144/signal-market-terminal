@@ -40,6 +40,7 @@ async def _run_signal_detection():
     from app.signals.arbitrage import ArbitrageDetector
     from app.signals.deadline_near import DeadlineNearDetector
     from app.signals.liquidity_vacuum import LiquidityVacuumDetector
+    from app.signals.order_flow import OrderFlowImbalanceDetector
     from app.signals.price_move import PriceMoveDetector
     from app.signals.spread_change import SpreadChangeDetector
     from app.signals.volume_spike import VolumeSpikeDetector
@@ -54,6 +55,7 @@ async def _run_signal_detection():
                 LiquidityVacuumDetector(),
                 DeadlineNearDetector(),
                 ArbitrageDetector(),
+                OrderFlowImbalanceDetector(),
             ]
             all_candidates = []
             for detector in detectors:
