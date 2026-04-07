@@ -70,6 +70,7 @@ class Settings(BaseSettings):
 
     # App
     log_level: str = "INFO"
+    log_format: str = "text"  # "text" or "json"
 
     @field_validator("snapshot_interval_seconds", "market_discovery_interval_seconds", "evaluation_interval_seconds")
     @classmethod

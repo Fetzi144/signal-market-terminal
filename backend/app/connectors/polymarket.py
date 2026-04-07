@@ -6,6 +6,7 @@ import httpx
 
 from app.config import settings
 from app.connectors.base import BaseConnector, RawMarket, RawOrderbook, RawOutcome
+from app.connectors.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class PolymarketConnector(BaseConnector):
         self.gamma_base = settings.polymarket_gamma_base
         self.clob_base = settings.polymarket_api_base
         self._client: httpx.AsyncClient | None = None
+        self.circuit_breaker = CircuitBreaker("polymarket")
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -36,6 +38,7 @@ class PolymarketConnector(BaseConnector):
 
     async def _request_with_retry(self, method: str, url: str, **kwargs) -> httpx.Response:
         """Make an HTTP request with exponential backoff retry on transient failures."""
+        self.circuit_breaker.check()
         client = await self._get_client()
         last_exc = None
 
@@ -64,6 +67,7 @@ class PolymarketConnector(BaseConnector):
                         continue
 
                 resp.raise_for_status()
+                self.circuit_breaker.record_success()
                 return resp
 
             except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
@@ -77,6 +81,7 @@ class PolymarketConnector(BaseConnector):
                 else:
                     logger.error("All %d retries exhausted for %s: %s", MAX_RETRIES, url, e)
 
+        self.circuit_breaker.record_failure()
         if last_exc:
             raise last_exc
         raise httpx.HTTPError(f"Failed after {MAX_RETRIES} retries: {url}")

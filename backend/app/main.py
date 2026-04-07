@@ -1,10 +1,12 @@
 """Signal Market Terminal — FastAPI application."""
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -13,10 +15,18 @@ from app.api import alerts, health, markets, signals, sse
 from app.config import settings
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+# Structured JSON logging in production, plain text in development
+log_level = getattr(logging, settings.log_level)
+if settings.log_format == "json":
+    from pythonjsonlogger.json import JsonFormatter
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(JsonFormatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    logging.basicConfig(level=log_level, handlers=[handler])
+else:
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.api_rate_limit])
@@ -76,6 +86,9 @@ app.include_router(markets.router)
 app.include_router(health.router)
 app.include_router(alerts.router)
 app.include_router(sse.router)
+
+# Prometheus auto-instrumentation — exposes /metrics
+Instrumentator().instrument(app).expose(app)
 
 
 @app.get("/")

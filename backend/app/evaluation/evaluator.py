@@ -12,6 +12,14 @@ from app.models.snapshot import PriceSnapshot
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """Normalize a datetime to UTC. Naive datetimes are assumed UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 HORIZONS = {
     "15m": timedelta(minutes=15),
     "1h": timedelta(hours=1),
@@ -38,9 +46,7 @@ async def evaluate_signals(session: AsyncSession) -> int:
         all_horizons_done = True
 
         for horizon_key, horizon_delta in HORIZONS.items():
-            fired_at = signal.fired_at
-            if fired_at.tzinfo is None:
-                fired_at = fired_at.replace(tzinfo=timezone.utc)
+            fired_at = _ensure_utc(signal.fired_at)
             target_time = fired_at + horizon_delta
 
             # Not yet time for this horizon
@@ -118,7 +124,6 @@ async def _closest_snapshot(
     if not candidates:
         return None
 
-    # Pick closest by absolute time difference (works across all DB backends)
-    return min(candidates, key=lambda s: abs((s.captured_at - target_time).total_seconds())
-               if s.captured_at.tzinfo is not None or target_time.tzinfo is None
-               else abs((s.captured_at.replace(tzinfo=timezone.utc) - target_time).total_seconds()))
+    # Normalize all timestamps to UTC before comparison
+    target_utc = _ensure_utc(target_time)
+    return min(candidates, key=lambda s: abs((_ensure_utc(s.captured_at) - target_utc).total_seconds()))
