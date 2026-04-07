@@ -8,7 +8,7 @@ Real-time prediction market signal detector for Polymarket and Kalshi.
 - **Infra**: Docker Compose, Prometheus, Alembic migrations
 
 ## Version
-Current: **v0.3.0** (v0.4.0 sprint in progress — backtesting, OFI, portfolio, whale tracking)
+Current: **v0.4.0**
 
 ## Directory Structure
 ```

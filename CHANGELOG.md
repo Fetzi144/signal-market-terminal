@@ -2,6 +2,46 @@
 
 All notable changes to Signal Market Terminal are documented here.
 
+## [0.4.0] - 2026-04-08
+
+### Added
+- **Backtesting engine** — replay historical market data with configurable detectors, parameter sweep across threshold/rank combinations, Sharpe ratio and max drawdown metrics
+- **Portfolio tracking** — full position lifecycle (open → trade → close) with Decimal-precision P&L, weighted average entry price, partial close support, and "no" side inversion
+- **Multi-timeframe detection** — signals fire on 30m, 1h, 4h timeframes with confluence scoring bonus when multiple timeframes agree
+- **Web Push notifications** — VAPID-based browser push via service worker; subscribe/unsubscribe API endpoints
+- **Performance dashboard** — win rate, Sharpe ratio, accuracy breakdown by signal type and timeframe
+- **Order Flow Imbalance (OFI) detector** — 7th signal type based on bid/ask depth imbalance
+- **Whale/smart money tracking** — on-chain Polygon trade monitoring for large position detection
+- **Mobile-responsive frontend** — PWA-installable with 375px→desktop breakpoints, touch-friendly controls
+- **Discord webhook alerts** — rich embed format with market context, rank score, and confidence
+- **Analytics expansion** — timeframe accuracy, correlated signals endpoint, platform summary
+- **CSV exports** — signals, markets, and portfolio positions exportable as CSV
+- **Docker Compose** — full dev/prod setup with Prometheus monitoring
+
+### Fixed
+- Portfolio P&L calculation using Decimal instead of Float — eliminates rounding errors
+- Backtest signal routing — moved `/sweep` before `/{run_id}` to fix route collision
+- Volume spike detector baseline window calculation — detector now produces candidates
+- Dedupe collision in alerts test — timeframe differentiation prevents UNIQUE constraint violation
+
+### Security
+- Rate limiting on all public endpoints (10 req/sec per IP)
+- HMAC signature verification on webhook endpoints
+- Web Push uses VAPID keys (RFC 8292)
+
+### Known Limitations
+- ML signal scoring deferred to v0.5.0 (insufficient training data)
+- Per-timeframe P&L in portfolio view (single aggregate P&L currently)
+- No order execution (signal-only tool, manual trade entry)
+- Kalshi API requires manual OAuth2 setup per user
+
+### Tests
+- **275 tests** (up from 168 in v0.3.0)
+- Integration tests: backtest engine (4), portfolio lifecycle (3), alert delivery (5), multi-timeframe confluence (4), missing API endpoints (10)
+- Full E2E: snapshot → detect → persist → API → evaluate → resolve pipeline
+
+---
+
 ## [0.3.0] - 2026-04-07
 
 ### Added
@@ -95,6 +135,7 @@ All notable changes to Signal Market Terminal are documented here.
 - **CI workflow** — lint (ruff) and test pipeline
 - **40 tests** — detectors, ranking, evaluation, API, connectors, integration
 
+[0.4.0]: https://github.com/Fetzi144/signal-market-terminal/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Fetzi144/signal-market-terminal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Fetzi144/signal-market-terminal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Fetzi144/signal-market-terminal/releases/tag/v0.1.0
