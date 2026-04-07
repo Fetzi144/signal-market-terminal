@@ -22,10 +22,10 @@ class PushAlerter(BaseAlerter):
             logger.warning("pywebpush not installed — skipping push notifications")
             return
 
+        from sqlalchemy import select
+
         from app.db import async_session
         from app.models.push_subscription import PushSubscription
-
-        from sqlalchemy import select
 
         details = signal.details or {}
         direction = details.get("direction", "")

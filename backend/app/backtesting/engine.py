@@ -9,10 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.backtest import BacktestRun, BacktestSignal
-from app.models.market import Outcome
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 from app.ranking.scorer import compute_rank_score
-from app.signals.base import SignalCandidate, SnapshotWindow
+from app.signals.base import SnapshotWindow
 
 logger = logging.getLogger(__name__)
 

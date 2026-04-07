@@ -1,5 +1,4 @@
 """Tests for multi-timeframe analysis and confluence scoring."""
-import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import patch
@@ -7,7 +6,6 @@ from unittest.mock import patch
 import pytest
 
 from tests.conftest import make_market, make_outcome, make_price_snapshot, make_signal
-
 
 # ── Detector multi-timeframe tests ──────────────────────────────────
 
@@ -186,6 +184,7 @@ async def test_confluence_across_2_timeframes_applies_bonus(session):
 
     # Re-query to get updated values (expire_all + sync attr access breaks async SQLAlchemy)
     from sqlalchemy import select
+
     from app.models.signal import Signal
     result = await session.execute(
         select(Signal).where(
@@ -254,6 +253,7 @@ async def test_confluence_across_3_timeframes_capped_at_1(session):
     assert count == 3
 
     from sqlalchemy import select
+
     from app.models.signal import Signal
     result = await session.execute(
         select(Signal).where(

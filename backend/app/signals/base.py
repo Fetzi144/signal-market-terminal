@@ -1,9 +1,9 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
-
 
 # Maps timeframe strings to minutes for window calculations
 TIMEFRAME_MINUTES = {
@@ -45,8 +45,8 @@ class SnapshotWindow:
     """
     price_snapshots: list = field(default_factory=list)
     orderbook_snapshots: list = field(default_factory=list)
-    window_start: "datetime | None" = None
-    window_end: "datetime | None" = None
+    window_start: datetime | None = None
+    window_end: datetime | None = None
 
 
 class BaseDetector(ABC):

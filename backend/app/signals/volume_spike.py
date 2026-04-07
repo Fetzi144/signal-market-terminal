@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
-from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow, timeframe_to_minutes
+from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
 
 logger = logging.getLogger(__name__)
 

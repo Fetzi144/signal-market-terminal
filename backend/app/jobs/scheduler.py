@@ -42,8 +42,8 @@ async def _run_signal_detection():
     from app.signals.liquidity_vacuum import LiquidityVacuumDetector
     from app.signals.order_flow import OrderFlowImbalanceDetector
     from app.signals.price_move import PriceMoveDetector
-    from app.signals.spread_change import SpreadChangeDetector
     from app.signals.smart_money import SmartMoneyDetector
+    from app.signals.spread_change import SpreadChangeDetector
     from app.signals.volume_spike import VolumeSpikeDetector
 
     logger.info("Job: signal_detection starting")

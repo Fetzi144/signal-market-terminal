@@ -8,7 +8,6 @@ import pytest
 from app.models.signal import Signal
 from tests.conftest import make_market, make_outcome
 
-
 # --------------------------------------------------------------------------- #
 # Helpers                                                                       #
 # --------------------------------------------------------------------------- #

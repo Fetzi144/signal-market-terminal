@@ -6,10 +6,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.backtesting.sweep import _build_combinations, _flat_to_detector_configs, MAX_SWEEP_COMBINATIONS
+from app.backtesting.sweep import MAX_SWEEP_COMBINATIONS, _build_combinations, _flat_to_detector_configs
 from app.models.backtest import BacktestRun, BacktestSignal
 from tests.conftest import make_market, make_outcome, make_price_snapshot
-
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                       #
@@ -147,7 +146,7 @@ async def test_list_and_get_backtest(client, session):
 @pytest.mark.asyncio
 async def test_delete_backtest(client, session):
     run = _make_run(session)
-    sig = _make_bt_signal(session, run.id)
+    _make_bt_signal(session, run.id)
     await session.commit()
 
     resp = await client.delete(f"/api/v1/backtests/{run.id}")

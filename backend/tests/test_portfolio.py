@@ -1,10 +1,7 @@
 """Tests for portfolio position tracking: service logic + API endpoints."""
 import uuid
-from datetime import datetime, timezone
-from decimal import Decimal
 
 import pytest
-import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from tests.conftest import make_market, make_outcome, make_price_snapshot
@@ -142,7 +139,7 @@ async def test_portfolio_summary_aggregation(session):
 
     # Open 2 positions, close 1 with profit
     pos1 = await open_position(session, m.id, o.id, "polymarket", "yes", 100, 0.50)
-    pos2 = await open_position(session, m.id, o.id, "polymarket", "yes", 50, 0.40)
+    await open_position(session, m.id, o.id, "polymarket", "yes", 50, 0.40)
     await close_position(session, pos1.id, 100, 0.70)
 
     summary = await get_portfolio_summary(session)

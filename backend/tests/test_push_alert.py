@@ -6,7 +6,6 @@ from decimal import Decimal
 import pytest
 
 from app.models.signal import Signal
-from tests.conftest import make_market
 
 
 def _make_signal(**kwargs) -> Signal:
@@ -42,6 +41,7 @@ class TestPushSubscriptionAPI:
 
         # Verify stored in DB
         from sqlalchemy import select
+
         from app.models.push_subscription import PushSubscription
         result = await session.execute(select(PushSubscription))
         subs = result.scalars().all()
@@ -61,6 +61,7 @@ class TestPushSubscriptionAPI:
         })
 
         from sqlalchemy import select
+
         from app.models.push_subscription import PushSubscription
         result = await session.execute(select(PushSubscription))
         subs = result.scalars().all()
@@ -80,6 +81,7 @@ class TestPushSubscriptionAPI:
         assert resp.json()["status"] == "unsubscribed"
 
         from sqlalchemy import select
+
         from app.models.push_subscription import PushSubscription
         result = await session.execute(select(PushSubscription))
         subs = result.scalars().all()
