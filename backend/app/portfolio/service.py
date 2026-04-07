@@ -1,5 +1,6 @@
 """Portfolio service: position CRUD, P&L calculations, price refresh."""
 import logging
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -12,6 +13,15 @@ from app.models.snapshot import PriceSnapshot
 
 logger = logging.getLogger(__name__)
 
+_ZERO = Decimal("0")
+
+
+def _to_decimal(v: Decimal | float | int) -> Decimal:
+    """Coerce numeric input to Decimal."""
+    if isinstance(v, Decimal):
+        return v
+    return Decimal(str(v))
+
 
 async def open_position(
     session: AsyncSession,
@@ -19,12 +29,13 @@ async def open_position(
     outcome_id: UUID,
     platform: str,
     side: str,
-    quantity: float,
-    price: float,
+    quantity: Decimal | float,
+    price: Decimal | float,
     signal_id: UUID | None = None,
     notes: str | None = None,
 ) -> Position:
     """Open a new position and record the initial trade."""
+    quantity, price = _to_decimal(quantity), _to_decimal(price)
     position = Position(
         market_id=market_id,
         outcome_id=outcome_id,
@@ -53,9 +64,9 @@ async def open_position(
 async def add_to_position(
     session: AsyncSession,
     position_id: UUID,
-    quantity: float,
-    price: float,
-    fees: float = 0.0,
+    quantity: Decimal | float,
+    price: Decimal | float,
+    fees: Decimal | float = _ZERO,
 ) -> Position:
     """Add to an existing position, updating the weighted average entry price."""
     position = await session.get(Position, position_id)
@@ -64,6 +75,7 @@ async def add_to_position(
     if position.status != "open":
         raise ValueError(f"Position {position_id} is {position.status}, cannot add")
 
+    quantity, price, fees = _to_decimal(quantity), _to_decimal(price), _to_decimal(fees)
     # Weighted average: (old_qty * old_price + new_qty * new_price) / total_qty
     total_qty = position.quantity + quantity
     position.avg_entry_price = (
@@ -86,9 +98,9 @@ async def add_to_position(
 async def close_position(
     session: AsyncSession,
     position_id: UUID,
-    quantity: float,
-    price: float,
-    fees: float = 0.0,
+    quantity: Decimal | float,
+    price: Decimal | float,
+    fees: Decimal | float = _ZERO,
 ) -> Position:
     """Close (partially or fully) a position at the given price."""
     position = await session.get(Position, position_id)
@@ -96,6 +108,7 @@ async def close_position(
         raise ValueError(f"Position {position_id} not found")
     if position.status != "open":
         raise ValueError(f"Position {position_id} is {position.status}, cannot close")
+    quantity, price, fees = _to_decimal(quantity), _to_decimal(price), _to_decimal(fees)
     if quantity > position.quantity:
         raise ValueError(f"Cannot close {quantity} shares, only {position.quantity} held")
 
@@ -104,7 +117,7 @@ async def close_position(
     if position.side == "no":
         pnl = -pnl  # Inverted for "no" side
 
-    position.realized_pnl = (position.realized_pnl or 0.0) + pnl
+    position.realized_pnl = (position.realized_pnl or _ZERO) + pnl
     position.quantity -= quantity
 
     trade = Trade(
@@ -117,10 +130,10 @@ async def close_position(
     session.add(trade)
 
     if position.quantity <= 0:
-        position.quantity = 0
+        position.quantity = _ZERO
         position.status = "closed"
         position.exit_price = price
-        position.unrealized_pnl = 0.0
+        position.unrealized_pnl = _ZERO
 
     await session.commit()
     return position
@@ -145,7 +158,7 @@ async def update_current_prices(session: AsyncSession) -> int:
         latest_price = price_result.scalar_one_or_none()
 
         if latest_price is not None:
-            pos.current_price = float(latest_price)
+            pos.current_price = latest_price
             pnl = (pos.current_price - pos.avg_entry_price) * pos.quantity
             if pos.side == "no":
                 pnl = -pnl
@@ -180,7 +193,7 @@ async def resolve_positions(session: AsyncSession) -> int:
         last_price = price_result.scalar_one_or_none()
 
         if last_price is not None:
-            resolution_price = 1.0 if float(last_price) >= 0.5 else 0.0
+            resolution_price = Decimal("1") if last_price >= Decimal("0.5") else _ZERO
         else:
             continue
 
@@ -188,12 +201,12 @@ async def resolve_positions(session: AsyncSession) -> int:
         if pos.side == "no":
             pnl = -pnl
 
-        pos.realized_pnl = (pos.realized_pnl or 0.0) + pnl
+        pos.realized_pnl = (pos.realized_pnl or _ZERO) + pnl
         pos.exit_price = resolution_price
         pos.current_price = resolution_price
-        pos.unrealized_pnl = 0.0
+        pos.unrealized_pnl = _ZERO
         pos.status = "resolved"
-        pos.quantity = 0
+        pos.quantity = _ZERO
         resolved += 1
 
     await session.commit()
@@ -266,7 +279,7 @@ async def get_portfolio_summary(session: AsyncSession) -> dict:
     # Open positions stats
     open_stmt = select(
         func.count(Position.id),
-        func.coalesce(func.sum(Position.unrealized_pnl), 0.0),
+        func.coalesce(func.sum(Position.unrealized_pnl), _ZERO),
     ).where(Position.status == "open")
     open_result = await session.execute(open_stmt)
     open_count, total_unrealized = open_result.one()
@@ -274,7 +287,7 @@ async def get_portfolio_summary(session: AsyncSession) -> dict:
     # Closed/resolved positions stats
     closed_stmt = select(
         func.count(Position.id),
-        func.coalesce(func.sum(Position.realized_pnl), 0.0),
+        func.coalesce(func.sum(Position.realized_pnl), _ZERO),
     ).where(Position.status.in_(["closed", "resolved"]))
     closed_result = await session.execute(closed_stmt)
     closed_count, total_realized = closed_result.one()
@@ -291,7 +304,7 @@ async def get_portfolio_summary(session: AsyncSession) -> dict:
     return {
         "open_positions": open_count,
         "closed_positions": closed_count,
-        "total_unrealized_pnl": float(total_unrealized),
-        "total_realized_pnl": float(total_realized),
+        "total_unrealized_pnl": total_unrealized,
+        "total_realized_pnl": total_realized,
         "win_rate": round(win_rate, 1),
     }

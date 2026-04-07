@@ -37,8 +37,8 @@ async def test_open_position_correct_entry_price(session):
 
     pos = await open_position(session, m.id, o.id, "polymarket", "yes", 100, 0.60)
 
-    assert pos.avg_entry_price == 0.60
-    assert pos.quantity == 100
+    assert float(pos.avg_entry_price) == pytest.approx(0.60)
+    assert float(pos.quantity) == pytest.approx(100)
     assert pos.status == "open"
 
     # Reload with eager trades
@@ -61,8 +61,8 @@ async def test_add_to_position_weighted_average(session):
     pos = await add_to_position(session, pos.id, 50, 0.90)
 
     # Weighted avg: (100 * 0.60 + 50 * 0.90) / 150 = (60 + 45) / 150 = 0.70
-    assert pos.quantity == 150
-    assert abs(pos.avg_entry_price - 0.70) < 0.001
+    assert float(pos.quantity) == pytest.approx(150)
+    assert float(pos.avg_entry_price) == pytest.approx(0.70, abs=0.001)
 
 
 @pytest.mark.asyncio
@@ -78,10 +78,10 @@ async def test_partial_close_remaining_correct(session):
     pos = await open_position(session, m.id, o.id, "polymarket", "yes", 100, 0.60)
     pos = await close_position(session, pos.id, 40, 0.80)
 
-    assert pos.quantity == 60
+    assert float(pos.quantity) == pytest.approx(60)
     assert pos.status == "open"
     # Realized P&L: (0.80 - 0.60) * 40 = 8.0
-    assert abs(pos.realized_pnl - 8.0) < 0.001
+    assert float(pos.realized_pnl) == pytest.approx(8.0, abs=0.001)
 
 
 @pytest.mark.asyncio
@@ -97,11 +97,11 @@ async def test_full_close_status_and_pnl(session):
     pos = await open_position(session, m.id, o.id, "polymarket", "yes", 100, 0.60)
     pos = await close_position(session, pos.id, 100, 0.85)
 
-    assert pos.quantity == 0
+    assert float(pos.quantity) == pytest.approx(0)
     assert pos.status == "closed"
-    assert pos.exit_price == 0.85
+    assert float(pos.exit_price) == pytest.approx(0.85)
     # Realized P&L: (0.85 - 0.60) * 100 = 25.0
-    assert abs(pos.realized_pnl - 25.0) < 0.001
+    assert float(pos.realized_pnl) == pytest.approx(25.0, abs=0.001)
 
 
 @pytest.mark.asyncio
@@ -125,9 +125,9 @@ async def test_market_resolution_auto_closes(session):
 
     await session.refresh(pos)
     assert pos.status == "resolved"
-    assert pos.exit_price == 1.0
+    assert float(pos.exit_price) == pytest.approx(1.0)
     # P&L: (1.0 - 0.60) * 100 = 40.0
-    assert abs(pos.realized_pnl - 40.0) < 0.001
+    assert float(pos.realized_pnl) == pytest.approx(40.0, abs=0.001)
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,7 @@ async def test_portfolio_summary_aggregation(session):
     assert summary["open_positions"] == 1
     assert summary["closed_positions"] == 1
     # Realized: (0.70 - 0.50) * 100 = 20.0
-    assert abs(summary["total_realized_pnl"] - 20.0) < 0.001
+    assert float(summary["total_realized_pnl"]) == pytest.approx(20.0, abs=0.001)
     assert summary["win_rate"] == 100.0
 
 
@@ -173,9 +173,9 @@ async def test_update_current_prices(session):
     assert updated == 1
 
     await session.refresh(pos)
-    assert abs(pos.current_price - 0.75) < 0.001
+    assert float(pos.current_price) == pytest.approx(0.75, abs=0.001)
     # Unrealized: (0.75 - 0.50) * 100 = 25.0
-    assert abs(pos.unrealized_pnl - 25.0) < 0.001
+    assert float(pos.unrealized_pnl) == pytest.approx(25.0, abs=0.001)
 
 
 # -- API tests --
@@ -198,8 +198,8 @@ async def test_api_create_position(client, engine):
     assert resp.status_code == 201
     data = resp.json()
     assert data["status"] == "open"
-    assert data["quantity"] == 100
-    assert data["avg_entry_price"] == 0.60
+    assert data["quantity"] == pytest.approx(100)
+    assert data["avg_entry_price"] == pytest.approx(0.60)
 
 
 @pytest.mark.asyncio
@@ -278,7 +278,7 @@ async def test_api_close_position(client, engine):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "closed"
-    assert abs(data["realized_pnl"] - 20.0) < 0.001
+    assert data["realized_pnl"] == pytest.approx(20.0, abs=0.001)
 
 
 @pytest.mark.asyncio

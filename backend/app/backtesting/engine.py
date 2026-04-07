@@ -108,6 +108,7 @@ class BacktestEngine:
                         id=uuid.uuid4(),
                         backtest_run_id=run.id,
                         signal_type=c.signal_type,
+                        timeframe="30m",
                         outcome_id=outcome_uuid,
                         fired_at=current_time,
                         signal_score=c.signal_score,

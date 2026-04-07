@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Numeric, String
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Numeric, String  # noqa: F401
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -45,6 +45,7 @@ class BacktestSignal(Base):
         UUID(as_uuid=True), ForeignKey("backtest_runs.id", ondelete="CASCADE"), nullable=False
     )
     signal_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(8), nullable=False, default="30m")
     outcome_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("outcomes.id", ondelete="SET NULL")
     )
@@ -62,4 +63,5 @@ class BacktestSignal(Base):
     __table_args__ = (
         Index("ix_bt_signal_run", "backtest_run_id", "fired_at"),
         Index("ix_bt_signal_type", "signal_type"),
+        Index("ix_bt_signal_timeframe", "timeframe"),
     )

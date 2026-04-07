@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -28,13 +29,13 @@ class Position(Base):
     )
     platform: Mapped[str] = mapped_column(String(64), nullable=False)
     side: Mapped[str] = mapped_column(String(8), nullable=False)  # "yes" or "no"
-    quantity: Mapped[float] = mapped_column(Float, nullable=False)
-    avg_entry_price: Mapped[float] = mapped_column(Float, nullable=False)
-    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    unrealized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    avg_entry_price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    current_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    unrealized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")  # open, closed, resolved
-    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    realized_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_price: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(20, 8), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     signal_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("signals.id", ondelete="SET NULL"), nullable=True
@@ -60,8 +61,8 @@ class Trade(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     action: Mapped[str] = mapped_column(String(8), nullable=False)  # "buy" or "sell"
-    quantity: Mapped[float] = mapped_column(Float, nullable=False)
-    price: Mapped[float] = mapped_column(Float, nullable=False)
-    fees: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    fees: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False, default=Decimal("0"))
 
     position: Mapped["Position"] = relationship(back_populates="trades")

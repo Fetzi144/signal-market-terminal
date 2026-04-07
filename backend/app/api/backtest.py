@@ -198,6 +198,43 @@ async def list_backtests(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
+@router.post("/sweep", status_code=201)
+async def create_sweep(
+    body: SweepRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run a parameter sweep and return all created backtest run IDs."""
+    # Validate snapshot data exists
+    snap_check = await db.execute(
+        select(func.count(PriceSnapshot.id)).where(
+            PriceSnapshot.captured_at >= body.start_date,
+            PriceSnapshot.captured_at <= body.end_date,
+        )
+    )
+    snap_count = snap_check.scalar() or 0
+    if snap_count == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="No price snapshot data found in the requested date range.",
+        )
+
+    runs = await parameter_sweep(
+        session=db,
+        name_prefix=body.name_prefix,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        base_detector_configs=body.base_detector_configs,
+        base_rank_threshold=body.base_rank_threshold,
+        sweep_params=body.sweep_params,
+    )
+    await db.commit()
+
+    return {
+        "backtest_run_ids": [str(r.id) for r in runs],
+        "count": len(runs),
+    }
+
+
 @router.get("/{run_id}", response_model=BacktestRunOut)
 async def get_backtest(run_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """Get a single backtest run with full result_summary."""
@@ -270,40 +307,3 @@ async def delete_backtest(run_id: uuid.UUID, db: AsyncSession = Depends(get_db))
         raise HTTPException(404, "Backtest run not found")
     await db.delete(run)
     await db.commit()
-
-
-@router.post("/sweep", status_code=201)
-async def create_sweep(
-    body: SweepRequest,
-    db: AsyncSession = Depends(get_db),
-):
-    """Run a parameter sweep and return all created backtest run IDs."""
-    # Validate snapshot data exists
-    snap_check = await db.execute(
-        select(func.count(PriceSnapshot.id)).where(
-            PriceSnapshot.captured_at >= body.start_date,
-            PriceSnapshot.captured_at <= body.end_date,
-        )
-    )
-    snap_count = snap_check.scalar() or 0
-    if snap_count == 0:
-        raise HTTPException(
-            status_code=422,
-            detail="No price snapshot data found in the requested date range.",
-        )
-
-    runs = await parameter_sweep(
-        session=db,
-        name_prefix=body.name_prefix,
-        start_date=body.start_date,
-        end_date=body.end_date,
-        base_detector_configs=body.base_detector_configs,
-        base_rank_threshold=body.base_rank_threshold,
-        sweep_params=body.sweep_params,
-    )
-    await db.commit()
-
-    return {
-        "backtest_run_ids": [str(r.id) for r in runs],
-        "count": len(runs),
-    }

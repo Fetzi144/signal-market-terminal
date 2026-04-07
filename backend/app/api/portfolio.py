@@ -3,6 +3,7 @@ import csv
 import io
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -25,29 +26,29 @@ class OpenPositionRequest(BaseModel):
     outcome_id: uuid.UUID
     platform: str
     side: str = Field(..., pattern="^(yes|no)$")
-    quantity: float = Field(..., gt=0)
-    price: float = Field(..., ge=0, le=1)
+    quantity: Decimal = Field(..., gt=0)
+    price: Decimal = Field(..., ge=0, le=1)
     signal_id: uuid.UUID | None = None
     notes: str | None = None
 
 
 class AddTradeRequest(BaseModel):
     action: str = Field(..., pattern="^(buy|sell)$")
-    quantity: float = Field(..., gt=0)
-    price: float = Field(..., ge=0, le=1)
-    fees: float = Field(default=0.0, ge=0)
+    quantity: Decimal = Field(..., gt=0)
+    price: Decimal = Field(..., ge=0, le=1)
+    fees: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 class ClosePositionRequest(BaseModel):
-    quantity: float = Field(..., gt=0)
-    price: float = Field(..., ge=0, le=1)
-    fees: float = Field(default=0.0, ge=0)
+    quantity: Decimal = Field(..., gt=0)
+    price: Decimal = Field(..., ge=0, le=1)
+    fees: Decimal = Field(default=Decimal("0"), ge=0)
 
 
 # -- Response schemas --
 
 class TradeOut(BaseModel):
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "json_encoders": {Decimal: float}}
 
     id: uuid.UUID
     action: str
@@ -58,7 +59,7 @@ class TradeOut(BaseModel):
 
 
 class PositionOut(BaseModel):
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "json_encoders": {Decimal: float}}
 
     id: uuid.UUID
     created_at: datetime
