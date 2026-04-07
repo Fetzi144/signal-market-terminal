@@ -1,18 +1,20 @@
 # Signal Market Terminal
 
-A prediction-market intelligence platform that ingests market data from Polymarket, detects unusual market behavior, ranks signals, and evaluates signal quality over time. Think "Bloomberg terminal lite for prediction markets."
+A prediction-market intelligence platform that ingests market data from **Polymarket** and **Kalshi**, detects unusual market behavior, ranks signals, and evaluates signal quality over time. Think "Bloomberg terminal lite for prediction markets."
 
 This is **not** an auto-trading bot. It is a monitoring, research, and decision-support tool for serious operators.
 
 ## Architecture
 
 ```
-                    +-----------+
-                    | Polymarket|
-                    |  Gamma +  |
-                    |  CLOB API |
-                    +-----+-----+
-                          |
+              +-----------+     +-----------+
+              | Polymarket|     |   Kalshi  |
+              |  Gamma +  |     |  REST API |
+              |  CLOB API |     |  (public) |
+              +-----+-----+     +-----+-----+
+                    |                 |
+                    +--------+--------+
+                             |
               +-----------v-----------+
               |       Backend         |
               |  (FastAPI + APScheduler)|
@@ -20,7 +22,7 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
               |  Ingestion  -> DB     |
               |  Detection  -> Signals|
               |  Evaluation -> Evals  |
-              |  Alerting   -> Logs   |
+              |  Alerting   -> Multi  |
               |  Cleanup    -> Retain |
               |  API        -> REST   |
               +-----------+-----------+
@@ -35,7 +37,7 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
                           |
               +-----------v-----------+
               |   React Frontend      |
-              |  Signal Feed, Detail, |
+              |  Signal Feed, Charts, |
               |  Market Detail, Health|
               +-----------------------+
 ```
@@ -43,12 +45,18 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
 ## Quick Start
 
 ```bash
-# Clone and start
+# Clone and start (development)
 cd "Signal Market Terminal"
 docker-compose up --build
 
 # Wait ~2 minutes for market discovery + first snapshots
 # Open http://localhost:5173
+```
+
+For production:
+```bash
+docker-compose -f docker-compose.prod.yml up --build -d
+# Open http://localhost
 ```
 
 For local development without Docker:
@@ -101,14 +109,35 @@ Signals are evaluated at 4 horizons: **15m, 1h, 4h, 24h**. The evaluator checks 
 |--------|------|-------------|
 | GET | `/api/v1/signals` | Paginated signal feed, filterable by `signal_type` and `market_id` |
 | GET | `/api/v1/signals/{id}` | Signal detail with evaluations |
+| GET | `/api/v1/signals/export/csv` | Export signals as CSV |
 | GET | `/api/v1/markets` | Active markets list |
 | GET | `/api/v1/markets/{id}` | Market detail with outcomes and latest prices |
 | GET | `/api/v1/markets/{id}/snapshots` | Recent price snapshots for a market |
+| GET | `/api/v1/markets/{id}/chart-data` | Price time series for charting (1h/6h/24h/7d ranges) |
+| GET | `/api/v1/markets/export/csv` | Export markets as CSV |
+| GET | `/api/v1/alerts/recent` | Recent alerted signals |
 | GET | `/api/v1/health` | System health: market count, signal count, ingestion status, alert count |
+
+## Alerting
+
+Signals with `rank_score >= 0.7` (configurable via `ALERT_RANK_THRESHOLD`) trigger alerts through multiple channels:
+
+| Channel | Config | Description |
+|---------|--------|-------------|
+| **Logger** | Always on | Structured `ALERT` log lines |
+| **Webhook** | `ALERT_WEBHOOK_URL` | POST JSON payload to any URL |
+| **Telegram** | `ALERT_TELEGRAM_BOT_TOKEN` + `ALERT_TELEGRAM_CHAT_ID` | Telegram Bot API messages |
+
+Each signal is alerted only once (no re-fires on subsequent detection cycles).
 
 ## Configuration
 
 All settings are environment variables. See `backend/.env.example` for the full list with defaults.
+
+Key API hardening settings:
+- `API_RATE_LIMIT`: Request rate limit (default: `60/minute`)
+- `API_KEY`: Optional API key for authenticated access (set to enable)
+- `CORS_ORIGINS`: Comma-separated allowed origins
 
 ## Scheduled Jobs
 
@@ -120,22 +149,28 @@ All settings are environment variables. See `backend/.env.example` for the full 
 | Evaluation | 5 min | Evaluate unresolved signals at 15m/1h/4h/24h |
 | Cleanup | 6 hours | Delete old snapshots (30d), orderbooks (14d), signals (90d) |
 
-## Alerting
-
-Signals with `rank_score >= 0.7` (configurable via `ALERT_RANK_THRESHOLD`) produce structured `ALERT` log lines. The alerting interface (`BaseAlerter`) is designed for future webhook/Telegram/email implementations.
-
 ## Tech Stack
 
 - Python 3.12 + FastAPI + SQLAlchemy 2.x + APScheduler
 - PostgreSQL 16
-- React 18 + Vite + React Router
-- Docker Compose
+- React 18 + Vite + React Router + Recharts
+- Docker Compose (dev + prod configs)
+- GitHub Actions CI (lint + test + build)
+
+## Testing
+
+```bash
+cd backend
+pip install -r requirements.txt
+python -m pytest tests/ -v
+```
+
+40 tests covering all 5 detectors, ranking, evaluation, API endpoints, and end-to-end integration.
 
 ## Roadmap
 
-- [ ] Kalshi connector
+- [x] Kalshi connector (second market source)
 - [ ] WebSocket real-time signal push
-- [ ] Webhook/Telegram/email alerts
 - [ ] Signal backtesting framework
 - [ ] Performance dashboards and signal accuracy tracking
-- [ ] Production deployment (fly.io / Railway)
+- [ ] Prometheus metrics endpoint

@@ -2,11 +2,15 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
+from app.api import alerts, health, markets, signals
 from app.config import settings
-from app.api import signals, markets, health
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
@@ -14,6 +18,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+limiter = Limiter(key_func=get_remote_address, default_limits=[settings.api_rate_limit])
 
 
 @asynccontextmanager
@@ -31,9 +37,35 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
+
+
+# Optional API key auth middleware
+if settings.api_key:
+    @app.middleware("http")
+    async def _api_key_middleware(request: Request, call_next):
+        # Skip auth for health check and root
+        if request.url.path in ("/", "/api/v1/health"):
+            return await call_next(request)
+        key = request.headers.get("x-api-key")
+        if key != settings.api_key:
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
+        return await call_next(request)
+
+
+# Configurable CORS
+cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -42,6 +74,7 @@ app.add_middleware(
 app.include_router(signals.router)
 app.include_router(markets.router)
 app.include_router(health.router)
+app.include_router(alerts.router)
 
 
 @app.get("/")

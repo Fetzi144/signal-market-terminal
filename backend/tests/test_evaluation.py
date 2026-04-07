@@ -1,13 +1,12 @@
 """Tests for signal evaluation."""
-import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import select
 
 from app.evaluation.evaluator import evaluate_signals
 from app.models.signal import SignalEvaluation
-from sqlalchemy import select
 from tests.conftest import make_market, make_outcome, make_price_snapshot, make_signal
 
 

@@ -4,14 +4,14 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
 from app.models.ingestion import IngestionRun
-from app.models.signal import Signal
 from app.models.market import Market
+from app.models.signal import Signal
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
 

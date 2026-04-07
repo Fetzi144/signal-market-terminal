@@ -2,9 +2,6 @@
 import uuid
 
 import pytest
-import pytest_asyncio
-
-from tests.conftest import make_market, make_outcome, make_signal
 
 
 @pytest.mark.asyncio

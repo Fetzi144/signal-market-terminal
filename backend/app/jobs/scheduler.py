@@ -36,12 +36,12 @@ async def _run_snapshot_capture():
 
 
 async def _run_signal_detection():
-    from app.signals.price_move import PriceMoveDetector
-    from app.signals.volume_spike import VolumeSpikeDetector
-    from app.signals.spread_change import SpreadChangeDetector
-    from app.signals.liquidity_vacuum import LiquidityVacuumDetector
-    from app.signals.deadline_near import DeadlineNearDetector
     from app.ranking.scorer import persist_signals
+    from app.signals.deadline_near import DeadlineNearDetector
+    from app.signals.liquidity_vacuum import LiquidityVacuumDetector
+    from app.signals.price_move import PriceMoveDetector
+    from app.signals.spread_change import SpreadChangeDetector
+    from app.signals.volume_spike import VolumeSpikeDetector
 
     logger.info("Job: signal_detection starting")
     async with async_session() as session:
@@ -72,29 +72,61 @@ async def _run_signal_detection():
 
 
 async def _alert_high_rank_signals(session):
-    """Send alerts for signals above the rank threshold."""
+    """Send alerts for new signals above the rank threshold (only once per signal)."""
     from decimal import Decimal
+
     from sqlalchemy import select
-    from app.models.signal import Signal
+
     from app.models.market import Market
-    from app.alerts.logger_alert import LoggerAlerter
+    from app.models.signal import Signal
 
     threshold = Decimal(str(settings.alert_rank_threshold))
-    alerter = LoggerAlerter()
+    alerters = _build_alerters()
 
-    # Get recent unresolved signals above threshold
+    if not alerters:
+        return
+
+    # Only alert signals that haven't been alerted yet
     result = await session.execute(
         select(Signal, Market.question)
         .join(Market, Signal.market_id == Market.id)
-        .where(Signal.resolved.is_(False), Signal.rank_score >= threshold)
+        .where(
+            Signal.resolved.is_(False),
+            Signal.alerted.is_(False),
+            Signal.rank_score >= threshold,
+        )
         .order_by(Signal.fired_at.desc())
         .limit(20)
     )
-    for signal, question in result.all():
-        try:
-            await alerter.send(signal, question)
-        except Exception:
-            logger.warning("Failed to send alert for signal %s", signal.id, exc_info=True)
+    rows = result.all()
+    for signal, question in rows:
+        for alerter in alerters:
+            try:
+                await alerter.send(signal, question)
+            except Exception:
+                logger.warning("Failed to send alert via %s for signal %s",
+                               type(alerter).__name__, signal.id, exc_info=True)
+        signal.alerted = True
+
+    if rows:
+        await session.commit()
+        logger.info("Alerted %d signals", len(rows))
+
+
+def _build_alerters():
+    """Build list of active alerters based on config."""
+    from app.alerts.logger_alert import LoggerAlerter
+    alerters = [LoggerAlerter()]
+
+    if settings.alert_webhook_url:
+        from app.alerts.webhook_alert import WebhookAlerter
+        alerters.append(WebhookAlerter())
+
+    if settings.alert_telegram_bot_token and settings.alert_telegram_chat_id:
+        from app.alerts.telegram_alert import TelegramAlerter
+        alerters.append(TelegramAlerter())
+
+    return alerters
 
 
 async def _run_evaluation():

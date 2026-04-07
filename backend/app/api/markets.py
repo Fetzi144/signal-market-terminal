@@ -1,11 +1,14 @@
 """Market listing and detail endpoints."""
+import csv
+import io
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -51,6 +54,7 @@ class SnapshotOut(BaseModel):
 @router.get("", response_model=MarketListOut)
 async def list_markets(
     active: bool | None = True,
+    platform: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -61,6 +65,10 @@ async def list_markets(
     if active is not None:
         query = query.where(Market.active == active)
         count_query = count_query.where(Market.active == active)
+
+    if platform:
+        query = query.where(Market.platform == platform)
+        count_query = count_query.where(Market.platform == platform)
 
     total = (await db.execute(count_query)).scalar() or 0
 
@@ -163,3 +171,80 @@ async def get_market_snapshots(
         )
         for s in result.scalars().all()
     ]
+
+
+RANGE_HOURS = {"1h": 1, "6h": 6, "24h": 24, "7d": 168}
+
+
+@router.get("/{market_id}/chart-data")
+async def get_chart_data(
+    market_id: uuid.UUID,
+    range: str = Query("24h", pattern="^(1h|6h|24h|7d)$"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return price time series for each outcome, suitable for charting."""
+    hours = RANGE_HOURS.get(range, 24)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    # Get outcomes for this market
+    outcome_result = await db.execute(
+        select(Outcome).where(Outcome.market_id == market_id)
+    )
+    outcomes = outcome_result.scalars().all()
+
+    if not outcomes:
+        raise HTTPException(404, "Market not found or has no outcomes")
+
+    series = {}
+    for outcome in outcomes:
+        result = await db.execute(
+            select(PriceSnapshot)
+            .where(
+                PriceSnapshot.outcome_id == outcome.id,
+                PriceSnapshot.captured_at >= cutoff,
+            )
+            .order_by(PriceSnapshot.captured_at.asc())
+        )
+        snaps = result.scalars().all()
+        series[outcome.name] = [
+            {
+                "time": s.captured_at.isoformat(),
+                "price": float(s.price),
+                "volume_24h": float(s.volume_24h) if s.volume_24h else None,
+            }
+            for s in snaps
+        ]
+
+    return {"market_id": str(market_id), "range": range, "series": series}
+
+
+@router.get("/export/csv")
+async def export_markets_csv(
+    active: bool | None = True,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export markets as CSV."""
+    query = select(Market)
+    if active is not None:
+        query = query.where(Market.active == active)
+    query = query.order_by(Market.updated_at.desc())
+
+    result = await db.execute(query)
+    markets = result.scalars().all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "platform", "question", "category", "end_date", "active", "volume_24h", "liquidity"])
+    for m in markets:
+        writer.writerow([
+            str(m.id), m.platform, m.question, m.category,
+            m.end_date.isoformat() if m.end_date else "",
+            m.active, str(m.last_volume_24h or ""), str(m.last_liquidity or ""),
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=markets.csv"},
+    )

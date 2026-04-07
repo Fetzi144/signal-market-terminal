@@ -6,8 +6,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.snapshot import PriceSnapshot, OrderbookSnapshot
 from app.models.signal import Signal, SignalEvaluation
+from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 
 logger = logging.getLogger(__name__)
 

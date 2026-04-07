@@ -1,4 +1,4 @@
-"""Market discovery: fetch active markets from Polymarket and upsert into DB."""
+"""Market discovery: fetch active markets from all enabled platforms and upsert into DB."""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -7,65 +7,104 @@ from dateutil.parser import isoparse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.base import RawMarket
-from app.connectors.polymarket import PolymarketConnector
 from app.config import settings
-from app.models.market import Market, Outcome
+from app.connectors import get_connector, get_enabled_platforms
+from app.connectors.base import BaseConnector, RawMarket
 from app.models.ingestion import IngestionRun
+from app.models.market import Market, Outcome
 
 logger = logging.getLogger(__name__)
 
 
 async def discover_markets(session: AsyncSession) -> int:
-    """Fetch and upsert active markets. Returns count of markets processed."""
+    """Fetch and upsert active markets from all enabled platforms."""
+    total = 0
+    for platform in get_enabled_platforms():
+        try:
+            count = await _discover_platform(session, platform)
+            total += count
+        except Exception:
+            logger.error("Market discovery failed for %s", platform, exc_info=True)
+    return total
+
+
+async def _discover_platform(session: AsyncSession, platform: str) -> int:
+    """Fetch and upsert markets for a single platform. Returns count processed."""
     run = IngestionRun(
         id=uuid.uuid4(),
         run_type="market_discovery",
-        platform="polymarket",
+        platform=platform,
         started_at=datetime.now(timezone.utc),
         status="running",
     )
     session.add(run)
     await session.flush()
 
-    connector = PolymarketConnector()
+    connector = get_connector(platform)
     total = 0
 
     try:
-        offset = 0
-        page_size = 100
-        while True:
-            raw_markets = await connector.fetch_markets(limit=page_size, offset=offset)
-            if not raw_markets:
-                break
-
-            for rm in raw_markets:
-                # Filter out low-volume markets
-                if rm.volume_24h is not None and rm.volume_24h < settings.min_volume_24h:
-                    continue
-                await _upsert_market(session, rm)
-                total += 1
-
-            offset += page_size
-            # Safety cap: don't paginate forever
-            if offset >= 1000:
-                break
+        if platform == "kalshi":
+            total = await _paginate_kalshi(connector, session)
+        else:
+            total = await _paginate_offset(connector, session)
 
         run.status = "success"
         run.markets_processed = total
         run.finished_at = datetime.now(timezone.utc)
-        logger.info("Market discovery complete: %d markets", total)
+        logger.info("Market discovery complete for %s: %d markets", platform, total)
 
     except Exception as e:
         run.status = "failed"
         run.error = str(e)[:2000]
         run.finished_at = datetime.now(timezone.utc)
-        logger.error("Market discovery failed", exc_info=True)
+        logger.error("Market discovery failed for %s", platform, exc_info=True)
         raise
     finally:
         await connector.close()
         await session.commit()
 
+    return total
+
+
+async def _paginate_offset(connector: BaseConnector, session: AsyncSession) -> int:
+    """Offset-based pagination (Polymarket)."""
+    total = 0
+    offset = 0
+    page_size = 100
+    while True:
+        raw_markets = await connector.fetch_markets(limit=page_size, offset=offset)
+        if not raw_markets:
+            break
+        for rm in raw_markets:
+            if rm.volume_24h is not None and rm.volume_24h < settings.min_volume_24h:
+                continue
+            await _upsert_market(session, rm)
+            total += 1
+        offset += page_size
+        if offset >= 5000:
+            break
+    return total
+
+
+async def _paginate_kalshi(connector, session: AsyncSession) -> int:
+    """Cursor-based pagination for Kalshi."""
+    total = 0
+    cursor = None
+    pages = 0
+    while True:
+        raw_markets, next_cursor = await connector.fetch_markets_cursor(limit=200, cursor=cursor)
+        if not raw_markets:
+            break
+        for rm in raw_markets:
+            if rm.volume_24h is not None and rm.volume_24h < settings.min_volume_24h:
+                continue
+            await _upsert_market(session, rm)
+            total += 1
+        pages += 1
+        if not next_cursor or pages >= 25:  # safety cap: 25 pages * 200 = 5000
+            break
+        cursor = next_cursor
     return total
 
 
@@ -126,3 +165,6 @@ async def _upsert_market(session: AsyncSession, rm: RawMarket):
                 token_id=ro.token_id,
             )
             session.add(outcome)
+        else:
+            outcome.name = ro.name
+            outcome.token_id = ro.token_id

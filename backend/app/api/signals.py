@@ -1,16 +1,19 @@
 """Signal feed and detail endpoints."""
+import csv
+import io
 import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.models.signal import Signal, SignalEvaluation
 from app.models.market import Market
+from app.models.signal import Signal, SignalEvaluation
 
 router = APIRouter(prefix="/api/v1/signals", tags=["signals"])
 
@@ -36,6 +39,7 @@ class SignalOut(BaseModel):
     price_at_fire: Decimal | None
     resolved: bool
     market_question: str | None = None
+    platform: str | None = None
     evaluations: list[EvaluationOut] = []
 
 
@@ -50,11 +54,12 @@ class SignalListOut(BaseModel):
 async def list_signals(
     signal_type: str | None = None,
     market_id: uuid.UUID | None = None,
+    platform: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(Signal, Market.question).join(Market, Signal.market_id == Market.id)
+    query = select(Signal, Market.question, Market.platform).join(Market, Signal.market_id == Market.id)
     count_query = select(func.count(Signal.id))
 
     if signal_type:
@@ -63,6 +68,9 @@ async def list_signals(
     if market_id:
         query = query.where(Signal.market_id == market_id)
         count_query = count_query.where(Signal.market_id == market_id)
+    if platform:
+        count_query = count_query.join(Market, Signal.market_id == Market.id).where(Market.platform == platform)
+        query = query.where(Market.platform == platform)
 
     total = (await db.execute(count_query)).scalar() or 0
 
@@ -73,7 +81,7 @@ async def list_signals(
     rows = result.all()
 
     signals = []
-    for signal, question in rows:
+    for signal, question, mkt_platform in rows:
         signals.append(SignalOut(
             id=signal.id,
             signal_type=signal.signal_type,
@@ -87,6 +95,7 @@ async def list_signals(
             price_at_fire=signal.price_at_fire,
             resolved=signal.resolved,
             market_question=question,
+            platform=mkt_platform,
         ))
 
     return SignalListOut(signals=signals, total=total, page=page, page_size=page_size)
@@ -95,7 +104,7 @@ async def list_signals(
 @router.get("/{signal_id}", response_model=SignalOut)
 async def get_signal(signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(Signal, Market.question)
+        select(Signal, Market.question, Market.platform)
         .join(Market, Signal.market_id == Market.id)
         .where(Signal.id == signal_id)
     )
@@ -103,7 +112,7 @@ async def get_signal(signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     if row is None:
         raise HTTPException(404, "Signal not found")
 
-    signal, question = row
+    signal, question, mkt_platform = row
 
     # Fetch evaluations
     eval_result = await db.execute(
@@ -133,5 +142,49 @@ async def get_signal(signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         price_at_fire=signal.price_at_fire,
         resolved=signal.resolved,
         market_question=question,
+        platform=mkt_platform,
         evaluations=evals,
+    )
+
+
+@router.get("/export/csv")
+async def export_signals_csv(
+    signal_type: str | None = None,
+    market_id: uuid.UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export signals as CSV."""
+    query = select(Signal, Market.question).join(Market, Signal.market_id == Market.id)
+
+    if signal_type:
+        query = query.where(Signal.signal_type == signal_type)
+    if market_id:
+        query = query.where(Signal.market_id == market_id)
+
+    query = query.order_by(Signal.rank_score.desc(), Signal.fired_at.desc()).limit(5000)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "id", "signal_type", "market_question", "rank_score",
+        "signal_score", "confidence", "price_at_fire", "fired_at", "resolved",
+    ])
+    for signal, question in rows:
+        writer.writerow([
+            str(signal.id), signal.signal_type, question,
+            float(signal.rank_score), float(signal.signal_score),
+            float(signal.confidence),
+            float(signal.price_at_fire) if signal.price_at_fire else "",
+            signal.fired_at.isoformat() if signal.fired_at else "",
+            signal.resolved,
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=signals.csv"},
     )

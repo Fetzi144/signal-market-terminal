@@ -1,9 +1,10 @@
 """Volume Spike detector: fires when current volume far exceeds the rolling baseline."""
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -90,7 +91,6 @@ class VolumeSpikeDetector(BaseDetector):
             outcome, market = row
 
             # Score: log-scaled multiplier, capped at 1.0
-            import math
             raw_score = Decimal(str(math.log(float(multiplier), 10))) / Decimal("1.5")
             signal_score = min(Decimal("1.0"), max(Decimal("0.1"), raw_score))
 

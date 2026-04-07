@@ -9,6 +9,13 @@ class Settings(BaseSettings):
     polymarket_api_base: str = "https://clob.polymarket.com"
     polymarket_gamma_base: str = "https://gamma-api.polymarket.com"
 
+    # Kalshi
+    kalshi_api_base: str = "https://api.elections.kalshi.com/trade-api/v2"
+    kalshi_enabled: bool = True
+
+    # Connector
+    connector_timeout_seconds: float = 30.0
+
     # Ingestion
     snapshot_interval_seconds: int = 120
     market_discovery_interval_seconds: int = 300
@@ -39,11 +46,20 @@ class Settings(BaseSettings):
 
     # Alerts
     alert_rank_threshold: float = 0.7
+    alert_webhook_url: str | None = None
+    alert_telegram_bot_token: str | None = None
+    alert_telegram_chat_id: str | None = None
+    alert_signal_types: str | None = None  # Comma-separated, None = all types
 
     # Retention
     retention_price_snapshots_days: int = 30
     retention_orderbook_snapshots_days: int = 14
     retention_signals_days: int = 90
+
+    # API
+    api_rate_limit: str = "60/minute"
+    api_key: str | None = None  # Set to require X-API-Key header
+    cors_origins: str = "http://localhost:5173"  # Comma-separated origins
 
     # App
     log_level: str = "INFO"

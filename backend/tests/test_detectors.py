@@ -1,10 +1,8 @@
 """Tests for signal detectors."""
-import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-import pytest_asyncio
 
 from app.signals.price_move import PriceMoveDetector
 from tests.conftest import make_market, make_outcome, make_price_snapshot

@@ -1,15 +1,40 @@
 """Test fixtures: async SQLite engine + session + FastAPI test client."""
 import asyncio
+import sqlite3
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession
+from sqlalchemy import JSON
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db import Base, get_db
 from app.models import *  # noqa: F401,F403
+
+# Register UUID adapter for sqlite3 so it stores as text
+sqlite3.register_adapter(uuid.UUID, lambda u: str(u))
+
+
+_patched = False
+
+
+def _patch_metadata_for_sqlite():
+    """Patch PostgreSQL-specific types to SQLite-compatible equivalents (once)."""
+    global _patched
+    if _patched:
+        return
+    _patched = True
+    from sqlalchemy import Uuid
+    for table in Base.metadata.tables.values():
+        for col in table.columns:
+            if isinstance(col.type, JSONB):
+                col.type = JSON()
+            elif isinstance(col.type, PG_UUID):
+                col.type = Uuid(native_uuid=False)
 
 
 @pytest.fixture(scope="session")
@@ -21,7 +46,9 @@ def event_loop():
 
 @pytest_asyncio.fixture
 async def engine():
+    _patch_metadata_for_sqlite()
     eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield eng
@@ -38,6 +65,7 @@ async def session(engine):
 @pytest_asyncio.fixture
 async def client(engine):
     from httpx import ASGITransport, AsyncClient
+
     from app.main import app
 
     async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -92,6 +120,24 @@ def make_price_snapshot(session, outcome_id, price, captured_at=None, **kwargs):
     s = PriceSnapshot(
         outcome_id=outcome_id,
         price=Decimal(str(price)),
+        captured_at=captured_at,
+        **kwargs,
+    )
+    session.add(s)
+    return s
+
+
+def make_orderbook_snapshot(session, outcome_id, spread, depth_bid=None, depth_ask=None, captured_at=None, **kwargs):
+    from app.models.snapshot import OrderbookSnapshot
+    if captured_at is None:
+        captured_at = datetime.now(timezone.utc)
+    s = OrderbookSnapshot(
+        outcome_id=outcome_id,
+        bids=kwargs.pop("bids", []),
+        asks=kwargs.pop("asks", []),
+        spread=Decimal(str(spread)) if spread is not None else None,
+        depth_bid_10pct=Decimal(str(depth_bid)) if depth_bid is not None else None,
+        depth_ask_10pct=Decimal(str(depth_ask)) if depth_ask is not None else None,
         captured_at=captured_at,
         **kwargs,
     )

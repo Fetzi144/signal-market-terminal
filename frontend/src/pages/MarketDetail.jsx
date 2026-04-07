@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getMarket, getMarketSnapshots, getSignals } from "../api";
+import PriceChart from "../components/PriceChart";
 
 export default function MarketDetail() {
   const { id } = useParams();
@@ -44,10 +45,14 @@ export default function MarketDetail() {
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <span
             style={{
-              fontSize: 11,
-              fontWeight: 600,
+              fontSize: 10,
+              fontWeight: 700,
               textTransform: "uppercase",
-              color: "var(--accent)",
+              letterSpacing: 0.5,
+              color: "#fff",
+              background: market.platform === "kalshi" ? "#f59e0b" : "#6366f1",
+              padding: "2px 8px",
+              borderRadius: 4,
             }}
           >
             {market.platform}
@@ -101,6 +106,8 @@ export default function MarketDetail() {
             </div>
           </div>
         )}
+
+        <PriceChart marketId={id} />
 
         {snapshots.length > 0 && (
           <div style={{ marginBottom: 20 }}>

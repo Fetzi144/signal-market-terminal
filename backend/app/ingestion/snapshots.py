@@ -1,5 +1,6 @@
-"""Snapshot capture: fetch prices and orderbooks, persist as append-only rows."""
+"""Snapshot capture: fetch prices and orderbooks from all platforms, persist as append-only rows."""
 import logging
+import random
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -7,41 +8,53 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.connectors.polymarket import PolymarketConnector
-from app.models.market import Market, Outcome
-from app.models.snapshot import PriceSnapshot, OrderbookSnapshot
+from app.connectors import get_connector, get_enabled_platforms
 from app.models.ingestion import IngestionRun
+from app.models.market import Market, Outcome
+from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 
 logger = logging.getLogger(__name__)
 
 
 async def capture_snapshots(session: AsyncSession) -> int:
-    """Fetch current prices + orderbooks for all active outcomes. Returns count."""
+    """Fetch current prices + orderbooks for all active outcomes across platforms."""
+    total = 0
+    for platform in get_enabled_platforms():
+        try:
+            count = await _capture_platform(session, platform)
+            total += count
+        except Exception:
+            logger.error("Snapshot capture failed for %s", platform, exc_info=True)
+    return total
+
+
+async def _capture_platform(session: AsyncSession, platform: str) -> int:
+    """Capture snapshots for a single platform. Returns price snapshot count."""
     run = IngestionRun(
         id=uuid.uuid4(),
         run_type="snapshot",
-        platform="polymarket",
+        platform=platform,
         started_at=datetime.now(timezone.utc),
         status="running",
     )
     session.add(run)
     await session.flush()
 
-    connector = PolymarketConnector()
+    connector = get_connector(platform)
     total = 0
 
     try:
-        # Get all active outcomes with token IDs and parent market data
+        # Get all active outcomes with token IDs for this platform
         result = await session.execute(
             select(Outcome, Market)
             .join(Market, Outcome.market_id == Market.id)
-            .where(Market.active.is_(True), Market.platform == "polymarket")
+            .where(Market.active.is_(True), Market.platform == platform)
             .where(Outcome.token_id.isnot(None))
         )
         rows = result.all()
 
         if not rows:
-            logger.info("No active outcomes to snapshot")
+            logger.info("No active %s outcomes to snapshot", platform)
             run.status = "success"
             run.finished_at = datetime.now(timezone.utc)
             await session.commit()
@@ -77,9 +90,8 @@ async def capture_snapshots(session: AsyncSession) -> int:
             session.add(snap)
             total += 1
 
-        # Fetch orderbooks (rate-limited, do top markets only)
-        # For V1: sample up to 50 token_ids for orderbook depth
-        ob_sample = token_ids[:50]
+        # Fetch orderbooks (rate-limited, sample random subset)
+        ob_sample = random.sample(token_ids, min(50, len(token_ids)))
         for tid in ob_sample:
             try:
                 ob = await connector.fetch_orderbook(tid)
@@ -103,13 +115,13 @@ async def capture_snapshots(session: AsyncSession) -> int:
         run.status = "success"
         run.markets_processed = total
         run.finished_at = datetime.now(timezone.utc)
-        logger.info("Snapshot capture complete: %d price snapshots", total)
+        logger.info("Snapshot capture complete for %s: %d price snapshots", platform, total)
 
     except Exception as e:
         run.status = "failed"
         run.error = str(e)[:2000]
         run.finished_at = datetime.now(timezone.utc)
-        logger.error("Snapshot capture failed", exc_info=True)
+        logger.error("Snapshot capture failed for %s", platform, exc_info=True)
         raise
     finally:
         await connector.close()

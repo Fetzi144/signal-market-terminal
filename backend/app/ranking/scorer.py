@@ -1,7 +1,7 @@
 """Compute rank_score for signal candidates and persist them with dedupe."""
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from decimal import Decimal, InvalidOperation
 
@@ -8,8 +9,12 @@ from app.connectors.base import BaseConnector, RawMarket, RawOrderbook, RawOutco
 
 logger = logging.getLogger(__name__)
 
-# Max token IDs per batch request
-BATCH_SIZE = 200
+# Max token IDs per batch request (kept small — Polymarket token IDs are ~76 chars each)
+BATCH_SIZE = 50
+
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_BACKOFF = [1.0, 2.0, 4.0]  # seconds
 
 
 class PolymarketConnector(BaseConnector):
@@ -20,66 +25,116 @@ class PolymarketConnector(BaseConnector):
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=30.0)
+            self._client = httpx.AsyncClient(
+                timeout=settings.connector_timeout_seconds,
+            )
         return self._client
 
     async def close(self):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def fetch_markets(self, limit: int = 100, offset: int = 0) -> list[RawMarket]:
-        """Fetch active events from Gamma API, flatten to markets."""
+    async def _request_with_retry(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """Make an HTTP request with exponential backoff retry on transient failures."""
         client = await self._get_client()
-        resp = await client.get(
-            f"{self.gamma_base}/events",
+        last_exc = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = await getattr(client, method)(url, **kwargs)
+
+                # Rate limited — back off and retry
+                if resp.status_code == 429:
+                    retry_after = float(resp.headers.get("retry-after", RETRY_BACKOFF[attempt]))
+                    logger.warning(
+                        "Rate limited (429) on %s, backing off %.1fs (attempt %d/%d)",
+                        url, retry_after, attempt + 1, MAX_RETRIES,
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
+
+                # Server errors — retry
+                if resp.status_code >= 500:
+                    logger.warning(
+                        "Server error %d on %s (attempt %d/%d)",
+                        resp.status_code, url, attempt + 1, MAX_RETRIES,
+                    )
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(RETRY_BACKOFF[attempt])
+                        continue
+
+                resp.raise_for_status()
+                return resp
+
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as e:
+                last_exc = e
+                if attempt < MAX_RETRIES - 1:
+                    logger.warning(
+                        "Connection error on %s: %s (attempt %d/%d, retrying in %.1fs)",
+                        url, type(e).__name__, attempt + 1, MAX_RETRIES, RETRY_BACKOFF[attempt],
+                    )
+                    await asyncio.sleep(RETRY_BACKOFF[attempt])
+                else:
+                    logger.error("All %d retries exhausted for %s: %s", MAX_RETRIES, url, e)
+
+        if last_exc:
+            raise last_exc
+        raise httpx.HTTPError(f"Failed after {MAX_RETRIES} retries: {url}")
+
+    async def fetch_markets(self, limit: int = 100, offset: int = 0) -> list[RawMarket]:
+        """Fetch active markets from Gamma API."""
+        resp = await self._request_with_retry(
+            "get",
+            f"{self.gamma_base}/markets",
             params={
                 "active": "true",
                 "closed": "false",
-                "order": "volume_24hr",
-                "ascending": "false",
                 "limit": limit,
                 "offset": offset,
             },
         )
-        resp.raise_for_status()
-        events = resp.json()
+        markets_data = resp.json()
 
         raw_markets: list[RawMarket] = []
-        for event in events:
-            for mkt in event.get("markets", []):
-                try:
-                    raw_markets.append(self._parse_market(mkt))
-                except Exception:
-                    logger.warning("Failed to parse market %s", mkt.get("id"), exc_info=True)
+        for mkt in markets_data:
+            try:
+                raw_markets.append(self._parse_market(mkt))
+            except Exception:
+                logger.warning("Failed to parse market %s", mkt.get("id"), exc_info=True)
         return raw_markets
 
     async def fetch_midpoints(self, token_ids: list[str]) -> dict[str, Decimal]:
         """Batch fetch midpoints from CLOB API."""
-        client = await self._get_client()
         results: dict[str, Decimal] = {}
 
         for i in range(0, len(token_ids), BATCH_SIZE):
             batch = token_ids[i : i + BATCH_SIZE]
             ids_param = ",".join(batch)
-            resp = await client.get(f"{self.clob_base}/midpoints", params={"token_ids": ids_param})
-            resp.raise_for_status()
-            data = resp.json()
-            for tid, mid in data.items():
-                try:
-                    results[tid] = Decimal(str(mid))
-                except (InvalidOperation, TypeError):
-                    logger.warning("Invalid midpoint for token %s: %s", tid, mid)
+            try:
+                resp = await self._request_with_retry(
+                    "get", f"{self.clob_base}/midpoints", params={"token_ids": ids_param},
+                )
+                data = resp.json()
+                for tid, mid in data.items():
+                    try:
+                        results[tid] = Decimal(str(mid))
+                    except (InvalidOperation, TypeError):
+                        logger.warning("Invalid midpoint for token %s: %s", tid, mid)
+            except (httpx.HTTPError, httpx.HTTPStatusError) as e:
+                logger.warning("Failed to fetch midpoints batch %d: %s", i // BATCH_SIZE, e)
         return results
 
     async def fetch_orderbook(self, token_id: str) -> RawOrderbook:
         """Fetch L2 order book for a single token."""
-        client = await self._get_client()
-        resp = await client.get(f"{self.clob_base}/book", params={"token_id": token_id})
-        resp.raise_for_status()
+        resp = await self._request_with_retry(
+            "get", f"{self.clob_base}/book", params={"token_id": token_id},
+        )
         data = resp.json()
 
-        bids = [[b["price"], b["size"]] for b in data.get("bids", [])]
-        asks = [[a["price"], a["size"]] for a in data.get("asks", [])]
+        raw_bids = data.get("bids") or []
+        raw_asks = data.get("asks") or []
+        bids = [[b["price"], b["size"]] for b in raw_bids]
+        asks = [[a["price"], a["size"]] for a in raw_asks]
 
         best_bid = Decimal(bids[0][0]) if bids else None
         best_ask = Decimal(asks[0][0]) if asks else None
@@ -88,9 +143,20 @@ class PolymarketConnector(BaseConnector):
         return RawOrderbook(token_id=token_id, bids=bids, asks=asks, spread=spread)
 
     def _parse_market(self, mkt: dict) -> RawMarket:
-        outcomes_names = mkt.get("outcomes", [])
-        outcome_prices = mkt.get("outcomePrices", [])
-        clob_token_ids = mkt.get("clobTokenIds", [])
+        import json as _json
+
+        def _parse_json_list(val):
+            """Gamma API returns some fields as JSON-encoded strings."""
+            if isinstance(val, str):
+                try:
+                    return _json.loads(val)
+                except (ValueError, TypeError):
+                    return []
+            return val if isinstance(val, list) else []
+
+        outcomes_names = _parse_json_list(mkt.get("outcomes", []))
+        outcome_prices = _parse_json_list(mkt.get("outcomePrices", []))
+        clob_token_ids = _parse_json_list(mkt.get("clobTokenIds", []))
 
         raw_outcomes: list[RawOutcome] = []
         for idx, name in enumerate(outcomes_names):
@@ -113,7 +179,7 @@ class PolymarketConnector(BaseConnector):
             )
 
         vol_24h = None
-        for key in ("volume24hr", "volume24hrClob"):
+        for key in ("volume", "volumeClob", "volume24hr", "volume24hrClob"):
             val = mkt.get(key)
             if val is not None:
                 try:

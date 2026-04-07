@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { getSignals } from "../api";
+import { getSignals, exportSignalsCsv } from "../api";
+import SignalEvaluationBar from "../components/SignalEvaluationBar";
 
 const TYPE_OPTIONS = [
   { value: "", label: "All Types" },
@@ -9,6 +10,12 @@ const TYPE_OPTIONS = [
   { value: "spread_change", label: "Spread Change" },
   { value: "liquidity_vacuum", label: "Liquidity Vacuum" },
   { value: "deadline_near", label: "Deadline Near" },
+];
+
+const PLATFORM_OPTIONS = [
+  { value: "", label: "All Platforms" },
+  { value: "polymarket", label: "Polymarket" },
+  { value: "kalshi", label: "Kalshi" },
 ];
 
 const TYPE_LABELS = Object.fromEntries(
@@ -34,6 +41,29 @@ function DirectionBadge({ direction }) {
   return (
     <span style={{ color: isUp ? "var(--green)" : "var(--red)", fontWeight: 600, fontSize: 13 }}>
       {isUp ? "\u2191" : "\u2193"}
+    </span>
+  );
+}
+
+const PLATFORM_COLORS = { polymarket: "#6366f1", kalshi: "#f59e0b" };
+
+function PlatformBadge({ platform }) {
+  if (!platform) return null;
+  const color = PLATFORM_COLORS[platform] || "var(--text-dim)";
+  return (
+    <span
+      style={{
+        fontSize: 10,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: 0.5,
+        color: "#fff",
+        background: color,
+        padding: "1px 6px",
+        borderRadius: 4,
+      }}
+    >
+      {platform === "polymarket" ? "PM" : "KA"}
     </span>
   );
 }
@@ -74,6 +104,7 @@ function SignalCard({ signal }) {
       >
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <PlatformBadge platform={s.platform} />
             <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--accent)" }}>
               {typeLabel}
             </span>
@@ -86,10 +117,15 @@ function SignalCard({ signal }) {
           {s.market_question || "Unknown market"}
           {d.outcome_name && <span style={{ color: "var(--text-dim)" }}> &middot; {d.outcome_name}</span>}
         </div>
-        <div style={{ display: "flex", gap: 16 }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
           <ScoreBadge value={parseFloat(s.signal_score)} label="Str" />
           <ScoreBadge value={parseFloat(s.confidence)} label="Conf" />
           <ScoreBadge value={parseFloat(s.rank_score)} label="Rank" />
+          {s.evaluations && s.evaluations.length > 0 && (
+            <div style={{ marginLeft: "auto" }}>
+              <SignalEvaluationBar evaluations={s.evaluations} />
+            </div>
+          )}
         </div>
       </div>
     </Link>
@@ -99,6 +135,7 @@ function SignalCard({ signal }) {
 export default function SignalFeed() {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("");
+  const [platformFilter, setPlatformFilter] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -108,6 +145,7 @@ export default function SignalFeed() {
   const fetchData = useCallback(() => {
     const params = { page, pageSize: PAGE_SIZE };
     if (filter) params.signalType = filter;
+    if (platformFilter) params.platform = platformFilter;
     getSignals(params)
       .then((d) => {
         setData(d);
@@ -115,7 +153,7 @@ export default function SignalFeed() {
         setError(null);
       })
       .catch((e) => setError(e.message));
-  }, [filter, page]);
+  }, [filter, platformFilter, page]);
 
   // Fetch on filter/page change
   useEffect(() => {
@@ -135,7 +173,7 @@ export default function SignalFeed() {
   // Reset page on filter change
   useEffect(() => {
     setPage(1);
-  }, [filter]);
+  }, [filter, platformFilter]);
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
@@ -160,6 +198,39 @@ export default function SignalFeed() {
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>
+
+        <select
+          value={platformFilter}
+          onChange={(e) => setPlatformFilter(e.target.value)}
+          style={{
+            padding: "6px 12px",
+            fontSize: 13,
+            background: "var(--bg-card)",
+            color: "var(--text)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          {PLATFORM_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+
+        <button
+          onClick={() => exportSignalsCsv({ signalType: filter || undefined })}
+          style={{
+            padding: "6px 12px",
+            fontSize: 12,
+            background: "transparent",
+            color: "var(--text-dim)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          Export CSV
+        </button>
 
         <button
           onClick={() => setPaused((p) => !p)}

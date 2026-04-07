@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -88,7 +88,10 @@ class DeadlineNearDetector(BaseDetector):
                     continue
 
                 # Hours until deadline — closer = higher urgency multiplier
-                hours_remaining = (market.end_date - now).total_seconds() / 3600
+                end_dt = market.end_date
+                if end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+                hours_remaining = (end_dt - now).total_seconds() / 3600
                 urgency = Decimal(str(max(0.5, 1.0 - (hours_remaining / settings.deadline_near_hours))))
 
                 signal_score = min(Decimal("1.0"), (change_pct / Decimal("0.2")) * urgency)

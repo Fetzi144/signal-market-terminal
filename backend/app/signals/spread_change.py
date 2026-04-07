@@ -1,9 +1,10 @@
 """Spread Change detector: fires when bid-ask spread widens or narrows significantly vs baseline."""
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -105,7 +106,6 @@ class SpreadChangeDetector(BaseDetector):
             latest_price = price_row.scalar_one_or_none()
 
             # Score: log-scaled ratio, capped at 1.0
-            import math
             raw_score = Decimal(str(math.log(float(ratio), 2))) / Decimal("2.0")
             signal_score = min(Decimal("1.0"), max(Decimal("0.1"), raw_score))
 

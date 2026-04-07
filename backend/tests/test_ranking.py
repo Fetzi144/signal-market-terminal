@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from app.ranking.scorer import compute_rank_score, _dedupe_bucket
+from app.ranking.scorer import _dedupe_bucket, compute_rank_score
 
 
 def test_rank_score_basic():

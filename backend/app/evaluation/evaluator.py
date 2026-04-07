@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.signal import Signal, SignalEvaluation
@@ -38,7 +38,10 @@ async def evaluate_signals(session: AsyncSession) -> int:
         all_horizons_done = True
 
         for horizon_key, horizon_delta in HORIZONS.items():
-            target_time = signal.fired_at + horizon_delta
+            fired_at = signal.fired_at
+            if fired_at.tzinfo is None:
+                fired_at = fired_at.replace(tzinfo=timezone.utc)
+            target_time = fired_at + horizon_delta
 
             # Not yet time for this horizon
             if target_time > now:
@@ -99,16 +102,23 @@ async def _closest_snapshot(
     session: AsyncSession, outcome_id: uuid.UUID, target_time: datetime
 ) -> PriceSnapshot | None:
     """Find the snapshot closest to target_time within tolerance."""
+    lower = target_time - SNAPSHOT_TOLERANCE
+    upper = target_time + SNAPSHOT_TOLERANCE
+
+    # Fetch candidates within tolerance window, pick the one closest to target
     result = await session.execute(
         select(PriceSnapshot)
         .where(
             PriceSnapshot.outcome_id == outcome_id,
-            PriceSnapshot.captured_at >= target_time - SNAPSHOT_TOLERANCE,
-            PriceSnapshot.captured_at <= target_time + SNAPSHOT_TOLERANCE,
+            PriceSnapshot.captured_at >= lower,
+            PriceSnapshot.captured_at <= upper,
         )
-        .order_by(
-            func.abs(func.extract("epoch", PriceSnapshot.captured_at - target_time))
-        )
-        .limit(1)
     )
-    return result.scalar_one_or_none()
+    candidates = result.scalars().all()
+    if not candidates:
+        return None
+
+    # Pick closest by absolute time difference (works across all DB backends)
+    return min(candidates, key=lambda s: abs((s.captured_at - target_time).total_seconds())
+               if s.captured_at.tzinfo is not None or target_time.tzinfo is None
+               else abs((s.captured_at.replace(tzinfo=timezone.utc) - target_time).total_seconds()))
