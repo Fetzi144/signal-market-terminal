@@ -9,7 +9,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.api import alerts, health, markets, signals
+from app.api import alerts, health, markets, signals, sse
 from app.config import settings
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
@@ -75,8 +75,9 @@ app.include_router(signals.router)
 app.include_router(markets.router)
 app.include_router(health.router)
 app.include_router(alerts.router)
+app.include_router(sse.router)
 
 
 @app.get("/")
 async def root():
-    return {"name": "Signal Market Terminal", "version": "0.1.0"}
+    return {"name": "Signal Market Terminal", "version": "0.2.0"}

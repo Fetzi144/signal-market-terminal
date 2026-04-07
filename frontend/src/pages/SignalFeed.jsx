@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { getSignals, exportSignalsCsv } from "../api";
 import SignalEvaluationBar from "../components/SignalEvaluationBar";
+import useSSE from "../hooks/useSSE";
 
 const TYPE_OPTIONS = [
   { value: "", label: "All Types" },
@@ -22,7 +23,7 @@ const TYPE_LABELS = Object.fromEntries(
   TYPE_OPTIONS.filter((o) => o.value).map((o) => [o.value, o.label])
 );
 
-const REFRESH_INTERVAL = 30_000;
+const REFRESH_INTERVAL = 120_000;  // Extended since SSE provides real-time updates
 const PAGE_SIZE = 50;
 
 function ScoreBadge({ value, label }) {
@@ -141,6 +142,18 @@ export default function SignalFeed() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [paused, setPaused] = useState(false);
   const intervalRef = useRef(null);
+  const { connected, addEventListener } = useSSE();
+
+  // Auto-fetch when SSE reports new signals
+  useEffect(() => {
+    const unsub = addEventListener("new_signal", () => {
+      if (page === 1 && !paused) {
+        // Slight delay to let DB commit
+        setTimeout(() => fetchData(), 500);
+      }
+    });
+    return unsub;
+  }, [addEventListener, page, paused]);
 
   const fetchData = useCallback(() => {
     const params = { page, pageSize: PAGE_SIZE };
@@ -247,11 +260,22 @@ export default function SignalFeed() {
           {paused ? "Resume" : "Pause"} auto-refresh
         </button>
 
-        {lastUpdated && (
-          <span style={{ fontSize: 12, color: "var(--text-dim)", marginLeft: "auto" }}>
-            Updated {lastUpdated.toLocaleTimeString()}
-          </span>
-        )}
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          {connected && (
+            <span style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "var(--green)" }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: "50%", background: "var(--green)",
+                display: "inline-block", animation: "pulse 2s infinite",
+              }} />
+              Live
+            </span>
+          )}
+          {lastUpdated && (
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
       </div>
 
       {error && <div style={{ color: "var(--red)", marginBottom: 12 }}>Error: {error}</div>}

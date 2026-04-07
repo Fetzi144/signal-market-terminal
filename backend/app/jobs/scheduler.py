@@ -62,13 +62,32 @@ async def _run_signal_detection():
                 created = await persist_signals(session, all_candidates)
                 logger.info("Job: signal_detection done, %d new signals", created)
 
-                # Alert on high-ranking new signals
+                # Broadcast new signals via SSE
                 if created > 0:
+                    await _broadcast_new_signals(session, all_candidates[:created])
                     await _alert_high_rank_signals(session)
             else:
                 logger.info("Job: signal_detection done, no candidates")
         except Exception:
             logger.error("Job: signal_detection failed", exc_info=True)
+
+
+async def _broadcast_new_signals(session, candidates):
+    """Publish new signal events to SSE subscribers."""
+    try:
+        from app.api.sse import broadcaster
+        if broadcaster.subscriber_count == 0:
+            return
+        for c in candidates:
+            await broadcaster.publish("new_signal", {
+                "signal_type": c.signal_type,
+                "market_question": (c.details or {}).get("market_question", ""),
+                "rank_score": float(c.rank_score) if hasattr(c, "rank_score") else 0,
+                "outcome_name": (c.details or {}).get("outcome_name", ""),
+                "direction": (c.details or {}).get("direction", ""),
+            })
+    except Exception:
+        logger.warning("Failed to broadcast SSE events", exc_info=True)
 
 
 async def _alert_high_rank_signals(session):
@@ -111,6 +130,17 @@ async def _alert_high_rank_signals(session):
     if rows:
         await session.commit()
         logger.info("Alerted %d signals", len(rows))
+        # Broadcast alert events via SSE
+        try:
+            from app.api.sse import broadcaster
+            for signal, question in rows:
+                await broadcaster.publish("new_alert", {
+                    "signal_type": signal.signal_type,
+                    "market_question": question,
+                    "rank_score": float(signal.rank_score),
+                })
+        except Exception:
+            logger.warning("Failed to broadcast alert SSE events", exc_info=True)
 
 
 def _build_alerters():
