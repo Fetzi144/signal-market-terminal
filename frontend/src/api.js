@@ -178,3 +178,36 @@ export function closePosition(positionId, body) {
 export function exportPortfolioCsv() {
   window.open(`${API_BASE}/portfolio/export/csv`, "_blank");
 }
+
+// Push Notifications API
+export function getVapidKey() {
+  return fetchJson(`${API_BASE}/push/vapid-key`);
+}
+
+export function subscribePush(subscription) {
+  return fetch(`${API_BASE}/push/subscribe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      endpoint: subscription.endpoint,
+      keys: {
+        p256dh: subscription.toJSON().keys.p256dh,
+        auth: subscription.toJSON().keys.auth,
+      },
+    }),
+  }).then((res) => {
+    if (!res.ok) return res.json().then((e) => { throw new Error(e.detail || `API ${res.status}`); });
+    return res.json();
+  });
+}
+
+export function unsubscribePush(endpoint) {
+  return fetch(`${API_BASE}/push/subscribe`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint, keys: {} }),
+  }).then((res) => {
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    return res.json();
+  });
+}

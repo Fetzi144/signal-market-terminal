@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { getHealth } from "../api";
+import PushNotificationToggle from "../components/PushNotificationToggle";
 
 const REFRESH_INTERVAL = 15_000;
 const STALE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
@@ -67,6 +68,11 @@ export default function Health() {
         <StatCard label="Unresolved" value={health.unresolved_signals} />
         <StatCard label="Alerts (24h)" value={health.recent_alerts_24h} />
         <StatCard label="Alert Threshold" value={`${Math.round(health.alert_threshold * 100)}%`} />
+      </div>
+
+      <div style={{ marginBottom: 24 }}>
+        <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Notifications</h3>
+        <PushNotificationToggle />
       </div>
 
       <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Ingestion</h3>

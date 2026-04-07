@@ -81,6 +81,14 @@ class Settings(BaseSettings):
     # SSE
     sse_max_connections: int = 50
 
+    # Discord
+    alert_discord_webhook_url: str = ""  # Discord webhook URL
+
+    # Push Notifications (VAPID / Web Push)
+    push_vapid_private_key: str = ""  # VAPID private key
+    push_vapid_public_key: str = ""   # VAPID public key
+    push_vapid_email: str = ""        # Contact email for VAPID
+
     # Webhook Security
     alert_webhook_secret: str = ""  # If set, HMAC-SHA256 sign webhook payloads
 

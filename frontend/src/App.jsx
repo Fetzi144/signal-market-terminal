@@ -11,6 +11,7 @@ import Alerts from "./pages/Alerts";
 import Performance from "./pages/Performance";
 import Health from "./pages/Health";
 import Portfolio from "./pages/Portfolio";
+import PushNotificationToggle from "./components/PushNotificationToggle";
 
 function ThemeToggle() {
   const [theme, setTheme] = useState(() => localStorage.getItem("smt-theme") || "dark");
@@ -66,6 +67,7 @@ export default function App() {
           <Link to="/backtests">Backtest</Link>
           <Link to="/alerts">Alerts</Link>
           <Link to="/health">Health</Link>
+          <PushNotificationToggle compact />
           <ThemeToggle />
         </nav>
       </header>

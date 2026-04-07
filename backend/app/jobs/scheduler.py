@@ -160,6 +160,14 @@ def _build_alerters():
         from app.alerts.telegram_alert import TelegramAlerter
         alerters.append(TelegramAlerter())
 
+    if settings.alert_discord_webhook_url:
+        from app.alerts.discord_alert import DiscordAlerter
+        alerters.append(DiscordAlerter())
+
+    if settings.push_vapid_private_key and settings.push_vapid_public_key:
+        from app.alerts.push_alert import PushAlerter
+        alerters.append(PushAlerter())
+
     return alerters
 
 

@@ -16,3 +16,4 @@ aiosqlite==0.20.0
 respx==0.22.0
 prometheus-fastapi-instrumentator==7.1.0
 python-json-logger==4.1.0
+pywebpush==2.0.1
