@@ -1,0 +1,276 @@
+"""Portfolio service: position CRUD, P&L calculations, price refresh."""
+import logging
+from uuid import UUID
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.models.market import Market, Outcome
+from app.models.portfolio import Position, Trade
+from app.models.snapshot import PriceSnapshot
+
+logger = logging.getLogger(__name__)
+
+
+async def open_position(
+    session: AsyncSession,
+    market_id: UUID,
+    outcome_id: UUID,
+    platform: str,
+    side: str,
+    quantity: float,
+    price: float,
+    signal_id: UUID | None = None,
+    notes: str | None = None,
+) -> Position:
+    """Open a new position and record the initial trade."""
+    position = Position(
+        market_id=market_id,
+        outcome_id=outcome_id,
+        platform=platform,
+        side=side,
+        quantity=quantity,
+        avg_entry_price=price,
+        status="open",
+        signal_id=signal_id,
+        notes=notes,
+    )
+    session.add(position)
+    await session.flush()
+
+    trade = Trade(
+        position_id=position.id,
+        action="buy",
+        quantity=quantity,
+        price=price,
+    )
+    session.add(trade)
+    await session.commit()
+    return position
+
+
+async def add_to_position(
+    session: AsyncSession,
+    position_id: UUID,
+    quantity: float,
+    price: float,
+    fees: float = 0.0,
+) -> Position:
+    """Add to an existing position, updating the weighted average entry price."""
+    position = await session.get(Position, position_id)
+    if position is None:
+        raise ValueError(f"Position {position_id} not found")
+    if position.status != "open":
+        raise ValueError(f"Position {position_id} is {position.status}, cannot add")
+
+    # Weighted average: (old_qty * old_price + new_qty * new_price) / total_qty
+    total_qty = position.quantity + quantity
+    position.avg_entry_price = (
+        (position.quantity * position.avg_entry_price) + (quantity * price)
+    ) / total_qty
+    position.quantity = total_qty
+
+    trade = Trade(
+        position_id=position.id,
+        action="buy",
+        quantity=quantity,
+        price=price,
+        fees=fees,
+    )
+    session.add(trade)
+    await session.commit()
+    return position
+
+
+async def close_position(
+    session: AsyncSession,
+    position_id: UUID,
+    quantity: float,
+    price: float,
+    fees: float = 0.0,
+) -> Position:
+    """Close (partially or fully) a position at the given price."""
+    position = await session.get(Position, position_id)
+    if position is None:
+        raise ValueError(f"Position {position_id} not found")
+    if position.status != "open":
+        raise ValueError(f"Position {position_id} is {position.status}, cannot close")
+    if quantity > position.quantity:
+        raise ValueError(f"Cannot close {quantity} shares, only {position.quantity} held")
+
+    # Calculate realized P&L for this portion
+    pnl = (price - position.avg_entry_price) * quantity
+    if position.side == "no":
+        pnl = -pnl  # Inverted for "no" side
+
+    position.realized_pnl = (position.realized_pnl or 0.0) + pnl
+    position.quantity -= quantity
+
+    trade = Trade(
+        position_id=position.id,
+        action="sell",
+        quantity=quantity,
+        price=price,
+        fees=fees,
+    )
+    session.add(trade)
+
+    if position.quantity <= 0:
+        position.quantity = 0
+        position.status = "closed"
+        position.exit_price = price
+        position.unrealized_pnl = 0.0
+
+    await session.commit()
+    return position
+
+
+async def update_current_prices(session: AsyncSession) -> int:
+    """Refresh current_price and unrealized_pnl for all open positions from latest snapshots."""
+    stmt = select(Position).where(Position.status == "open")
+    result = await session.execute(stmt)
+    positions = result.scalars().all()
+
+    updated = 0
+    for pos in positions:
+        # Get latest price snapshot for this outcome
+        price_stmt = (
+            select(PriceSnapshot.price)
+            .where(PriceSnapshot.outcome_id == pos.outcome_id)
+            .order_by(PriceSnapshot.captured_at.desc())
+            .limit(1)
+        )
+        price_result = await session.execute(price_stmt)
+        latest_price = price_result.scalar_one_or_none()
+
+        if latest_price is not None:
+            pos.current_price = float(latest_price)
+            pnl = (pos.current_price - pos.avg_entry_price) * pos.quantity
+            if pos.side == "no":
+                pnl = -pnl
+            pos.unrealized_pnl = pnl
+            updated += 1
+
+    await session.commit()
+    return updated
+
+
+async def resolve_positions(session: AsyncSession) -> int:
+    """Close all open positions on resolved markets at $1 (winner) or $0 (loser)."""
+    # Find open positions where the market is no longer active (resolved)
+    stmt = (
+        select(Position)
+        .join(Market, Position.market_id == Market.id)
+        .where(Position.status == "open", Market.active == False)  # noqa: E712
+    )
+    result = await session.execute(stmt)
+    positions = result.scalars().all()
+
+    resolved = 0
+    for pos in positions:
+        # Check if this outcome's final price is near 1 (winner) or 0 (loser)
+        price_stmt = (
+            select(PriceSnapshot.price)
+            .where(PriceSnapshot.outcome_id == pos.outcome_id)
+            .order_by(PriceSnapshot.captured_at.desc())
+            .limit(1)
+        )
+        price_result = await session.execute(price_stmt)
+        last_price = price_result.scalar_one_or_none()
+
+        if last_price is not None:
+            resolution_price = 1.0 if float(last_price) >= 0.5 else 0.0
+        else:
+            continue
+
+        pnl = (resolution_price - pos.avg_entry_price) * pos.quantity
+        if pos.side == "no":
+            pnl = -pnl
+
+        pos.realized_pnl = (pos.realized_pnl or 0.0) + pnl
+        pos.exit_price = resolution_price
+        pos.current_price = resolution_price
+        pos.unrealized_pnl = 0.0
+        pos.status = "resolved"
+        pos.quantity = 0
+        resolved += 1
+
+    await session.commit()
+    return resolved
+
+
+async def get_position(session: AsyncSession, position_id: UUID) -> Position | None:
+    """Get a position with its trades."""
+    stmt = (
+        select(Position)
+        .options(selectinload(Position.trades))
+        .where(Position.id == position_id)
+    )
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def list_positions(
+    session: AsyncSession,
+    status: str | None = None,
+    platform: str | None = None,
+    market_id: UUID | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> tuple[list[Position], int]:
+    """List positions with optional filters, returns (positions, total_count)."""
+    base = select(Position)
+    count_base = select(func.count(Position.id))
+
+    if status:
+        base = base.where(Position.status == status)
+        count_base = count_base.where(Position.status == status)
+    if platform:
+        base = base.where(Position.platform == platform)
+        count_base = count_base.where(Position.platform == platform)
+    if market_id:
+        base = base.where(Position.market_id == market_id)
+        count_base = count_base.where(Position.market_id == market_id)
+
+    total = (await session.execute(count_base)).scalar_one()
+
+    stmt = base.order_by(Position.created_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    result = await session.execute(stmt)
+    return result.scalars().all(), total
+
+
+async def get_portfolio_summary(session: AsyncSession) -> dict:
+    """Aggregate portfolio stats: total unrealized/realized P&L, open count, win rate."""
+    # Open positions stats
+    open_stmt = select(
+        func.count(Position.id),
+        func.coalesce(func.sum(Position.unrealized_pnl), 0.0),
+    ).where(Position.status == "open")
+    open_result = await session.execute(open_stmt)
+    open_count, total_unrealized = open_result.one()
+
+    # Closed/resolved positions stats
+    closed_stmt = select(
+        func.count(Position.id),
+        func.coalesce(func.sum(Position.realized_pnl), 0.0),
+    ).where(Position.status.in_(["closed", "resolved"]))
+    closed_result = await session.execute(closed_stmt)
+    closed_count, total_realized = closed_result.one()
+
+    # Win rate (closed/resolved with positive realized_pnl)
+    wins_stmt = select(func.count(Position.id)).where(
+        Position.status.in_(["closed", "resolved"]),
+        Position.realized_pnl > 0,
+    )
+    wins = (await session.execute(wins_stmt)).scalar_one()
+
+    win_rate = (wins / closed_count * 100) if closed_count > 0 else 0.0
+
+    return {
+        "open_positions": open_count,
+        "closed_positions": closed_count,
+        "total_unrealized_pnl": float(total_unrealized),
+        "total_realized_pnl": float(total_realized),
+        "win_rate": round(win_rate, 1),
+    }

@@ -207,6 +207,22 @@ async def _run_cleanup():
             logger.error("Job: cleanup failed", exc_info=True)
 
 
+async def _run_portfolio_price_refresh():
+    from app.portfolio.service import resolve_positions, update_current_prices
+
+    logger.info("Job: portfolio_price_refresh starting")
+    async with async_session() as session:
+        try:
+            updated = await update_current_prices(session)
+            resolved = await resolve_positions(session)
+            logger.info(
+                "Job: portfolio_price_refresh done, %d prices updated, %d positions resolved",
+                updated, resolved,
+            )
+        except Exception:
+            logger.error("Job: portfolio_price_refresh failed", exc_info=True)
+
+
 def start_scheduler():
     scheduler.add_job(
         _run_market_discovery,
@@ -249,6 +265,13 @@ def start_scheduler():
         "interval",
         hours=settings.cleanup_interval_hours,
         id="cleanup",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _run_portfolio_price_refresh,
+        "interval",
+        minutes=5,
+        id="portfolio_price_refresh",
         replace_existing=True,
     )
     scheduler.start()
