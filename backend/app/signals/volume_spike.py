@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
-from app.signals.base import BaseDetector, SignalCandidate
+from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
 
 logger = logging.getLogger(__name__)
 
@@ -19,52 +19,28 @@ MIN_BASELINE_SNAPSHOTS = 12
 
 
 class VolumeSpikeDetector(BaseDetector):
-    async def detect(self, session: AsyncSession) -> list[SignalCandidate]:
+    def __init__(self, *, multiplier: float | None = None, baseline_hours: int | None = None):
+        self._multiplier = multiplier
+        self._baseline_hours = baseline_hours
+
+    async def detect(
+        self, session: AsyncSession, *, snapshot_window: SnapshotWindow | None = None
+    ) -> list[SignalCandidate]:
         now = datetime.now(timezone.utc)
-        baseline_start = now - timedelta(hours=settings.volume_spike_baseline_hours)
+        baseline_hours = self._baseline_hours or settings.volume_spike_baseline_hours
+        baseline_start = now - timedelta(hours=baseline_hours)
         recent_window = now - timedelta(hours=1)
-        multiplier_threshold = Decimal(str(settings.volume_spike_multiplier))
+        raw_multiplier = self._multiplier if self._multiplier is not None else settings.volume_spike_multiplier
+        multiplier_threshold = Decimal(str(raw_multiplier))
 
-        # Average volume_24h over the baseline window per outcome
-        baseline_sub = (
-            select(
-                PriceSnapshot.outcome_id,
-                func.avg(PriceSnapshot.volume_24h).label("avg_vol"),
-                func.count(PriceSnapshot.id).label("snap_count"),
-            )
-            .where(
-                PriceSnapshot.captured_at >= baseline_start,
-                PriceSnapshot.captured_at < recent_window,
-                PriceSnapshot.volume_24h.isnot(None),
-            )
-            .group_by(PriceSnapshot.outcome_id)
-            .subquery()
-        )
-
-        # Latest snapshot per outcome (for current volume)
-        latest_sub = (
-            select(
-                PriceSnapshot.outcome_id,
-                func.max(PriceSnapshot.captured_at).label("max_time"),
-            )
-            .where(PriceSnapshot.captured_at >= recent_window)
-            .group_by(PriceSnapshot.outcome_id)
-            .subquery()
-        )
-
-        result = await session.execute(
-            select(PriceSnapshot, baseline_sub.c.avg_vol, baseline_sub.c.snap_count)
-            .join(
-                latest_sub,
-                (PriceSnapshot.outcome_id == latest_sub.c.outcome_id)
-                & (PriceSnapshot.captured_at == latest_sub.c.max_time),
-            )
-            .join(baseline_sub, PriceSnapshot.outcome_id == baseline_sub.c.outcome_id)
-        )
+        if snapshot_window is not None:
+            rows = _volume_from_window(snapshot_window.price_snapshots, baseline_start, recent_window)
+        else:
+            rows = await _volume_from_db(session, baseline_start, recent_window)
 
         candidates: list[SignalCandidate] = []
 
-        for snap, avg_vol, snap_count in result.all():
+        for snap, avg_vol, snap_count in rows:
             if snap_count < MIN_BASELINE_SNAPSHOTS:
                 continue
             if avg_vol is None or avg_vol <= 0:
@@ -120,3 +96,72 @@ class VolumeSpikeDetector(BaseDetector):
 
         logger.info("VolumeSpikeDetector: %d candidates", len(candidates))
         return candidates
+
+
+def _volume_from_window(
+    price_snapshots: list, baseline_start: datetime, recent_window: datetime
+) -> list[tuple]:
+    """Compute baseline avg volume and latest snap from in-memory snapshots."""
+    from collections import defaultdict
+    from statistics import mean
+
+    by_outcome: dict[object, list] = defaultdict(list)
+    for snap in price_snapshots:
+        by_outcome[snap.outcome_id].append(snap)
+
+    rows = []
+    for outcome_id, snaps in by_outcome.items():
+        baseline = [
+            s for s in snaps
+            if s.captured_at >= baseline_start and s.captured_at < recent_window
+            and s.volume_24h is not None
+        ]
+        recent = [s for s in snaps if s.captured_at >= recent_window]
+
+        if not recent or len(baseline) < MIN_BASELINE_SNAPSHOTS:
+            continue
+
+        latest = max(recent, key=lambda s: s.captured_at)
+        avg_vol = mean(float(s.volume_24h) for s in baseline)
+        rows.append((latest, avg_vol, len(baseline)))
+
+    return rows
+
+
+async def _volume_from_db(session: AsyncSession, baseline_start: datetime, recent_window: datetime) -> list[tuple]:
+    """Load volume baseline + latest snap from the database."""
+    baseline_sub = (
+        select(
+            PriceSnapshot.outcome_id,
+            func.avg(PriceSnapshot.volume_24h).label("avg_vol"),
+            func.count(PriceSnapshot.id).label("snap_count"),
+        )
+        .where(
+            PriceSnapshot.captured_at >= baseline_start,
+            PriceSnapshot.captured_at < recent_window,
+            PriceSnapshot.volume_24h.isnot(None),
+        )
+        .group_by(PriceSnapshot.outcome_id)
+        .subquery()
+    )
+
+    latest_sub = (
+        select(
+            PriceSnapshot.outcome_id,
+            func.max(PriceSnapshot.captured_at).label("max_time"),
+        )
+        .where(PriceSnapshot.captured_at >= recent_window)
+        .group_by(PriceSnapshot.outcome_id)
+        .subquery()
+    )
+
+    result = await session.execute(
+        select(PriceSnapshot, baseline_sub.c.avg_vol, baseline_sub.c.snap_count)
+        .join(
+            latest_sub,
+            (PriceSnapshot.outcome_id == latest_sub.c.outcome_id)
+            & (PriceSnapshot.captured_at == latest_sub.c.max_time),
+        )
+        .join(baseline_sub, PriceSnapshot.outcome_id == baseline_sub.c.outcome_id)
+    )
+    return result.all()

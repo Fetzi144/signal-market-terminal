@@ -1,3 +1,4 @@
+from app.models.backtest import BacktestRun, BacktestSignal
 from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
 from app.models.signal import Signal, SignalEvaluation
@@ -11,4 +12,6 @@ __all__ = [
     "Signal",
     "SignalEvaluation",
     "IngestionRun",
+    "BacktestRun",
+    "BacktestSignal",
 ]

@@ -9,59 +9,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
-from app.signals.base import BaseDetector, SignalCandidate
+from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
 
 logger = logging.getLogger(__name__)
 
 
 class PriceMoveDetector(BaseDetector):
-    async def detect(self, session: AsyncSession) -> list[SignalCandidate]:
+    def __init__(self, *, threshold_pct: float | None = None, window_minutes: int | None = None):
+        self._threshold_pct = threshold_pct
+        self._window_minutes = window_minutes
+
+    async def detect(
+        self, session: AsyncSession, *, snapshot_window: SnapshotWindow | None = None
+    ) -> list[SignalCandidate]:
         now = datetime.now(timezone.utc)
-        window_start = now - timedelta(minutes=settings.price_move_window_minutes)
-        threshold = Decimal(str(settings.price_move_threshold_pct)) / 100
+        window_minutes = self._window_minutes or settings.price_move_window_minutes
+        window_start = now - timedelta(minutes=window_minutes)
+        raw_threshold = self._threshold_pct if self._threshold_pct is not None else settings.price_move_threshold_pct
+        threshold = Decimal(str(raw_threshold)) / 100
 
-        # Get the latest snapshot for each active outcome
-        latest_sub = (
-            select(
-                PriceSnapshot.outcome_id,
-                func.max(PriceSnapshot.captured_at).label("max_time"),
+        if snapshot_window is not None:
+            # Replay mode: use pre-loaded snapshots
+            latest_snaps, earliest_snaps = _snapshots_from_window(
+                snapshot_window.price_snapshots, window_start
             )
-            .where(PriceSnapshot.captured_at >= window_start)
-            .group_by(PriceSnapshot.outcome_id)
-            .subquery()
-        )
-
-        # Get latest price per outcome
-        latest_result = await session.execute(
-            select(PriceSnapshot)
-            .join(
-                latest_sub,
-                (PriceSnapshot.outcome_id == latest_sub.c.outcome_id)
-                & (PriceSnapshot.captured_at == latest_sub.c.max_time),
-            )
-        )
-        latest_snaps = {s.outcome_id: s for s in latest_result.scalars().all()}
-
-        # Get earliest snapshot in window for each outcome
-        earliest_sub = (
-            select(
-                PriceSnapshot.outcome_id,
-                func.min(PriceSnapshot.captured_at).label("min_time"),
-            )
-            .where(PriceSnapshot.captured_at >= window_start)
-            .group_by(PriceSnapshot.outcome_id)
-            .subquery()
-        )
-
-        earliest_result = await session.execute(
-            select(PriceSnapshot)
-            .join(
-                earliest_sub,
-                (PriceSnapshot.outcome_id == earliest_sub.c.outcome_id)
-                & (PriceSnapshot.captured_at == earliest_sub.c.min_time),
-            )
-        )
-        earliest_snaps = {s.outcome_id: s for s in earliest_result.scalars().all()}
+        else:
+            latest_snaps, earliest_snaps = await _snapshots_from_db(session, window_start)
 
         candidates: list[SignalCandidate] = []
 
@@ -121,7 +94,7 @@ class PriceMoveDetector(BaseDetector):
                     "old_price": str(old_price),
                     "new_price": str(new_price),
                     "change_pct": str((change_pct * 100).quantize(Decimal("0.01"))),
-                    "window_minutes": settings.price_move_window_minutes,
+                    "window_minutes": window_minutes,
                     "market_question": market.question,
                     "outcome_name": outcome.name,
                 },
@@ -129,3 +102,69 @@ class PriceMoveDetector(BaseDetector):
 
         logger.info("PriceMoveDetector: %d candidates from %d outcomes", len(candidates), len(latest_snaps))
         return candidates
+
+
+def _snapshots_from_window(
+    price_snapshots: list, window_start: datetime
+) -> tuple[dict, dict]:
+    """Extract latest/earliest snapshots per outcome from an in-memory list."""
+    from collections import defaultdict
+
+    by_outcome: dict[object, list] = defaultdict(list)
+    for snap in price_snapshots:
+        if snap.captured_at >= window_start:
+            by_outcome[snap.outcome_id].append(snap)
+
+    latest_snaps = {}
+    earliest_snaps = {}
+    for outcome_id, snaps in by_outcome.items():
+        sorted_snaps = sorted(snaps, key=lambda s: s.captured_at)
+        earliest_snaps[outcome_id] = sorted_snaps[0]
+        latest_snaps[outcome_id] = sorted_snaps[-1]
+
+    return latest_snaps, earliest_snaps
+
+
+async def _snapshots_from_db(session: AsyncSession, window_start: datetime) -> tuple[dict, dict]:
+    """Load latest/earliest snapshots per outcome from the database."""
+    latest_sub = (
+        select(
+            PriceSnapshot.outcome_id,
+            func.max(PriceSnapshot.captured_at).label("max_time"),
+        )
+        .where(PriceSnapshot.captured_at >= window_start)
+        .group_by(PriceSnapshot.outcome_id)
+        .subquery()
+    )
+
+    latest_result = await session.execute(
+        select(PriceSnapshot)
+        .join(
+            latest_sub,
+            (PriceSnapshot.outcome_id == latest_sub.c.outcome_id)
+            & (PriceSnapshot.captured_at == latest_sub.c.max_time),
+        )
+    )
+    latest_snaps = {s.outcome_id: s for s in latest_result.scalars().all()}
+
+    earliest_sub = (
+        select(
+            PriceSnapshot.outcome_id,
+            func.min(PriceSnapshot.captured_at).label("min_time"),
+        )
+        .where(PriceSnapshot.captured_at >= window_start)
+        .group_by(PriceSnapshot.outcome_id)
+        .subquery()
+    )
+
+    earliest_result = await session.execute(
+        select(PriceSnapshot)
+        .join(
+            earliest_sub,
+            (PriceSnapshot.outcome_id == earliest_sub.c.outcome_id)
+            & (PriceSnapshot.captured_at == earliest_sub.c.min_time),
+        )
+    )
+    earliest_snaps = {s.outcome_id: s for s in earliest_result.scalars().all()}
+
+    return latest_snaps, earliest_snaps

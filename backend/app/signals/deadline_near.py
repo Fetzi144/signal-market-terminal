@@ -9,13 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
-from app.signals.base import BaseDetector, SignalCandidate
+from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
 
 logger = logging.getLogger(__name__)
 
 
 class DeadlineNearDetector(BaseDetector):
-    async def detect(self, session: AsyncSession) -> list[SignalCandidate]:
+    async def detect(
+        self, session: AsyncSession, *, snapshot_window: SnapshotWindow | None = None
+    ) -> list[SignalCandidate]:
         now = datetime.now(timezone.utc)
         deadline_cutoff = now + timedelta(hours=settings.deadline_near_hours)
         threshold = Decimal(str(settings.deadline_near_price_threshold_pct)) / 100
