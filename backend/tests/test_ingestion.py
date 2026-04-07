@@ -1,5 +1,4 @@
 """Tests for ingestion logic: market upsert, outcome update, snapshot creation."""
-import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 

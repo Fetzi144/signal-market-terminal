@@ -1,4 +1,4 @@
-# Signal Market Terminal
+# Signal Market Terminal v0.2.0
 
 A prediction-market intelligence platform that ingests market data from **Polymarket** and **Kalshi**, detects unusual market behavior, ranks signals, and evaluates signal quality over time. Think "Bloomberg terminal lite for prediction markets."
 
@@ -23,8 +23,10 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
               |  Detection  -> Signals|
               |  Evaluation -> Evals  |
               |  Alerting   -> Multi  |
+              |  SSE Stream -> Live   |
+              |  Analytics  -> Stats  |
+              |  Metrics    -> Prom   |
               |  Cleanup    -> Retain |
-              |  API        -> REST   |
               +-----------+-----------+
                           |
               +-----------v-----------+
@@ -37,8 +39,9 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
                           |
               +-----------v-----------+
               |   React Frontend      |
-              |  Signal Feed, Charts, |
-              |  Market Detail, Health|
+              |  Feed, Markets,       |
+              |  Analytics, Alerts,   |
+              |  Charts, Health       |
               +-----------------------+
 ```
 
@@ -78,7 +81,9 @@ npm install
 npm run dev
 ```
 
-## Signal Types
+## Features
+
+### Signal Detection (5 families)
 
 | Type | Description | Key Config |
 |------|-------------|------------|
@@ -88,7 +93,7 @@ npm run dev
 | **Liquidity Vacuum** | Order book depth dropped below 30% of baseline | `LIQUIDITY_VACUUM_DEPTH_RATIO_THRESHOLD` |
 | **Deadline Near** | Market within 48h of close showing >3% price move | `DEADLINE_NEAR_HOURS`, `DEADLINE_NEAR_PRICE_THRESHOLD_PCT` |
 
-## Ranking
+### Ranking
 
 ```
 rank_score = signal_score x confidence x recency_weight
@@ -99,28 +104,29 @@ rank_score = signal_score x confidence x recency_weight
 - **recency_weight**: 1.0 at 0h, decays to 0.3 at 24h
 - **Dedupe**: One signal per (type, outcome, 15-min window)
 
-## Evaluation
+### Evaluation
 
 Signals are evaluated at 4 horizons: **15m, 1h, 4h, 24h**. The evaluator checks the closest price snapshot to each horizon target and computes `price_change_pct`. Signals are marked `resolved` once all horizons complete.
 
-## API Endpoints
+### Real-Time Updates (SSE)
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/signals` | Paginated signal feed, filterable by `signal_type` and `market_id` |
-| GET | `/api/v1/signals/{id}` | Signal detail with evaluations |
-| GET | `/api/v1/signals/export/csv` | Export signals as CSV |
-| GET | `/api/v1/markets` | Active markets list |
-| GET | `/api/v1/markets/{id}` | Market detail with outcomes and latest prices |
-| GET | `/api/v1/markets/{id}/snapshots` | Recent price snapshots for a market |
-| GET | `/api/v1/markets/{id}/chart-data` | Price time series for charting (1h/6h/24h/7d ranges) |
-| GET | `/api/v1/markets/export/csv` | Export markets as CSV |
-| GET | `/api/v1/alerts/recent` | Recent alerted signals |
-| GET | `/api/v1/health` | System health: market count, signal count, ingestion status, alert count |
+The backend streams new signal and alert events via Server-Sent Events (`GET /api/v1/events/signals`). The frontend auto-refreshes on incoming events with a green "Live" indicator.
 
-## Alerting
+### Cross-Platform Analytics
 
-Signals with `rank_score >= 0.7` (configurable via `ALERT_RANK_THRESHOLD`) trigger alerts through multiple channels:
+- **Platform Summary**: Market counts, signal counts, avg rank per platform
+- **Signal Accuracy**: Directional accuracy per signal type per horizon
+- **Correlated Signals**: Cross-platform signals firing on the same category
+
+### Observability
+
+- **Prometheus metrics** at `/metrics` — auto-instrumented HTTP metrics plus custom counters/gauges for signals, alerts, ingestion, SSE connections
+- **Structured JSON logging** in production (`LOG_FORMAT=json`)
+- **Circuit breaker** on both connectors (closed/open/half-open states)
+
+### Alerting
+
+Signals with `rank_score >= 0.7` (configurable via `ALERT_RANK_THRESHOLD`) trigger alerts:
 
 | Channel | Config | Description |
 |---------|--------|-------------|
@@ -128,34 +134,57 @@ Signals with `rank_score >= 0.7` (configurable via `ALERT_RANK_THRESHOLD`) trigg
 | **Webhook** | `ALERT_WEBHOOK_URL` | POST JSON payload to any URL |
 | **Telegram** | `ALERT_TELEGRAM_BOT_TOKEN` + `ALERT_TELEGRAM_CHAT_ID` | Telegram Bot API messages |
 
-Each signal is alerted only once (no re-fires on subsequent detection cycles).
+Each signal is alerted only once (no re-fires).
+
+## API Reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/signals` | Paginated signal feed (filter: `signal_type`, `market_id`, `platform`) |
+| GET | `/api/v1/signals/{id}` | Signal detail with evaluations |
+| GET | `/api/v1/signals/export/csv` | Export signals as CSV |
+| GET | `/api/v1/markets` | Markets list (filter: `search`, `platform`, `category`, sort: `updated`/`volume`/`end_date`/`question`) |
+| GET | `/api/v1/markets/{id}` | Market detail with outcomes and latest prices |
+| GET | `/api/v1/markets/{id}/snapshots` | Recent price snapshots |
+| GET | `/api/v1/markets/{id}/chart-data` | Price time series (1h/6h/24h/7d) |
+| GET | `/api/v1/markets/export/csv` | Export markets as CSV |
+| GET | `/api/v1/alerts/recent` | Alerted signals (filter: `signal_type`, `platform`) |
+| GET | `/api/v1/analytics/platform-summary` | Per-platform stats |
+| GET | `/api/v1/analytics/signal-accuracy` | Accuracy per signal type per horizon |
+| GET | `/api/v1/analytics/correlated-signals` | Cross-platform correlated signals |
+| GET | `/api/v1/events/signals` | SSE stream (new_signal, new_alert events) |
+| GET | `/api/v1/health` | System health |
+| GET | `/metrics` | Prometheus metrics |
 
 ## Configuration
 
-All settings are environment variables. See `backend/.env.example` for the full list with defaults.
+All settings are environment variables. See `backend/.env.example` for the full list with defaults. Validated on startup: intervals >= 30s, retention >= 1 day, thresholds > 0.
 
-Key API hardening settings:
+Key settings:
 - `API_RATE_LIMIT`: Request rate limit (default: `60/minute`)
-- `API_KEY`: Optional API key for authenticated access (set to enable)
+- `API_KEY`: Optional API key for authenticated access
 - `CORS_ORIGINS`: Comma-separated allowed origins
+- `KALSHI_ENABLED`: Enable/disable Kalshi connector (default: `true`)
+- `LOG_FORMAT`: `text` (dev) or `json` (production)
 
 ## Scheduled Jobs
 
 | Job | Interval | Purpose |
 |-----|----------|---------|
-| Market Discovery | 5 min | Fetch active markets from Polymarket Gamma API |
+| Market Discovery | 5 min | Fetch active markets from Polymarket + Kalshi |
 | Snapshot Capture | 2 min | Fetch midpoints + orderbooks, persist to DB |
-| Signal Detection | 2 min + 10s | Run all 5 detectors, persist signals with dedupe |
+| Signal Detection | 2 min + 10s | Run all 5 detectors, persist + broadcast via SSE |
 | Evaluation | 5 min | Evaluate unresolved signals at 15m/1h/4h/24h |
 | Cleanup | 6 hours | Delete old snapshots (30d), orderbooks (14d), signals (90d) |
 
 ## Tech Stack
 
 - Python 3.12 + FastAPI + SQLAlchemy 2.x + APScheduler
-- PostgreSQL 16
+- PostgreSQL 16 (asyncpg)
 - React 18 + Vite + React Router + Recharts
 - Docker Compose (dev + prod configs)
-- GitHub Actions CI (lint + test + build)
+- Prometheus + structured JSON logging
+- GitHub Actions CI (lint + test with 70% coverage gate + Docker build)
 
 ## Testing
 
@@ -165,12 +194,26 @@ pip install -r requirements.txt
 python -m pytest tests/ -v
 ```
 
-40 tests covering all 5 detectors, ranking, evaluation, API endpoints, and end-to-end integration.
+90+ tests covering connectors (Polymarket + Kalshi), ingestion, all 5 detectors, ranking, evaluation, alerting (webhook/telegram/logger), cleanup, circuit breaker, config validation, API endpoints, and integration.
 
-## Roadmap
+## Changelog
 
-- [x] Kalshi connector (second market source)
-- [ ] WebSocket real-time signal push
-- [ ] Signal backtesting framework
-- [ ] Performance dashboards and signal accuracy tracking
-- [ ] Prometheus metrics endpoint
+### v0.2.0
+- Markets browser page with search, sort, platform filter
+- Alerts history page with pagination and filters
+- Cross-platform analytics dashboard (platform summary, signal accuracy, correlations)
+- Real-time SSE updates (live signal streaming to frontend)
+- Prometheus metrics endpoint (`/metrics`)
+- Circuit breaker for connector resilience
+- Structured JSON logging option
+- Dark/light theme toggle
+- Config validation with field validators
+- Timezone fix in signal evaluator
+- 90+ tests (up from 40), 70% coverage gate in CI
+- Hardened production Docker (resource limits, named network)
+- Enhanced nginx config (SSE proxy, static asset caching)
+
+### v0.1.0
+- Initial release: Polymarket + Kalshi connectors, 5 signal detectors, 4-horizon evaluation
+- Webhook + Telegram alerting, price charts, CSV export
+- Docker dev + prod configs, GitHub Actions CI

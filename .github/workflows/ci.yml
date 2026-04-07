@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, develop]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, develop]
 
 jobs:
   backend:
@@ -23,13 +23,13 @@ jobs:
           cache-dependency-path: backend/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r requirements.txt ruff
+        run: pip install -r requirements.txt ruff pytest-cov
 
       - name: Lint
         run: ruff check app/ tests/
 
-      - name: Test
-        run: python -m pytest tests/ -v --tb=short
+      - name: Test with coverage
+        run: python -m pytest tests/ -v --tb=short --cov=app --cov-report=term-missing --cov-fail-under=70
 
   frontend:
     runs-on: ubuntu-latest
@@ -51,3 +51,16 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build backend Docker image
+        run: docker build -t smt-backend -f backend/Dockerfile.prod backend/
+
+      - name: Build frontend Docker image
+        run: docker build -t smt-frontend -f frontend/Dockerfile.prod frontend/

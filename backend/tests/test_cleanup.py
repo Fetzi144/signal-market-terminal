@@ -2,14 +2,13 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
 
 from app.jobs.cleanup import cleanup_old_data
 from app.models.signal import Signal, SignalEvaluation
-from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
+from app.models.snapshot import PriceSnapshot
 from tests.conftest import (
     make_market,
     make_orderbook_snapshot,

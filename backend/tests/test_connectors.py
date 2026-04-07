@@ -9,7 +9,6 @@ import respx
 from app.connectors.kalshi import KalshiConnector
 from app.connectors.polymarket import PolymarketConnector
 
-
 # ── Polymarket Tests ──
 
 

@@ -1,5 +1,4 @@
 """Alert API endpoints."""
-import uuid
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select

@@ -1,6 +1,5 @@
 """Tests for circuit breaker state transitions."""
 import time
-from unittest.mock import patch
 
 import pytest
 
@@ -36,8 +35,7 @@ class TestCircuitBreaker:
         cb.record_failure()
         assert cb.state == State.OPEN
 
-        # Mock time to advance past reset_timeout
-        original_time = cb._last_failure_time
+        # Advance past reset_timeout
         cb._last_failure_time = time.monotonic() - 1.0  # 1s ago, well past 0.1s timeout
 
         assert cb.state == State.HALF_OPEN
