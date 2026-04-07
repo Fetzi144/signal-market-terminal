@@ -232,16 +232,6 @@ export default function SignalFeed() {
       .catch(() => {});
   }, []);
 
-  // Auto-fetch when SSE reports new signals
-  useEffect(() => {
-    const unsub = addEventListener("new_signal", () => {
-      if (page === 1 && !paused) {
-        setTimeout(() => fetchData(), 500);
-      }
-    });
-    return unsub;
-  }, [addEventListener, fetchData, page, paused]);
-
   const fetchData = useCallback(() => {
     const params = { page, pageSize: PAGE_SIZE };
     if (filter) params.signalType = filter;
@@ -256,6 +246,16 @@ export default function SignalFeed() {
       })
       .catch((e) => setError(e.message));
   }, [filter, platformFilter, timeframeFilter, resolvedFilter, page]);
+
+  // Auto-fetch when SSE reports new signals
+  useEffect(() => {
+    const unsub = addEventListener("new_signal", () => {
+      if (page === 1 && !paused) {
+        setTimeout(() => fetchData(), 500);
+      }
+    });
+    return unsub;
+  }, [addEventListener, fetchData, page, paused]);
 
   // Fetch on filter/page change
   useEffect(() => {
