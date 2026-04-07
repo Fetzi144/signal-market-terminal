@@ -2,6 +2,47 @@
 
 All notable changes to Signal Market Terminal are documented here.
 
+## [0.3.0] - 2026-04-07
+
+### Added
+- **Market resolution tracking** — `resolved_correctly` column on signals, backfilled when markets settle via new resolution service (`app/ingestion/resolution.py`)
+- **Resolution API** — `resolved_correctly` field in all signal responses, CSV export, and filter (`?resolved_correctly=true`)
+- **Ground-truth accuracy** — analytics endpoint now reports resolution-based accuracy alongside price-direction accuracy, with `resolution_rate_pct`
+- **Cross-platform arbitrage detector** — 6th signal type; detects price discrepancies across Polymarket and Kalshi via `question_slug` matching
+- **Arbitrage UI** — SignalDetail shows side-by-side platform prices, spread, and buy/sell recommendation
+- **Dynamic filter options** — Signal Feed and Alerts fetch filter options from `/signals/types` and `/markets/platforms` endpoints
+- **Resolution badges** — Signal Feed and Detail show green checkmark (correct), red X (wrong), or grey dot (pending)
+- **HMAC webhook signing** — optional `X-SMT-Signature` header on webhook alerts when `alert_webhook_secret` is configured
+- **SSE connection cap** — returns 503 when `sse_max_connections` (default 50) is reached; queue overflow forces client reconnect
+- **Per-IP rate limiting** — `10/second` per IP on signals endpoint via SlowAPI
+
+### Changed
+- Analytics accuracy table uses ground-truth resolution data with color-coded cells (green/yellow/red)
+- SSE queue overflow now closes subscriber (forcing reconnect) instead of silently dropping events
+- `question_slug` column + index on Market model for cross-platform matching
+
+### Fixed
+- **Scheduler broadcast bug** — `persist_signals()` now returns `(count, list[Signal])` instead of just count; SSE broadcasts correct signal objects
+- **Off-by-24x math** — removed erroneous `* 24` in `kalshi.py` and `analytics.py`
+- **Kalshi cursor pagination** — market discovery now uses `fetch_markets_cursor()` for complete market retrieval
+- **N+1 query in MarketDetail** — replaced per-outcome price queries with single window-function query
+- **SignalFeed SSE cleanup** — `fetchData` added to `useEffect` dependency array to prevent stale closure
+
+### Infrastructure
+- `alert_rank_threshold` validated to [0.0, 1.0] range
+- `arb_spread_threshold` and `arb_enabled` config settings with validators
+- `sse_max_connections` config setting (default 50, validator ≥ 1)
+- FK constraint: `signal.outcome_id` → `outcome.id` with `ondelete="SET NULL"`
+- Alembic migrations: `add_resolved_correctly_to_signal`, `add_question_slug_to_market`
+
+### Tests
+- **168+ tests** (up from 90 in v0.2.0)
+- New: Price Move detector tests (8), Volume Spike tests (8+), ranking/dedupe tests (12), resolution tests (8), arbitrage tests (7), SSE tests (8), webhook HMAC tests (2), config validation tests (16)
+- New: Full end-to-end integration test — market → snapshots → detect → persist → API → evaluate → resolve → verify
+- New: Arbitrage integration test — cross-platform detection → persist → verify metadata
+
+---
+
 ## [0.2.0] - 2026-04-07
 
 ### Added
@@ -54,5 +95,6 @@ All notable changes to Signal Market Terminal are documented here.
 - **CI workflow** — lint (ruff) and test pipeline
 - **40 tests** — detectors, ranking, evaluation, API, connectors, integration
 
+[0.3.0]: https://github.com/Fetzi144/signal-market-terminal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Fetzi144/signal-market-terminal/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Fetzi144/signal-market-terminal/releases/tag/v0.1.0

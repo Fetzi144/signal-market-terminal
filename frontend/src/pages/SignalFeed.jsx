@@ -191,7 +191,7 @@ export default function SignalFeed() {
       }
     });
     return unsub;
-  }, [addEventListener, page, paused]);
+  }, [addEventListener, fetchData, page, paused]);
 
   const fetchData = useCallback(() => {
     const params = { page, pageSize: PAGE_SIZE };
