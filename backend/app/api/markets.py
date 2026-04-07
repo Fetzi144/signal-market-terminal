@@ -55,6 +55,9 @@ class SnapshotOut(BaseModel):
 async def list_markets(
     active: bool | None = True,
     platform: str | None = None,
+    search: str | None = None,
+    category: str | None = None,
+    sort_by: str = Query("updated", pattern="^(updated|volume|end_date|question)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
@@ -70,9 +73,23 @@ async def list_markets(
         query = query.where(Market.platform == platform)
         count_query = count_query.where(Market.platform == platform)
 
+    if search:
+        query = query.where(Market.question.ilike(f"%{search}%"))
+        count_query = count_query.where(Market.question.ilike(f"%{search}%"))
+
+    if category:
+        query = query.where(Market.category == category)
+        count_query = count_query.where(Market.category == category)
+
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(Market.updated_at.desc())
+    sort_map = {
+        "updated": Market.updated_at.desc(),
+        "volume": Market.last_volume_24h.desc().nulls_last(),
+        "end_date": Market.end_date.asc().nulls_last(),
+        "question": Market.question.asc(),
+    }
+    query = query.order_by(sort_map.get(sort_by, Market.updated_at.desc()))
     query = query.offset((page - 1) * page_size).limit(page_size)
 
     result = await db.execute(query)

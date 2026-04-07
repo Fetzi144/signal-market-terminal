@@ -75,16 +75,15 @@ export default function SignalDetail() {
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Details</h3>
         <div
           style={{
-            background: "var(--bg)",
-            borderRadius: 6,
-            padding: 14,
-            fontFamily: "var(--mono)",
-            fontSize: 13,
-            whiteSpace: "pre-wrap",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+            gap: 8,
             marginBottom: 20,
           }}
         >
-          {JSON.stringify(d, null, 2)}
+          {Object.entries(d).map(([key, value]) => (
+            <DetailItem key={key} label={key} value={value} />
+          ))}
         </div>
 
         {s.evaluations && s.evaluations.length > 0 && (
@@ -140,6 +139,35 @@ export default function SignalDetail() {
             </table>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+const DETAIL_LABELS = {
+  direction: "Direction",
+  outcome_name: "Outcome",
+  market_question: "Market",
+  change_pct: "Change %",
+  multiplier: "Volume Multiplier",
+  ratio: "Spread Ratio",
+  vacuum_side: "Vacuum Side",
+  hours_until_deadline: "Hours to Deadline",
+  baseline_avg: "Baseline Avg",
+  current_value: "Current Value",
+  window_minutes: "Window (min)",
+};
+
+function DetailItem({ label, value }) {
+  const displayLabel = DETAIL_LABELS[label] || label.replace(/_/g, " ");
+  const displayValue = typeof value === "object" ? JSON.stringify(value) : String(value ?? "N/A");
+  return (
+    <div style={{ background: "var(--bg)", borderRadius: 6, padding: "10px 14px" }}>
+      <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4, textTransform: "capitalize" }}>
+        {displayLabel}
+      </div>
+      <div style={{ fontSize: 14, fontFamily: "var(--mono)", fontWeight: 500 }}>
+        {displayValue}
       </div>
     </div>
   );

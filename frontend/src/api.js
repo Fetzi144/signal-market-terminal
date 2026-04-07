@@ -18,9 +18,12 @@ export function getSignal(id) {
   return fetchJson(`${API_BASE}/signals/${id}`);
 }
 
-export function getMarkets({ page = 1, pageSize = 50, platform } = {}) {
+export function getMarkets({ page = 1, pageSize = 50, platform, search, category, sortBy } = {}) {
   const params = new URLSearchParams({ page, page_size: pageSize });
   if (platform) params.set("platform", platform);
+  if (search) params.set("search", search);
+  if (category) params.set("category", category);
+  if (sortBy) params.set("sort_by", sortBy);
   return fetchJson(`${API_BASE}/markets?${params}`);
 }
 
@@ -40,8 +43,11 @@ export function getChartData(marketId, range = "24h") {
   return fetchJson(`${API_BASE}/markets/${marketId}/chart-data?range=${range}`);
 }
 
-export function getRecentAlerts(limit = 50) {
-  return fetchJson(`${API_BASE}/alerts/recent?limit=${limit}`);
+export function getRecentAlerts({ page = 1, pageSize = 50, signalType, platform } = {}) {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  if (signalType) params.set("signal_type", signalType);
+  if (platform) params.set("platform", platform);
+  return fetchJson(`${API_BASE}/alerts/recent?${params}`);
 }
 
 export function exportSignalsCsv({ signalType } = {}) {
