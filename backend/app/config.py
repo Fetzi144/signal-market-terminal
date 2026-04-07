@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     arb_spread_threshold: float = 0.04  # minimum spread to fire (4 percentage points)
     arb_enabled: bool = True
 
+    # Whale / Smart Money Tracking
+    whale_tracking_enabled: bool = False  # off by default (requires Polygon RPC)
+    whale_min_volume_usd: float = 100000  # minimum cumulative volume to auto-track
+    whale_min_win_rate: float = 0.55  # minimum win rate to auto-track
+    whale_signal_min_trade_usd: float = 5000  # minimum trade size to fire signal
+    polygon_rpc_url: str = ""  # Polygon RPC endpoint
+    whale_scan_interval_seconds: int = 300  # scan every 5 minutes
+
     # Evaluation
     evaluation_interval_seconds: int = 300
 

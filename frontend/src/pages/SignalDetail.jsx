@@ -164,6 +164,93 @@ export default function SignalDetail() {
           </div>
         )}
 
+        {s.signal_type === "smart_money" && (
+          <div
+            style={{
+              background: "var(--bg)",
+              border: "1px solid var(--accent)",
+              borderRadius: 8,
+              padding: 16,
+              marginBottom: 20,
+            }}
+          >
+            <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "var(--accent)" }}>
+              Smart Money / Whale Trade
+            </h3>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+                marginBottom: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Wallet</div>
+                <a
+                  href={`https://polygonscan.com/address/${d.wallet_address}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ fontSize: 13, fontFamily: "var(--mono)", color: "var(--accent)" }}
+                >
+                  {d.wallet_label || `${(d.wallet_address || "").slice(0, 6)}...${(d.wallet_address || "").slice(-4)}`}
+                </a>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Action</div>
+                <div
+                  style={{
+                    fontSize: 15,
+                    fontFamily: "var(--mono)",
+                    fontWeight: 700,
+                    color: d.action === "buy" ? "var(--green)" : "var(--red)",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {d.action || "—"}
+                </div>
+              </div>
+            </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 12,
+                marginBottom: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Notional</div>
+                <div style={{ fontSize: 16, fontFamily: "var(--mono)", fontWeight: 700 }}>
+                  ${d.notional_usd ? Number(d.notional_usd).toLocaleString() : "—"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Win Rate</div>
+                <div style={{ fontSize: 16, fontFamily: "var(--mono)", fontWeight: 700, color: "var(--green)" }}>
+                  {d.wallet_win_rate ? `${(Number(d.wallet_win_rate) * 100).toFixed(1)}%` : "N/A"}
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 4 }}>Total Volume</div>
+                <div style={{ fontSize: 16, fontFamily: "var(--mono)", fontWeight: 700 }}>
+                  ${d.wallet_total_volume ? Number(d.wallet_total_volume).toLocaleString() : "—"}
+                </div>
+              </div>
+            </div>
+            {d.tx_hash && (
+              <a
+                href={`https://polygonscan.com/tx/${d.tx_hash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ fontSize: 12, color: "var(--accent)" }}
+              >
+                View transaction on Polygonscan &rarr;
+              </a>
+            )}
+          </div>
+        )}
+
         {s.signal_type === "arbitrage" && (
           <div
             style={{
@@ -334,6 +421,13 @@ const DETAIL_LABELS = {
   sell_platform: "Sell On",
   polymarket_price: "Polymarket Price",
   kalshi_price: "Kalshi Price",
+  wallet_address: "Wallet Address",
+  wallet_label: "Wallet Label",
+  wallet_win_rate: "Win Rate",
+  wallet_total_volume: "Total Volume",
+  wallet_trade_count: "Trade Count",
+  notional_usd: "Notional (USD)",
+  tx_hash: "Transaction Hash",
   ofi_value: "OFI Value",
   bid_depth_current: "Bid Depth (Current)",
   ask_depth_current: "Ask Depth (Current)",

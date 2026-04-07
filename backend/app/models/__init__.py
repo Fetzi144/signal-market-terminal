@@ -5,6 +5,7 @@ from app.models.portfolio import Position, Trade
 from app.models.push_subscription import PushSubscription
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
+from app.models.whale import WalletActivity, WalletProfile
 
 __all__ = [
     "Market",
@@ -19,4 +20,6 @@ __all__ = [
     "Position",
     "Trade",
     "PushSubscription",
+    "WalletProfile",
+    "WalletActivity",
 ]

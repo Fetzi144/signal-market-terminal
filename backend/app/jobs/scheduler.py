@@ -43,6 +43,7 @@ async def _run_signal_detection():
     from app.signals.order_flow import OrderFlowImbalanceDetector
     from app.signals.price_move import PriceMoveDetector
     from app.signals.spread_change import SpreadChangeDetector
+    from app.signals.smart_money import SmartMoneyDetector
     from app.signals.volume_spike import VolumeSpikeDetector
 
     logger.info("Job: signal_detection starting")
@@ -56,6 +57,7 @@ async def _run_signal_detection():
                 DeadlineNearDetector(),
                 ArbitrageDetector(),
                 OrderFlowImbalanceDetector(),
+                SmartMoneyDetector(),
             ]
             all_candidates = []
             for detector in detectors:
@@ -231,6 +233,18 @@ async def _run_portfolio_price_refresh():
             logger.error("Job: portfolio_price_refresh failed", exc_info=True)
 
 
+async def _run_whale_scan():
+    from app.tracking.whale_tracker import scan_recent_activity
+
+    logger.info("Job: whale_scan starting")
+    async with async_session() as session:
+        try:
+            activities = await scan_recent_activity(session, hours=1)
+            logger.info("Job: whale_scan done, %d new activities", len(activities))
+        except Exception:
+            logger.error("Job: whale_scan failed", exc_info=True)
+
+
 def start_scheduler():
     scheduler.add_job(
         _run_market_discovery,
@@ -282,6 +296,14 @@ def start_scheduler():
         id="portfolio_price_refresh",
         replace_existing=True,
     )
+    if settings.whale_tracking_enabled:
+        scheduler.add_job(
+            _run_whale_scan,
+            "interval",
+            seconds=settings.whale_scan_interval_seconds,
+            id="whale_scan",
+            replace_existing=True,
+        )
     scheduler.start()
     logger.info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
 
