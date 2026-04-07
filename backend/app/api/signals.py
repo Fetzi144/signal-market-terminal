@@ -32,6 +32,7 @@ class EvaluationOut(BaseModel):
 class SignalOut(BaseModel):
     id: uuid.UUID
     signal_type: str
+    timeframe: str
     market_id: uuid.UUID
     outcome_id: uuid.UUID | None
     fired_at: datetime
@@ -61,6 +62,7 @@ async def list_signals(
     signal_type: str | None = None,
     market_id: uuid.UUID | None = None,
     platform: str | None = None,
+    timeframe: str | None = None,
     resolved_correctly: bool | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -78,6 +80,9 @@ async def list_signals(
     if platform:
         count_query = count_query.join(Market, Signal.market_id == Market.id).where(Market.platform == platform)
         query = query.where(Market.platform == platform)
+    if timeframe:
+        query = query.where(Signal.timeframe == timeframe)
+        count_query = count_query.where(Signal.timeframe == timeframe)
     if resolved_correctly is not None:
         query = query.where(Signal.resolved_correctly == resolved_correctly)
         count_query = count_query.where(Signal.resolved_correctly == resolved_correctly)
@@ -95,6 +100,7 @@ async def list_signals(
         signals.append(SignalOut(
             id=signal.id,
             signal_type=signal.signal_type,
+            timeframe=signal.timeframe,
             market_id=signal.market_id,
             outcome_id=signal.outcome_id,
             fired_at=signal.fired_at,
@@ -119,6 +125,15 @@ async def list_signal_types(db: AsyncSession = Depends(get_db)):
         select(Signal.signal_type).distinct().order_by(Signal.signal_type)
     )
     return {"types": [row for row in result.scalars().all()]}
+
+
+@router.get("/timeframes")
+async def list_signal_timeframes(db: AsyncSession = Depends(get_db)):
+    """Return distinct timeframe values from the database."""
+    result = await db.execute(
+        select(Signal.timeframe).distinct().order_by(Signal.timeframe)
+    )
+    return {"timeframes": [row for row in result.scalars().all()]}
 
 
 @router.get("/{signal_id}", response_model=SignalOut)
@@ -153,6 +168,7 @@ async def get_signal(request: Request, signal_id: uuid.UUID, db: AsyncSession = 
     return SignalOut(
         id=signal.id,
         signal_type=signal.signal_type,
+        timeframe=signal.timeframe,
         market_id=signal.market_id,
         outcome_id=signal.outcome_id,
         fired_at=signal.fired_at,

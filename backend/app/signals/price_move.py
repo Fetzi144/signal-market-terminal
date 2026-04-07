@@ -1,4 +1,8 @@
-"""Price Move detector: fires when an outcome's price moves significantly in a short window."""
+"""Price Move detector: fires when an outcome's price moves significantly in a short window.
+
+Supports multi-timeframe analysis: runs detection across each configured
+timeframe (e.g. 30m, 1h, 4h) and tags signals with their timeframe.
+"""
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -9,27 +13,51 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
-from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
+from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow, timeframe_to_minutes
 
 logger = logging.getLogger(__name__)
 
 
 class PriceMoveDetector(BaseDetector):
-    def __init__(self, *, threshold_pct: float | None = None, window_minutes: int | None = None):
+    def __init__(
+        self,
+        *,
+        threshold_pct: float | None = None,
+        window_minutes: int | None = None,
+        timeframes: list[str] | None = None,
+    ):
+        tf = timeframes or settings.price_move_timeframes.split(",")
+        super().__init__(timeframes=tf)
         self._threshold_pct = threshold_pct
         self._window_minutes = window_minutes
 
     async def detect(
         self, session: AsyncSession, *, snapshot_window: SnapshotWindow | None = None
     ) -> list[SignalCandidate]:
+        all_candidates: list[SignalCandidate] = []
+        for tf in self.timeframes:
+            candidates = await self._detect_timeframe(session, tf, snapshot_window=snapshot_window)
+            all_candidates.extend(candidates)
+        return all_candidates
+
+    async def _detect_timeframe(
+        self,
+        session: AsyncSession,
+        timeframe: str,
+        *,
+        snapshot_window: SnapshotWindow | None = None,
+    ) -> list[SignalCandidate]:
         now = datetime.now(timezone.utc)
-        window_minutes = self._window_minutes or settings.price_move_window_minutes
+        # Use explicit window_minutes override, otherwise derive from timeframe
+        if self._window_minutes is not None:
+            window_minutes = self._window_minutes
+        else:
+            window_minutes = timeframe_to_minutes(timeframe)
         window_start = now - timedelta(minutes=window_minutes)
         raw_threshold = self._threshold_pct if self._threshold_pct is not None else settings.price_move_threshold_pct
         threshold = Decimal(str(raw_threshold)) / 100
 
         if snapshot_window is not None:
-            # Replay mode: use pre-loaded snapshots
             latest_snaps, earliest_snaps = _snapshots_from_window(
                 snapshot_window.price_snapshots, window_start
             )
@@ -89,18 +117,20 @@ class PriceMoveDetector(BaseDetector):
                 signal_score=signal_score.quantize(Decimal("0.001")),
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=new_price,
+                timeframe=timeframe,
                 details={
                     "direction": direction,
                     "old_price": str(old_price),
                     "new_price": str(new_price),
                     "change_pct": str((change_pct * 100).quantize(Decimal("0.01"))),
                     "window_minutes": window_minutes,
+                    "timeframe": timeframe,
                     "market_question": market.question,
                     "outcome_name": outcome.name,
                 },
             ))
 
-        logger.info("PriceMoveDetector: %d candidates from %d outcomes", len(candidates), len(latest_snaps))
+        logger.info("PriceMoveDetector[%s]: %d candidates from %d outcomes", timeframe, len(candidates), len(latest_snaps))
         return candidates
 
 

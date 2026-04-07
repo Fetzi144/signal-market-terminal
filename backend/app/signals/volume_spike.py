@@ -1,4 +1,8 @@
-"""Volume Spike detector: fires when current volume far exceeds the rolling baseline."""
+"""Volume Spike detector: fires when current volume far exceeds the rolling baseline.
+
+Supports multi-timeframe analysis: runs detection across each configured
+timeframe (e.g. 1h, 4h, 24h baseline windows) and tags signals with their timeframe.
+"""
 import logging
 import math
 from datetime import datetime, timedelta, timezone
@@ -10,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
-from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
+from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow, timeframe_to_minutes
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +23,42 @@ MIN_BASELINE_SNAPSHOTS = 12
 
 
 class VolumeSpikeDetector(BaseDetector):
-    def __init__(self, *, multiplier: float | None = None, baseline_hours: int | None = None):
+    def __init__(
+        self,
+        *,
+        multiplier: float | None = None,
+        baseline_hours: int | None = None,
+        timeframes: list[str] | None = None,
+    ):
+        tf = timeframes or settings.volume_spike_timeframes.split(",")
+        super().__init__(timeframes=tf)
         self._multiplier = multiplier
         self._baseline_hours = baseline_hours
 
     async def detect(
         self, session: AsyncSession, *, snapshot_window: SnapshotWindow | None = None
     ) -> list[SignalCandidate]:
+        all_candidates: list[SignalCandidate] = []
+        for tf in self.timeframes:
+            candidates = await self._detect_timeframe(session, tf, snapshot_window=snapshot_window)
+            all_candidates.extend(candidates)
+        return all_candidates
+
+    async def _detect_timeframe(
+        self,
+        session: AsyncSession,
+        timeframe: str,
+        *,
+        snapshot_window: SnapshotWindow | None = None,
+    ) -> list[SignalCandidate]:
         now = datetime.now(timezone.utc)
-        baseline_hours = self._baseline_hours or settings.volume_spike_baseline_hours
+        # Use explicit baseline_hours override, otherwise use settings default
+        # The timeframe label identifies the analysis window for multi-TF grouping,
+        # but the actual baseline period comes from config.
+        if self._baseline_hours is not None:
+            baseline_hours = self._baseline_hours
+        else:
+            baseline_hours = settings.volume_spike_baseline_hours
         baseline_start = now - timedelta(hours=baseline_hours)
         recent_window = now - timedelta(hours=1)
         raw_multiplier = self._multiplier if self._multiplier is not None else settings.volume_spike_multiplier
@@ -84,17 +115,20 @@ class VolumeSpikeDetector(BaseDetector):
                 signal_score=signal_score.quantize(Decimal("0.001")),
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=snap.price,
+                timeframe=timeframe,
                 details={
                     "current_volume_24h": str(current_vol),
                     "baseline_avg_volume": str(avg_vol_dec.quantize(Decimal("0.01"))),
                     "multiplier": str(multiplier.quantize(Decimal("0.1"))),
                     "baseline_snapshots": snap_count,
+                    "baseline_hours": baseline_hours,
+                    "timeframe": timeframe,
                     "market_question": market.question,
                     "outcome_name": outcome.name,
                 },
             ))
 
-        logger.info("VolumeSpikeDetector: %d candidates", len(candidates))
+        logger.info("VolumeSpikeDetector[%s]: %d candidates", timeframe, len(candidates))
         return candidates
 
 

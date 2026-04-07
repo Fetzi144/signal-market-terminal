@@ -1,5 +1,9 @@
 """Order Flow Imbalance (OFI) detector: fires when buy/sell pressure in the
-orderbook is significantly imbalanced while price remains flat."""
+orderbook is significantly imbalanced while price remains flat.
+
+Supports multi-timeframe analysis: runs detection across each configured
+timeframe (e.g. 15m, 30m, 1h) and tags signals with their timeframe.
+"""
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -10,33 +14,51 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
-from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
+from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow, timeframe_to_minutes
 
 logger = logging.getLogger(__name__)
 
 
 class OrderFlowImbalanceDetector(BaseDetector):
+    def __init__(self, *, timeframes: list[str] | None = None):
+        tf = timeframes or settings.ofi_timeframes.split(",")
+        super().__init__(timeframes=tf)
+
     async def detect(
         self, session: AsyncSession, *, snapshot_window: SnapshotWindow | None = None
     ) -> list[SignalCandidate]:
         if not settings.ofi_enabled:
             return []
 
+        all_candidates: list[SignalCandidate] = []
+        for tf in self.timeframes:
+            candidates = await self._detect_timeframe(session, tf, snapshot_window=snapshot_window)
+            all_candidates.extend(candidates)
+        return all_candidates
+
+    async def _detect_timeframe(
+        self,
+        session: AsyncSession,
+        timeframe: str,
+        *,
+        snapshot_window: SnapshotWindow | None = None,
+    ) -> list[SignalCandidate]:
         now = datetime.now(timezone.utc)
         min_snapshots = settings.ofi_min_snapshots
         ofi_threshold = Decimal(str(settings.ofi_threshold))
-        flat_window = timedelta(minutes=settings.ofi_price_flat_window_minutes)
+        flat_minutes = timeframe_to_minutes(timeframe)
+        flat_window = timedelta(minutes=flat_minutes)
 
         if snapshot_window is not None:
             ob_snapshots = snapshot_window.orderbook_snapshots
             price_snapshots = snapshot_window.price_snapshots
             return await self._detect_from_lists(
                 session, ob_snapshots, price_snapshots,
-                min_snapshots, ofi_threshold, flat_window, now,
+                min_snapshots, ofi_threshold, flat_window, now, timeframe,
             )
 
         return await self._detect_from_db(
-            session, min_snapshots, ofi_threshold, flat_window, now,
+            session, min_snapshots, ofi_threshold, flat_window, now, timeframe,
         )
 
     async def _detect_from_db(
@@ -46,6 +68,7 @@ class OrderFlowImbalanceDetector(BaseDetector):
         ofi_threshold: Decimal,
         flat_window: timedelta,
         now: datetime,
+        timeframe: str,
     ) -> list[SignalCandidate]:
         """Live mode: query DB for recent orderbook snapshots."""
         from collections import defaultdict
@@ -73,12 +96,12 @@ class OrderFlowImbalanceDetector(BaseDetector):
             if len(snaps) < min_snapshots:
                 continue
             candidate = await self._evaluate_outcome(
-                session, outcome_id, snaps, ofi_threshold, flat_window, now,
+                session, outcome_id, snaps, ofi_threshold, flat_window, now, timeframe,
             )
             if candidate is not None:
                 candidates.append(candidate)
 
-        logger.info("OrderFlowImbalanceDetector: %d candidates", len(candidates))
+        logger.info("OrderFlowImbalanceDetector[%s]: %d candidates", timeframe, len(candidates))
         return candidates
 
     async def _detect_from_lists(
@@ -90,6 +113,7 @@ class OrderFlowImbalanceDetector(BaseDetector):
         ofi_threshold: Decimal,
         flat_window: timedelta,
         now: datetime,
+        timeframe: str,
     ) -> list[SignalCandidate]:
         """Replay mode: use pre-loaded snapshot lists."""
         from collections import defaultdict
@@ -107,13 +131,13 @@ class OrderFlowImbalanceDetector(BaseDetector):
                 continue
 
             candidate = await self._evaluate_outcome(
-                session, outcome_id, sorted_snaps, ofi_threshold, flat_window, now,
+                session, outcome_id, sorted_snaps, ofi_threshold, flat_window, now, timeframe,
                 price_snapshots=price_snapshots,
             )
             if candidate is not None:
                 candidates.append(candidate)
 
-        logger.info("OrderFlowImbalanceDetector: %d candidates (replay)", len(candidates))
+        logger.info("OrderFlowImbalanceDetector[%s]: %d candidates (replay)", timeframe, len(candidates))
         return candidates
 
     async def _evaluate_outcome(
@@ -124,6 +148,7 @@ class OrderFlowImbalanceDetector(BaseDetector):
         ofi_threshold: Decimal,
         flat_window: timedelta,
         now: datetime,
+        timeframe: str,
         price_snapshots: list | None = None,
     ) -> SignalCandidate | None:
         """Evaluate a single outcome for OFI signal."""
@@ -217,6 +242,7 @@ class OrderFlowImbalanceDetector(BaseDetector):
             signal_score=signal_score.quantize(Decimal("0.001")),
             confidence=confidence.quantize(Decimal("0.001")),
             price_at_fire=last_price,
+            timeframe=timeframe,
             details={
                 "direction": direction,
                 "ofi_value": str(ofi.quantize(Decimal("0.001"))),
@@ -225,6 +251,7 @@ class OrderFlowImbalanceDetector(BaseDetector):
                 "bid_depth_previous": str(bid_depth_prev),
                 "ask_depth_previous": str(ask_depth_prev),
                 "price_current": str(last_price),
+                "timeframe": timeframe,
                 "market_question": market.question,
                 "outcome_name": outcome.name,
             },

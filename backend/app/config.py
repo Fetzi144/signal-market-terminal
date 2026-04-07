@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     market_pagination_cap: int = 5000
     orderbook_sample_size: int = 50
 
+    # Multi-Timeframe Analysis
+    # Timeframes per detector type (comma-separated). Default is single timeframe.
+    price_move_timeframes: str = "30m"       # e.g. "30m,1h,4h"
+    volume_spike_timeframes: str = "1h"      # e.g. "1h,4h,24h"
+    ofi_timeframes: str = "30m"              # e.g. "15m,30m,1h"
+
     # Signals — Price Move
     price_move_window_minutes: int = 30
     price_move_threshold_pct: float = 5.0

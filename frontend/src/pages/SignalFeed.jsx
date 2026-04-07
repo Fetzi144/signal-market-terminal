@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Link } from "react-router-dom";
-import { getSignals, exportSignalsCsv, getSignalTypes, getMarketPlatforms } from "../api";
+import { getSignals, exportSignalsCsv, getSignalTypes, getMarketPlatforms, getSignalTimeframes } from "../api";
 import SignalEvaluationBar from "../components/SignalEvaluationBar";
 import useSSE from "../hooks/useSSE";
 
@@ -35,6 +35,43 @@ function DirectionBadge({ direction }) {
   return (
     <span style={{ color: isUp ? "var(--green)" : "var(--red)", fontWeight: 600, fontSize: 13 }}>
       {isUp ? "\u2191" : "\u2193"}
+    </span>
+  );
+}
+
+const TIMEFRAME_COLORS = {
+  "5m": "#94a3b8", "15m": "#94a3b8", "30m": "#60a5fa",
+  "1h": "#a78bfa", "4h": "#f59e0b", "24h": "#ef4444",
+};
+
+function TimeframeBadge({ timeframe }) {
+  if (!timeframe) return null;
+  const color = TIMEFRAME_COLORS[timeframe] || "var(--text-dim)";
+  return (
+    <span
+      style={{
+        fontSize: 10, fontWeight: 700, fontFamily: "var(--mono)",
+        color: "#fff", background: color,
+        padding: "1px 6px", borderRadius: 4,
+      }}
+    >
+      {timeframe}
+    </span>
+  );
+}
+
+function ConfluenceBadge({ details }) {
+  const tfs = details?.confluence_timeframes;
+  if (!tfs || tfs.length < 2) return null;
+  return (
+    <span
+      style={{
+        fontSize: 11, fontWeight: 600, color: "var(--green)",
+        background: "rgba(34,197,94,0.12)", padding: "2px 8px",
+        borderRadius: 4, whiteSpace: "nowrap",
+      }}
+    >
+      Confirmed: {tfs.join(" + ")}
     </span>
   );
 }
@@ -121,11 +158,13 @@ function SignalCard({ signal }) {
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <PlatformBadge platform={s.platform} />
+            <TimeframeBadge timeframe={s.timeframe} />
             <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--accent)" }}>
               {typeLabel}
             </span>
             <DirectionBadge direction={d.direction} />
             {snippet}
+            <ConfluenceBadge details={d} />
           </div>
           <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{time}</span>
         </div>
@@ -153,6 +192,7 @@ export default function SignalFeed() {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("");
   const [platformFilter, setPlatformFilter] = useState("");
+  const [timeframeFilter, setTimeframeFilter] = useState("");
   const [resolvedFilter, setResolvedFilter] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState(null);
@@ -160,6 +200,7 @@ export default function SignalFeed() {
   const [paused, setPaused] = useState(false);
   const [typeOptions, setTypeOptions] = useState(DEFAULT_TYPE_OPTIONS);
   const [platformOptions, setPlatformOptions] = useState(DEFAULT_PLATFORM_OPTIONS);
+  const [timeframeOptions, setTimeframeOptions] = useState([{ value: "", label: "All Timeframes" }]);
   const intervalRef = useRef(null);
   const { connected, addEventListener } = useSSE();
 
@@ -181,6 +222,14 @@ export default function SignalFeed() {
         ]);
       })
       .catch(() => {});
+    getSignalTimeframes()
+      .then((d) => {
+        setTimeframeOptions([
+          { value: "", label: "All Timeframes" },
+          ...d.timeframes.map((t) => ({ value: t, label: t })),
+        ]);
+      })
+      .catch(() => {});
   }, []);
 
   // Auto-fetch when SSE reports new signals
@@ -197,6 +246,7 @@ export default function SignalFeed() {
     const params = { page, pageSize: PAGE_SIZE };
     if (filter) params.signalType = filter;
     if (platformFilter) params.platform = platformFilter;
+    if (timeframeFilter) params.timeframe = timeframeFilter;
     if (resolvedFilter !== "") params.resolvedCorrectly = resolvedFilter;
     getSignals(params)
       .then((d) => {
@@ -205,7 +255,7 @@ export default function SignalFeed() {
         setError(null);
       })
       .catch((e) => setError(e.message));
-  }, [filter, platformFilter, resolvedFilter, page]);
+  }, [filter, platformFilter, timeframeFilter, resolvedFilter, page]);
 
   // Fetch on filter/page change
   useEffect(() => {
@@ -225,7 +275,7 @@ export default function SignalFeed() {
   // Reset page on filter change
   useEffect(() => {
     setPage(1);
-  }, [filter, platformFilter, resolvedFilter]);
+  }, [filter, platformFilter, timeframeFilter, resolvedFilter]);
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / PAGE_SIZE)) : 1;
 
@@ -265,6 +315,24 @@ export default function SignalFeed() {
           }}
         >
           {platformOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+
+        <select
+          value={timeframeFilter}
+          onChange={(e) => setTimeframeFilter(e.target.value)}
+          style={{
+            padding: "6px 12px",
+            fontSize: 13,
+            background: "var(--bg-card)",
+            color: "var(--text)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          {timeframeOptions.map((o) => (
             <option key={o.value} value={o.value}>{o.label}</option>
           ))}
         </select>

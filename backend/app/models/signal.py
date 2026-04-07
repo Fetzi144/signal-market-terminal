@@ -14,6 +14,7 @@ class Signal(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     signal_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    timeframe: Mapped[str] = mapped_column(String(8), nullable=False, default="30m")
     market_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     outcome_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("outcomes.id", ondelete="SET NULL")
@@ -35,15 +36,16 @@ class Signal(Base):
     evaluations: Mapped[list["SignalEvaluation"]] = relationship(back_populates="signal")
 
     __table_args__ = (
-        # Dedupe: one signal per type per outcome per 15-min window
+        # Dedupe: one signal per type per outcome per timeframe per 15-min window
         Index(
-            "uq_signal_dedupe", "signal_type", "outcome_id", "dedupe_bucket",
+            "uq_signal_dedupe", "signal_type", "outcome_id", "timeframe", "dedupe_bucket",
             unique=True,
         ),
         Index("ix_signal_fired", "fired_at"),
         Index("ix_signal_market", "market_id", "fired_at"),
         Index("ix_signal_type", "signal_type", "fired_at"),
         Index("ix_signal_rank", "rank_score"),
+        Index("ix_signal_timeframe", "timeframe"),
     )
 
 

@@ -33,16 +33,38 @@ export default function SignalDetail() {
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-          <span
-            style={{
-              fontSize: 12,
-              fontWeight: 600,
-              textTransform: "uppercase",
-              color: "var(--accent)",
-            }}
-          >
-            {s.signal_type.replace("_", " ")}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                textTransform: "uppercase",
+                color: "var(--accent)",
+              }}
+            >
+              {s.signal_type.replace("_", " ")}
+            </span>
+            <span
+              style={{
+                fontSize: 10, fontWeight: 700, fontFamily: "var(--mono)",
+                color: "#fff", background: "#60a5fa",
+                padding: "1px 6px", borderRadius: 4,
+              }}
+            >
+              {s.timeframe || "30m"}
+            </span>
+            {d.confluence_timeframes && d.confluence_timeframes.length >= 2 && (
+              <span
+                style={{
+                  fontSize: 11, fontWeight: 600, color: "var(--green)",
+                  background: "rgba(34,197,94,0.12)", padding: "2px 8px",
+                  borderRadius: 4,
+                }}
+              >
+                Confirmed: {d.confluence_timeframes.join(" + ")}
+              </span>
+            )}
+          </div>
           <span style={{ fontSize: 13, color: "var(--text-dim)" }}>
             {new Date(s.fired_at).toLocaleString()}
           </span>

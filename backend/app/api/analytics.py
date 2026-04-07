@@ -148,6 +148,46 @@ async def signal_accuracy(
     return {"accuracy": accuracy}
 
 
+@router.get("/timeframe-accuracy")
+async def timeframe_accuracy(
+    days: int = Query(None, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+):
+    """Signal accuracy broken down by timeframe."""
+    query = (
+        select(
+            Signal.timeframe,
+            func.count(Signal.id).label("total"),
+            func.sum(case((Signal.resolved_correctly.isnot(None), 1), else_=0)).label("resolved"),
+            func.sum(case((Signal.resolved_correctly.is_(True), 1), else_=0)).label("correct"),
+            func.avg(Signal.rank_score).label("avg_rank"),
+        )
+    )
+    if days:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        query = query.where(Signal.fired_at >= cutoff)
+    query = query.group_by(Signal.timeframe)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    accuracy = []
+    for timeframe, total, resolved, correct, avg_rank in rows:
+        resolved = resolved or 0
+        correct = correct or 0
+        accuracy.append({
+            "timeframe": timeframe,
+            "total_signals": total,
+            "resolved_count": resolved,
+            "correct_count": correct,
+            "resolution_rate_pct": round(resolved / total * 100, 1) if total > 0 else 0,
+            "accuracy_pct": round(correct / resolved * 100, 1) if resolved > 0 else 0,
+            "avg_rank_score": round(float(avg_rank), 3) if avg_rank else 0,
+        })
+
+    return {"timeframe_accuracy": accuracy}
+
+
 @router.get("/correlated-signals")
 async def correlated_signals(
     hours: int = 1,

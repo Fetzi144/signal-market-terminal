@@ -5,6 +5,24 @@ from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
+# Maps timeframe strings to minutes for window calculations
+TIMEFRAME_MINUTES = {
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+    "24h": 1440,
+}
+
+
+def timeframe_to_minutes(tf: str) -> int:
+    """Convert a timeframe string like '30m' or '4h' to minutes."""
+    if tf in TIMEFRAME_MINUTES:
+        return TIMEFRAME_MINUTES[tf]
+    raise ValueError(f"Unknown timeframe: {tf}")
+
+
 @dataclass
 class SignalCandidate:
     """A detected signal before persistence."""
@@ -15,6 +33,7 @@ class SignalCandidate:
     confidence: Decimal
     price_at_fire: Decimal | None
     details: dict
+    timeframe: str = "30m"
 
 
 @dataclass
@@ -31,6 +50,15 @@ class SnapshotWindow:
 
 
 class BaseDetector(ABC):
+    """Base class for all signal detectors.
+
+    Detectors that support multi-timeframe analysis should accept a
+    `timeframes` parameter and run detection for each configured timeframe.
+    """
+
+    def __init__(self, *, timeframes: list[str] | None = None):
+        self.timeframes = timeframes or ["30m"]
+
     @abstractmethod
     async def detect(
         self, session: AsyncSession, *, snapshot_window: SnapshotWindow | None = None

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getPlatformSummary, getSignalAccuracy, getCorrelatedSignals } from "../api";
+import { getPlatformSummary, getSignalAccuracy, getCorrelatedSignals, getTimeframeAccuracy } from "../api";
 
 const PLATFORM_COLORS = { polymarket: "#6366f1", kalshi: "#f59e0b" };
 
@@ -90,6 +90,39 @@ function AccuracyTable({ data }) {
   );
 }
 
+function TimeframeAccuracyTable({ data }) {
+  if (!data || data.length === 0) {
+    return <div style={{ color: "var(--text-dim)", padding: 20 }}>No timeframe data yet.</div>;
+  }
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <thead>
+        <tr style={{ borderBottom: "1px solid var(--border)" }}>
+          <th style={{ textAlign: "left", padding: 8, color: "var(--text-dim)" }}>Timeframe</th>
+          <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Signals</th>
+          <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Resolved</th>
+          <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Accuracy</th>
+          <th style={{ textAlign: "right", padding: 8, color: "var(--text-dim)" }}>Avg Rank</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.map((row) => {
+          const accColor = colorForPct(row.accuracy_pct);
+          return (
+            <tr key={row.timeframe} style={{ borderBottom: "1px solid var(--border)" }}>
+              <td style={{ padding: 8, fontWeight: 600, fontFamily: "var(--mono)", color: "var(--accent)" }}>{row.timeframe}</td>
+              <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>{row.total_signals}</td>
+              <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>{row.resolved_count}</td>
+              <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)", color: accColor, fontWeight: 600 }}>{row.accuracy_pct}%</td>
+              <td style={{ textAlign: "right", padding: 8, fontFamily: "var(--mono)" }}>{Math.round(row.avg_rank_score * 100)}%</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
 function CorrelatedList({ data }) {
   if (!data || data.length === 0) {
     return <div style={{ color: "var(--text-dim)", padding: 20 }}>No cross-platform correlations found.</div>;
@@ -136,6 +169,7 @@ export default function Analytics() {
   const [platformData, setPlatformData] = useState(null);
   const [accuracyData, setAccuracyData] = useState(null);
   const [correlatedData, setCorrelatedData] = useState(null);
+  const [timeframeData, setTimeframeData] = useState(null);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -143,11 +177,13 @@ export default function Analytics() {
       getPlatformSummary(),
       getSignalAccuracy(),
       getCorrelatedSignals(),
+      getTimeframeAccuracy(),
     ])
-      .then(([ps, acc, corr]) => {
+      .then(([ps, acc, corr, tfa]) => {
         setPlatformData(ps.platforms);
         setAccuracyData(acc.accuracy);
         setCorrelatedData(corr.correlated);
+        setTimeframeData(tfa.timeframe_accuracy);
       })
       .catch((e) => setError(e.message));
   }, []);
@@ -169,6 +205,13 @@ export default function Analytics() {
       <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 4, marginBottom: 32 }}>
         {accuracyData ? <AccuracyTable data={accuracyData} /> : (
           <div className="skeleton" style={{ height: 120, borderRadius: 8 }} />
+        )}
+      </div>
+
+      <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Accuracy by Timeframe</h2>
+      <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 4, marginBottom: 32 }}>
+        {timeframeData ? <TimeframeAccuracyTable data={timeframeData} /> : (
+          <div className="skeleton" style={{ height: 80, borderRadius: 8 }} />
         )}
       </div>
 

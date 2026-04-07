@@ -6,11 +6,12 @@ async function fetchJson(url) {
   return res.json();
 }
 
-export function getSignals({ page = 1, pageSize = 50, signalType, marketId, platform, resolvedCorrectly } = {}) {
+export function getSignals({ page = 1, pageSize = 50, signalType, marketId, platform, timeframe, resolvedCorrectly } = {}) {
   const params = new URLSearchParams({ page, page_size: pageSize });
   if (signalType) params.set("signal_type", signalType);
   if (marketId) params.set("market_id", marketId);
   if (platform) params.set("platform", platform);
+  if (timeframe) params.set("timeframe", timeframe);
   if (resolvedCorrectly !== undefined && resolvedCorrectly !== "") params.set("resolved_correctly", resolvedCorrectly);
   return fetchJson(`${API_BASE}/signals?${params}`);
 }
@@ -73,8 +74,18 @@ export function getCorrelatedSignals(hours = 1) {
   return fetchJson(`${API_BASE}/analytics/correlated-signals?hours=${hours}`);
 }
 
+export function getTimeframeAccuracy(days) {
+  const params = new URLSearchParams();
+  if (days) params.set("days", days);
+  return fetchJson(`${API_BASE}/analytics/timeframe-accuracy?${params}`);
+}
+
 export function getSignalTypes() {
   return fetchJson(`${API_BASE}/signals/types`);
+}
+
+export function getSignalTimeframes() {
+  return fetchJson(`${API_BASE}/signals/timeframes`);
 }
 
 export function getMarketPlatforms() {
