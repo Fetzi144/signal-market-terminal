@@ -12,6 +12,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.api import alerts, analytics, health, markets, signals, sse
+from app.api.signals import signals_limiter
 from app.config import settings
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
@@ -48,6 +49,7 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
+app.state.signals_limiter = signals_limiter
 
 
 @app.exception_handler(RateLimitExceeded)
@@ -55,6 +57,7 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
     return JSONResponse(
         status_code=429,
         content={"detail": f"Rate limit exceeded: {exc.detail}"},
+        headers={"X-RateLimit-Remaining": "0"},
     )
 
 

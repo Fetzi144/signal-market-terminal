@@ -7,7 +7,6 @@ import pytest
 
 from tests.conftest import make_market, make_outcome, make_price_snapshot, make_signal
 
-
 # ── Health ──────────────────────────────────────────────
 
 
@@ -107,8 +106,9 @@ async def test_signal_not_found(client):
 @pytest.mark.asyncio
 async def test_signal_detail_with_evaluations(client, engine):
     """GET /signals/{id} returns signal with evaluations."""
-    from app.models.signal import SignalEvaluation
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app.models.signal import SignalEvaluation
     async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_sess() as session:
         market = make_market(session)
@@ -382,8 +382,9 @@ async def test_market_platforms_returns_distinct(client, engine):
 @pytest.mark.asyncio
 async def test_analytics_accuracy_schema(client, engine):
     """Signal accuracy endpoint returns both resolution and price-direction fields."""
-    from app.models.signal import SignalEvaluation
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from app.models.signal import SignalEvaluation
     async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with async_sess() as session:
         market = make_market(session)

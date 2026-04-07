@@ -1,6 +1,4 @@
 """Tests for market resolution service."""
-from datetime import datetime, timezone
-from decimal import Decimal
 
 import pytest
 
@@ -35,7 +33,7 @@ async def test_wrong_direction_up_on_loser(session):
     """Signal with direction=up on losing outcome → resolved_correctly=False."""
     market = make_market(session, platform="polymarket", platform_id="pm-456")
     await session.flush()
-    outcome_yes = make_outcome(session, market.id, name="Yes")
+    _outcome_yes = make_outcome(session, market.id, name="Yes")
     outcome_no = make_outcome(session, market.id, name="No")
     await session.flush()
 
@@ -59,7 +57,7 @@ async def test_direction_down_on_loser_is_correct(session):
     """Signal with direction=down on losing outcome → resolved_correctly=True."""
     market = make_market(session, platform="polymarket", platform_id="pm-789")
     await session.flush()
-    outcome_yes = make_outcome(session, market.id, name="Yes")
+    _outcome_yes = make_outcome(session, market.id, name="Yes")
     outcome_no = make_outcome(session, market.id, name="No")
     await session.flush()
 
@@ -156,7 +154,7 @@ async def test_kalshi_resolution(session):
     market = make_market(session, platform="kalshi", platform_id="KTEST-123")
     await session.flush()
     outcome_yes = make_outcome(session, market.id, name="Yes")
-    outcome_no = make_outcome(session, market.id, name="No")
+    _outcome_no = make_outcome(session, market.id, name="No")
     await session.flush()
 
     signal = make_signal(

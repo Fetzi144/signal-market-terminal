@@ -1,6 +1,6 @@
 """Tests for scheduler signal broadcast: ensure only newly-created signals are broadcast."""
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 

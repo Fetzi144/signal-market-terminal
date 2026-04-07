@@ -1,6 +1,4 @@
 """Tests for SSE SignalBroadcaster."""
-import asyncio
-
 import pytest
 
 from app.api.sse import SignalBroadcaster
@@ -55,8 +53,8 @@ async def test_multiple_subscribers_all_receive():
 
 
 @pytest.mark.asyncio
-async def test_queue_full_subscriber_dropped():
-    """When queue is full (maxsize=100), subscriber is removed (dropped)."""
+async def test_queue_full_subscriber_gets_close_sentinel():
+    """When queue is full (maxsize=100), subscriber receives a __close__ sentinel."""
     b = SignalBroadcaster()
     sub_id, queue = b.subscribe()
     assert b.subscriber_count == 1
@@ -65,10 +63,17 @@ async def test_queue_full_subscriber_dropped():
     for i in range(100):
         await b.publish("event", {"i": i})
 
-    # Queue should be full now — next publish drops the subscriber
+    # Queue is full — next publish triggers overflow handling
     await b.publish("overflow", {"dropped": True})
 
+    # Subscriber should be removed from broadcaster
     assert b.subscriber_count == 0
+
+    # Drain queue: last item should be the __close__ sentinel
+    messages = []
+    while not queue.empty():
+        messages.append(queue.get_nowait())
+    assert any(m["event"] == "__close__" for m in messages), "Expected __close__ sentinel in queue"
 
 
 @pytest.mark.asyncio
@@ -103,3 +108,14 @@ async def test_publish_with_no_subscribers():
     b = SignalBroadcaster()
     await b.publish("event", {"data": "test"})
     # No error = pass
+
+
+@pytest.mark.asyncio
+async def test_sse_connection_limit_returns_503(client, monkeypatch):
+    """When SSE connection limit is reached, return 503."""
+    # Set max connections to 0 so any new connection is rejected
+    monkeypatch.setattr("app.config.settings.sse_max_connections", 0)
+
+    resp = await client.get("/api/v1/events/signals")
+    assert resp.status_code == 503
+    assert "connection limit" in resp.json()["detail"].lower()

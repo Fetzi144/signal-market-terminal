@@ -42,6 +42,7 @@ class TestWebhookAlerter:
             )
             with patch("app.alerts.webhook_alert.settings") as mock_settings:
                 mock_settings.alert_webhook_url = "https://example.com/webhook"
+                mock_settings.alert_webhook_secret = ""
                 from app.alerts.webhook_alert import WebhookAlerter
                 alerter = WebhookAlerter()
                 await alerter.send(signal, "Will BTC hit 100k?")

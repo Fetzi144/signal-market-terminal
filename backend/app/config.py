@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     api_key: str | None = None  # Set to require X-API-Key header
     cors_origins: str = "http://localhost:5173"  # Comma-separated origins
 
+    # SSE
+    sse_max_connections: int = 50
+
+    # Webhook Security
+    alert_webhook_secret: str = ""  # If set, HMAC-SHA256 sign webhook payloads
+
     # App
     log_level: str = "INFO"
     log_format: str = "text"  # "text" or "json"
@@ -121,6 +127,13 @@ class Settings(BaseSettings):
     def limits_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Limit must be >= 1")
+        return v
+
+    @field_validator("sse_max_connections")
+    @classmethod
+    def sse_max_connections_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("sse_max_connections must be >= 1")
         return v
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

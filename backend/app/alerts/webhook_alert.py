@@ -1,4 +1,7 @@
-"""Webhook alerter: POST JSON payload to a configurable URL."""
+"""Webhook alerter: POST JSON payload to a configurable URL with optional HMAC signing."""
+import hashlib
+import hmac
+import json
 import logging
 
 import httpx
@@ -29,9 +32,23 @@ class WebhookAlerter(BaseAlerter):
             "signal_id": str(signal.id),
         }
 
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+
+        # HMAC-SHA256 signing: receiver can verify with
+        #   expected = hmac.new(secret.encode(), request.body, hashlib.sha256).hexdigest()
+        #   assert hmac.compare_digest(f"sha256={expected}", request.headers["X-SMT-Signature"])
+        json_body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        if settings.alert_webhook_secret:
+            signature = hmac.new(
+                settings.alert_webhook_secret.encode(),
+                json_body.encode(),
+                hashlib.sha256,
+            ).hexdigest()
+            headers["X-SMT-Signature"] = f"sha256={signature}"
+
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, content=json_body, headers=headers)
                 if resp.status_code >= 400:
                     logger.warning("Webhook returned %d for signal %s", resp.status_code, signal.id)
                 else:

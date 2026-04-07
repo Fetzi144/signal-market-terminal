@@ -5,9 +5,11 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +18,7 @@ from app.models.market import Market
 from app.models.signal import Signal, SignalEvaluation
 
 router = APIRouter(prefix="/api/v1/signals", tags=["signals"])
+signals_limiter = Limiter(key_func=get_remote_address)
 
 
 class EvaluationOut(BaseModel):
@@ -52,7 +55,9 @@ class SignalListOut(BaseModel):
 
 
 @router.get("", response_model=SignalListOut)
+@signals_limiter.limit("10/second")
 async def list_signals(
+    request: Request,
     signal_type: str | None = None,
     market_id: uuid.UUID | None = None,
     platform: str | None = None,
@@ -117,7 +122,8 @@ async def list_signal_types(db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{signal_id}", response_model=SignalOut)
-async def get_signal(signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+@signals_limiter.limit("10/second")
+async def get_signal(request: Request, signal_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Signal, Market.question, Market.platform)
         .join(Market, Signal.market_id == Market.id)

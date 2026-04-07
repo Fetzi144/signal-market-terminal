@@ -84,6 +84,24 @@ class TestLimitValidation:
             _make(alert_batch_limit=0)
 
 
+class TestSseMaxConnections:
+    def test_valid_sse_max_connections(self):
+        s = _make(sse_max_connections=100)
+        assert s.sse_max_connections == 100
+
+    def test_default_sse_max_connections(self):
+        s = _make()
+        assert s.sse_max_connections == 50
+
+    def test_zero_sse_max_connections_rejected(self):
+        with pytest.raises(ValidationError, match="sse_max_connections must be >= 1"):
+            _make(sse_max_connections=0)
+
+    def test_negative_sse_max_connections_rejected(self):
+        with pytest.raises(ValidationError, match="sse_max_connections must be >= 1"):
+            _make(sse_max_connections=-1)
+
+
 class TestDefaults:
     def test_default_values(self):
         s = _make()
@@ -92,3 +110,5 @@ class TestDefaults:
         assert s.orderbook_sample_size == 50
         assert s.cleanup_interval_hours == 6
         assert s.kalshi_enabled is True
+        assert s.sse_max_connections == 50
+        assert s.alert_webhook_secret == ""

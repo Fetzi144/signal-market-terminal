@@ -1,5 +1,4 @@
 """Tests for ranking/scorer module: rank score computation, recency decay, deduplication."""
-import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -8,7 +7,6 @@ import pytest
 from app.ranking.scorer import _dedupe_bucket, compute_rank_score, persist_signals
 from app.signals.base import SignalCandidate
 from tests.conftest import make_market, make_outcome
-
 
 # ── Rank score formula ──────────────────────────────────
 

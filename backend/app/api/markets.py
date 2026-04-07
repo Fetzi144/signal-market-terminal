@@ -131,27 +131,46 @@ async def get_market(market_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     if market is None:
         raise HTTPException(404, "Market not found")
 
-    # Fetch outcomes with latest price
+    # Fetch outcomes
     outcome_result = await db.execute(
         select(Outcome).where(Outcome.market_id == market_id)
     )
-    outcomes_out = []
-    for outcome in outcome_result.scalars().all():
-        # Get latest price
-        price_result = await db.execute(
-            select(PriceSnapshot.price)
-            .where(PriceSnapshot.outcome_id == outcome.id)
-            .order_by(PriceSnapshot.captured_at.desc())
-            .limit(1)
-        )
-        latest_price = price_result.scalar_one_or_none()
+    outcomes = outcome_result.scalars().all()
+    outcome_ids = [o.id for o in outcomes]
 
-        outcomes_out.append(OutcomeOut(
-            id=outcome.id,
-            name=outcome.name,
-            token_id=outcome.token_id,
-            latest_price=latest_price,
-        ))
+    # Single query for latest price per outcome (no N+1)
+    latest_prices: dict[uuid.UUID, Decimal] = {}
+    if outcome_ids:
+        # Subquery: rank snapshots per outcome by captured_at descending
+        ranked = (
+            select(
+                PriceSnapshot.outcome_id,
+                PriceSnapshot.price,
+                func.row_number()
+                .over(
+                    partition_by=PriceSnapshot.outcome_id,
+                    order_by=PriceSnapshot.captured_at.desc(),
+                )
+                .label("rn"),
+            )
+            .where(PriceSnapshot.outcome_id.in_(outcome_ids))
+            .subquery()
+        )
+        price_result = await db.execute(
+            select(ranked.c.outcome_id, ranked.c.price).where(ranked.c.rn == 1)
+        )
+        for oid, price in price_result.all():
+            latest_prices[oid] = price
+
+    outcomes_out = [
+        OutcomeOut(
+            id=o.id,
+            name=o.name,
+            token_id=o.token_id,
+            latest_price=latest_prices.get(o.id),
+        )
+        for o in outcomes
+    ]
 
     return MarketOut(
         id=market.id,
