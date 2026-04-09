@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Routes, Route, Link, useLocation } from "react-router-dom";
 import SignalFeed from "./pages/SignalFeed";
+import OnboardingWizard from "./components/OnboardingWizard";
 import SignalDetail from "./pages/SignalDetail";
 import MarketDetail from "./pages/MarketDetail";
 import Markets from "./pages/Markets";
@@ -53,6 +54,10 @@ const NAV_LINKS = [
 
 export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showWizard, setShowWizard] = useState(
+    () => !localStorage.getItem("smt-onboarded")
+  );
+  const [initialFilters, setInitialFilters] = useState(null);
   const location = useLocation();
 
   // Close mobile menu on navigation
@@ -118,8 +123,17 @@ export default function App() {
         </div>
       </nav>
 
+      {showWizard && (
+        <OnboardingWizard
+          onComplete={(filters) => {
+            setInitialFilters(filters);
+            setShowWizard(false);
+          }}
+        />
+      )}
+
       <Routes>
-        <Route path="/" element={<SignalFeed />} />
+        <Route path="/" element={<SignalFeed initialFilters={initialFilters} />} />
         <Route path="/signals/:id" element={<SignalDetail />} />
         <Route path="/markets" element={<Markets />} />
         <Route path="/markets/:id" element={<MarketDetail />} />

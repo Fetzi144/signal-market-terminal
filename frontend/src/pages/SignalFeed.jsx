@@ -188,11 +188,11 @@ function SignalCard({ signal }) {
   );
 }
 
-export default function SignalFeed() {
+export default function SignalFeed({ initialFilters }) {
   const [data, setData] = useState(null);
   const [filter, setFilter] = useState("");
   const [platformFilter, setPlatformFilter] = useState("");
-  const [timeframeFilter, setTimeframeFilter] = useState("");
+  const [timeframeFilter, setTimeframeFilter] = useState(initialFilters?.timeframe || "");
   const [resolvedFilter, setResolvedFilter] = useState("");
   const [page, setPage] = useState(1);
   const [error, setError] = useState(null);

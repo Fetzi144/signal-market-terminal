@@ -215,6 +215,59 @@ input, select, textarea {
   margin-top: auto;
 }
 
+/* ── Onboarding Wizard ────────────────────────────────────────────────── */
+.wizard-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  padding: 16px;
+}
+
+.wizard-content {
+  position: relative;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  width: 100%;
+  max-width: 560px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+.wizard-close {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 22px;
+  cursor: pointer;
+  padding: 4px 8px;
+  min-height: auto;
+}
+
+.wizard-close:hover {
+  color: var(--text);
+}
+
+.wizard-body {
+  min-height: 200px;
+}
+
+@media (max-width: 480px) {
+  .wizard-content {
+    padding: 20px 16px;
+    max-height: 90vh;
+    border-radius: 8px;
+  }
+}
+
 /* ── Dialog responsive ─────────────────────────────────────────────────── */
 .dialog-overlay {
   position: fixed;
