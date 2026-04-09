@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     # Ingestion
     snapshot_interval_seconds: int = 120
     market_discovery_interval_seconds: int = 300
-    min_volume_24h: float = 5000.0
-    market_pagination_cap: int = 5000
+    min_volume_24h: float = 500.0
+    market_pagination_cap: int = 100000
     orderbook_sample_size: int = 50
 
     # Multi-Timeframe Analysis
