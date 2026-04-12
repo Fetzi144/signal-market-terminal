@@ -1,5 +1,7 @@
 """Performance dashboard metrics endpoint."""
+import math
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import case, func, select
@@ -35,26 +37,79 @@ async def performance_summary(db: AsyncSession = Depends(get_db)):
     total_correct = total_correct or 0
     overall_win_rate = round(total_correct / total_resolved, 4) if total_resolved > 0 else None
 
-    # ── Win rate by signal type ─────────────────────────────────────────────
+    # ── CLV metrics — overall ───────────────────────────────────────────────
+    clv_overall_result = await db.execute(
+        select(
+            func.avg(Signal.clv),
+            func.avg(Signal.profit_loss),
+            func.sum(case((Signal.profit_loss > 0, Signal.profit_loss), else_=Decimal("0"))),
+            func.sum(case((Signal.profit_loss < 0, func.abs(Signal.profit_loss)), else_=Decimal("0"))),
+            func.sum(Signal.profit_loss),
+            func.count(Signal.id),
+        ).where(
+            Signal.resolved_correctly.isnot(None),
+            Signal.clv.isnot(None),
+            Signal.fired_at >= cutoff,
+        )
+    )
+    avg_clv_all, avg_pnl_all, winning_pnl, losing_pnl, total_pnl, clv_count = clv_overall_result.one()
+    overall_avg_clv = round(float(avg_clv_all), 6) if avg_clv_all is not None else None
+    overall_avg_pnl = round(float(avg_pnl_all), 6) if avg_pnl_all is not None else None
+    overall_total_pnl = round(float(total_pnl), 6) if total_pnl is not None else None
+    overall_profit_factor = (
+        round(float(winning_pnl / losing_pnl), 4)
+        if winning_pnl is not None and losing_pnl is not None and losing_pnl > 0
+        else None
+    )
+    clv_count = clv_count or 0
+
+    # ── Win rate by signal type (with CLV) ──────────────────────────────────
     type_result = await db.execute(
         select(
             Signal.signal_type,
             func.count(Signal.id),
             func.sum(case((Signal.resolved_correctly.is_(True), 1), else_=0)),
+            func.avg(Signal.clv),
+            func.avg(Signal.profit_loss),
+            func.sum(case((Signal.profit_loss > 0, Signal.profit_loss), else_=Decimal("0"))),
+            func.sum(case((Signal.profit_loss < 0, func.abs(Signal.profit_loss)), else_=Decimal("0"))),
+            func.sum(Signal.profit_loss),
         )
         .where(Signal.resolved_correctly.isnot(None), Signal.fired_at >= cutoff)
         .group_by(Signal.signal_type)
     )
     win_rate_by_type = []
     type_rows = type_result.all()
-    for signal_type, resolved, correct in type_rows:
+    for signal_type, resolved, correct, avg_clv, avg_pnl, win_pnl, loss_pnl, total_type_pnl in type_rows:
         resolved = resolved or 0
         correct = correct or 0
+        wr = round(correct / resolved, 4) if resolved > 0 else None
+
+        avg_clv_val = round(float(avg_clv), 6) if avg_clv is not None else None
+        avg_pnl_val = round(float(avg_pnl), 6) if avg_pnl is not None else None
+        total_pnl_val = round(float(total_type_pnl), 6) if total_type_pnl is not None else None
+        profit_factor = (
+            round(float(win_pnl / loss_pnl), 4)
+            if win_pnl is not None and loss_pnl is not None and loss_pnl > 0
+            else None
+        )
+        # Signal quality score: CLV * sqrt(n) — rewards both edge and consistency
+        quality_score = (
+            round(avg_clv_val * math.sqrt(resolved), 6)
+            if avg_clv_val is not None and resolved > 0
+            else None
+        )
+
         win_rate_by_type.append({
             "signal_type": signal_type,
             "resolved": resolved,
             "correct": correct,
-            "win_rate": round(correct / resolved, 4) if resolved > 0 else None,
+            "win_rate": wr,
+            "avg_clv": avg_clv_val,
+            "avg_profit_loss": avg_pnl_val,
+            "total_profit_loss": total_pnl_val,
+            "profit_factor": profit_factor,
+            "signal_quality_score": quality_score,
         })
     win_rate_by_type.sort(key=lambda r: r["win_rate"] or 0, reverse=True)
 
@@ -160,6 +215,10 @@ async def performance_summary(db: AsyncSession = Depends(get_db)):
             Signal.rank_score,
             Signal.resolved_correctly,
             Signal.market_id,
+            Signal.price_at_fire,
+            Signal.closing_price,
+            Signal.clv,
+            Signal.profit_loss,
         )
         .where(Signal.resolved_correctly.isnot(None))
         .order_by(Signal.fired_at.desc())
@@ -173,9 +232,17 @@ async def performance_summary(db: AsyncSession = Depends(get_db)):
             "rank_score": float(row.rank_score),
             "resolved_correctly": row.resolved_correctly,
             "market_id": str(row.market_id),
+            "price_at_fire": float(row.price_at_fire) if row.price_at_fire is not None else None,
+            "closing_price": float(row.closing_price) if row.closing_price is not None else None,
+            "clv": float(row.clv) if row.clv is not None else None,
+            "profit_loss": float(row.profit_loss) if row.profit_loss is not None else None,
         }
         for row in recent_result.all()
     ]
+
+    # ── Hypothetical $1/share P&L ─────────────────────────────────────────
+    # "If a trader followed every signal with $1/share, what's the total P&L?"
+    hypothetical_pnl = overall_total_pnl  # sum of profit_loss across all signals
 
     return {
         "overall_win_rate": overall_win_rate,
@@ -183,6 +250,14 @@ async def performance_summary(db: AsyncSession = Depends(get_db)):
         "total_signals_fired": total_signals_fired,
         "signals_pending_resolution": signals_pending,
         "total_markets_resolved": total_markets_resolved,
+        # CLV metrics
+        "overall_avg_clv": overall_avg_clv,
+        "overall_avg_profit_loss": overall_avg_pnl,
+        "overall_total_profit_loss": overall_total_pnl,
+        "overall_profit_factor": overall_profit_factor,
+        "hypothetical_pnl_per_share": hypothetical_pnl,
+        "signals_with_clv": clv_count,
+        # Per-detector (includes CLV fields)
         "win_rate_by_type": win_rate_by_type,
         "win_rate_trend": win_rate_trend,
         "best_detector": best_detector,

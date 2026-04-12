@@ -33,6 +33,12 @@ class Signal(Base):
     resolved_correctly: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     alerted: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # CLV tracking (Phase 1 Q2) — populated at resolution time
+    closing_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    resolution_price: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    clv: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    profit_loss: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+
     evaluations: Mapped[list["SignalEvaluation"]] = relationship(back_populates="signal")
 
     __table_args__ = (

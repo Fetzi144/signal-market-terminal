@@ -174,22 +174,40 @@ def _build_alerters():
 
 
 async def _run_resolution():
+    from datetime import datetime, timezone
+
     from app.connectors import get_connector, get_enabled_platforms
     from app.ingestion.resolution import resolve_signals
+    from app.models.ingestion import IngestionRun
 
     logger.info("Job: resolution starting")
     async with async_session() as session:
         total = 0
         for platform in get_enabled_platforms():
+            run = IngestionRun(
+                run_type="resolution",
+                platform=platform,
+                status="running",
+            )
+            session.add(run)
+            await session.flush()
             try:
                 connector = get_connector(platform)
                 resolved_markets = await connector.fetch_resolved_markets(since_hours=24)
+                count = 0
                 if resolved_markets:
                     count = await resolve_signals(session, platform, resolved_markets)
                     total += count
                 await connector.close()
+                run.status = "success"
+                run.markets_processed = count
             except Exception:
                 logger.error("Job: resolution failed for %s", platform, exc_info=True)
+                run.status = "error"
+                import traceback
+                run.error = traceback.format_exc()[-500:]
+            run.finished_at = datetime.now(timezone.utc)
+            await session.commit()
         logger.info("Job: resolution done, %d signals resolved", total)
 
 

@@ -1,17 +1,22 @@
-"""Market resolution service: backfill resolved_correctly on signals when markets settle."""
+"""Market resolution service: backfill resolved_correctly on signals when markets settle.
+
+Enhanced in Q2 Phase 1 to capture closing_price, resolution_price, CLV, and profit_loss.
+"""
 import logging
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market import Market, Outcome
 from app.models.signal import Signal
+from app.models.snapshot import PriceSnapshot
 
 logger = logging.getLogger(__name__)
 
 
 async def resolve_signals(session: AsyncSession, platform: str, resolved_markets: list[dict]) -> int:
-    """Match resolved markets to signals and set resolved_correctly.
+    """Match resolved markets to signals and set resolved_correctly + CLV fields.
 
     For Polymarket: resolved_markets contains {platform_id, winning_outcome_id, winner}.
     For Kalshi: resolved_markets contains {platform_id, winning_outcome} where winning_outcome is 'yes'/'no'.
@@ -20,6 +25,12 @@ async def resolve_signals(session: AsyncSession, platform: str, resolved_markets
       - direction == "up" and the signal's outcome IS the winning outcome
       - direction == "down" and the signal's outcome is NOT the winning outcome
     Non-directional signals (no direction in details) stay resolved_correctly=NULL.
+
+    CLV fields set on every resolved signal (where data available):
+      - closing_price: last snapshot price for the outcome before resolution
+      - resolution_price: 1.0 if outcome won, 0.0 if lost
+      - clv: closing_price - price_at_fire (positive = signal beat market)
+      - profit_loss: resolution_price - price_at_fire (for "up"); price_at_fire - resolution_price (for "down")
 
     Returns count of signals resolved.
     """
@@ -59,6 +70,9 @@ async def resolve_signals(session: AsyncSession, platform: str, resolved_markets
         )
         signals = signal_result.scalars().all()
 
+        # Pre-fetch closing prices for all outcomes in this market (last snapshot per outcome)
+        closing_prices = await _get_closing_prices(session, all_outcome_ids)
+
         for signal in signals:
             direction = (signal.details or {}).get("direction")
 
@@ -75,6 +89,9 @@ async def resolve_signals(session: AsyncSession, platform: str, resolved_markets
             else:
                 continue
 
+            # Set CLV fields
+            _compute_clv_fields(signal, outcome_is_winner, closing_prices, direction)
+
             count += 1
 
     if count > 0:
@@ -82,6 +99,56 @@ async def resolve_signals(session: AsyncSession, platform: str, resolved_markets
         logger.info("Resolved %d signals for platform %s", count, platform)
 
     return count
+
+
+def _compute_clv_fields(
+    signal: Signal,
+    outcome_is_winner: bool,
+    closing_prices: dict,
+    direction: str,
+) -> None:
+    """Set closing_price, resolution_price, clv, profit_loss on a signal."""
+    # Resolution price: what the outcome settled at
+    signal.resolution_price = Decimal("1.000000") if outcome_is_winner else Decimal("0.000000")
+
+    # Closing price: last recorded snapshot price before resolution
+    closing = closing_prices.get(signal.outcome_id)
+    if closing is not None:
+        signal.closing_price = closing
+
+    # CLV: did we signal before the market priced it in?
+    # closing_price - price_at_fire (positive = we caught the move early)
+    if signal.price_at_fire is not None and signal.closing_price is not None:
+        signal.clv = signal.closing_price - signal.price_at_fire
+
+    # Profit/Loss: actual P&L per share if we had traded at signal time
+    if signal.price_at_fire is not None:
+        if direction == "up":
+            # Bought YES at price_at_fire, settled at resolution_price
+            signal.profit_loss = signal.resolution_price - signal.price_at_fire
+        elif direction == "down":
+            # Bought NO at (1 - price_at_fire), settled at (1 - resolution_price)
+            # Equivalent: profit_loss = price_at_fire - resolution_price
+            signal.profit_loss = signal.price_at_fire - signal.resolution_price
+
+
+async def _get_closing_prices(session: AsyncSession, outcome_ids: list) -> dict:
+    """Get the last recorded snapshot price for each outcome.
+
+    Returns dict mapping outcome_id -> Decimal price.
+    """
+    closing_prices = {}
+    for outcome_id in outcome_ids:
+        result = await session.execute(
+            select(PriceSnapshot.price)
+            .where(PriceSnapshot.outcome_id == outcome_id)
+            .order_by(PriceSnapshot.captured_at.desc())
+            .limit(1)
+        )
+        price = result.scalar_one_or_none()
+        if price is not None:
+            closing_prices[outcome_id] = price
+    return closing_prices
 
 
 async def _get_winning_outcome_ids(

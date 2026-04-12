@@ -6,6 +6,7 @@ import {
   ResponsiveContainer, Cell,
 } from "recharts";
 import { getPerformanceSummary } from "../api";
+import { CLVBarChart, SignalQualityTable, PnLSummaryCards } from "../components/CLVChart";
 
 function fmtPct(v) {
   if (v == null) return "—";
@@ -225,6 +226,8 @@ function RecentCalls({ calls }) {
             <th style={{ textAlign: "left", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>Type</th>
             <th style={{ textAlign: "left", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>Fired</th>
             <th style={{ textAlign: "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>Rank</th>
+            <th style={{ textAlign: "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>P&L</th>
+            <th style={{ textAlign: "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>CLV</th>
             <th style={{ textAlign: "right", padding: "8px 14px", color: "var(--text-dim)", fontWeight: 500 }}>Result</th>
           </tr>
         </thead>
@@ -241,6 +244,14 @@ function RecentCalls({ calls }) {
               </td>
               <td style={{ textAlign: "right", padding: "8px 14px", fontFamily: "var(--mono)", fontSize: 12 }}>
                 {c.rank_score.toFixed(3)}
+              </td>
+              <td style={{ textAlign: "right", padding: "8px 14px", fontFamily: "var(--mono)", fontSize: 12,
+                color: c.profit_loss != null ? (c.profit_loss > 0 ? "var(--green)" : c.profit_loss < 0 ? "var(--red)" : "var(--text-dim)") : "var(--text-dim)" }}>
+                {c.profit_loss != null ? `${c.profit_loss > 0 ? "+" : ""}${(c.profit_loss * 100).toFixed(1)}\u00a2` : "\u2014"}
+              </td>
+              <td style={{ textAlign: "right", padding: "8px 14px", fontFamily: "var(--mono)", fontSize: 12,
+                color: c.clv != null ? (c.clv > 0 ? "var(--green)" : c.clv < 0 ? "var(--red)" : "var(--text-dim)") : "var(--text-dim)" }}>
+                {c.clv != null ? `${c.clv > 0 ? "+" : ""}${(c.clv * 100).toFixed(1)}\u00a2` : "\u2014"}
               </td>
               <td style={{ textAlign: "right", padding: "8px 14px" }}>
                 <span style={{
@@ -321,6 +332,23 @@ export default function Performance() {
         </div>
       ) : (
         <div className="skeleton" style={{ height: 96, borderRadius: 8, marginBottom: 32 }} />
+      )}
+
+      {/* CLV Profitability Metrics */}
+      {data && data.signals_with_clv > 0 && (
+        <>
+          <Section title="Profitability (CLV)">
+            <PnLSummaryCards data={data} />
+          </Section>
+
+          <Section title="CLV by Detector">
+            <CLVBarChart data={data.win_rate_by_type} />
+          </Section>
+
+          <Section title="Signal Quality Scores">
+            <SignalQualityTable data={data.win_rate_by_type} />
+          </Section>
+        </>
       )}
 
       <Section title="Win Rate Trend (30 days)">
