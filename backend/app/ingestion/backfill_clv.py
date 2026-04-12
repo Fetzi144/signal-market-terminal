@@ -11,7 +11,7 @@ import asyncio
 import logging
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session
@@ -59,9 +59,15 @@ async def backfill_clv(session: AsyncSession) -> dict:
             skipped_no_snapshot += 1
             continue
 
+        # Exclude post-settlement snapshots (price exactly 0 or 1) to get the
+        # last meaningful market price before the outcome settled.
         snap_result = await session.execute(
             select(PriceSnapshot.price)
-            .where(PriceSnapshot.outcome_id == signal.outcome_id)
+            .where(
+                PriceSnapshot.outcome_id == signal.outcome_id,
+                PriceSnapshot.price > Decimal("0"),
+                PriceSnapshot.price < Decimal("1"),
+            )
             .order_by(PriceSnapshot.captured_at.desc())
             .limit(1)
         )
@@ -88,6 +94,7 @@ async def backfill_clv(session: AsyncSession) -> dict:
         elif direction == "down":
             signal.profit_loss = signal.price_at_fire - signal.resolution_price
 
+        signal.resolved = True
         updated += 1
 
     if updated > 0:

@@ -5,7 +5,7 @@ Enhanced in Q2 Phase 1 to capture closing_price, resolution_price, CLV, and prof
 import logging
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market import Market, Outcome
@@ -92,6 +92,7 @@ async def resolve_signals(session: AsyncSession, platform: str, resolved_markets
             # Set CLV fields
             _compute_clv_fields(signal, outcome_is_winner, closing_prices, direction)
 
+            signal.resolved = True
             count += 1
 
     if count > 0:
@@ -139,9 +140,15 @@ async def _get_closing_prices(session: AsyncSession, outcome_ids: list) -> dict:
     """
     closing_prices = {}
     for outcome_id in outcome_ids:
+        # Exclude post-settlement snapshots (price exactly 0 or 1) to get the
+        # last meaningful market price before the outcome settled.
         result = await session.execute(
             select(PriceSnapshot.price)
-            .where(PriceSnapshot.outcome_id == outcome_id)
+            .where(
+                PriceSnapshot.outcome_id == outcome_id,
+                PriceSnapshot.price > Decimal("0"),
+                PriceSnapshot.price < Decimal("1"),
+            )
             .order_by(PriceSnapshot.captured_at.desc())
             .limit(1)
         )
