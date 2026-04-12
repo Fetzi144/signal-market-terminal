@@ -26,38 +26,38 @@ class Settings(BaseSettings):
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
-    price_move_timeframes: str = "30m"       # e.g. "30m,1h,4h"
-    volume_spike_timeframes: str = "1h"      # e.g. "1h,4h,24h"
-    ofi_timeframes: str = "30m"              # e.g. "15m,30m,1h"
+    price_move_timeframes: str = "30m,1h"     # e.g. "30m,1h,4h"
+    volume_spike_timeframes: str = "1h,4h"   # e.g. "1h,4h,24h"
+    ofi_timeframes: str = "15m,30m"          # e.g. "15m,30m,1h"
 
     # Signals — Price Move
     price_move_window_minutes: int = 30
     price_move_threshold_pct: float = 5.0
 
     # Signals — Volume Spike
-    volume_spike_multiplier: float = 3.0
+    volume_spike_multiplier: float = 2.0
     volume_spike_baseline_hours: int = 24
 
     # Signals — Spread Change
-    spread_change_baseline_hours: int = 12
-    spread_change_threshold_ratio: float = 2.0
+    spread_change_baseline_hours: int = 24
+    spread_change_threshold_ratio: float = 1.5
 
     # Signals — Liquidity Vacuum
-    liquidity_vacuum_baseline_hours: int = 12
-    liquidity_vacuum_depth_ratio_threshold: float = 0.3
+    liquidity_vacuum_baseline_hours: int = 24
+    liquidity_vacuum_depth_ratio_threshold: float = 0.4
 
     # Signals — Deadline Near
-    deadline_near_hours: int = 48
-    deadline_near_price_threshold_pct: float = 3.0
+    deadline_near_hours: int = 24
+    deadline_near_price_threshold_pct: float = 6.0
 
     # Signals — Order Flow Imbalance
     ofi_threshold: float = 0.3  # minimum abs(OFI) to fire
     ofi_enabled: bool = True
-    ofi_min_snapshots: int = 3  # minimum orderbook snapshots needed
+    ofi_min_snapshots: int = 2  # minimum orderbook snapshots needed
     ofi_price_flat_window_minutes: int = 30  # price must be flat in this window
 
     # Signals — Arbitrage
-    arb_spread_threshold: float = 0.04  # minimum spread to fire (4 percentage points)
+    arb_spread_threshold: float = 0.025  # minimum spread to fire (2.5 percentage points)
     arb_enabled: bool = True
 
     # Whale / Smart Money Tracking
@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     evaluation_interval_seconds: int = 300
 
     # Alerts
-    alert_rank_threshold: float = 0.7
+    alert_rank_threshold: float = 0.55
     alert_batch_limit: int = 20
     alert_webhook_url: str | None = None
     alert_telegram_bot_token: str | None = None

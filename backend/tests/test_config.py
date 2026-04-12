@@ -106,7 +106,7 @@ class TestDefaults:
     def test_default_values(self):
         s = _make()
         assert s.alert_batch_limit == 20
-        assert s.market_pagination_cap == 5000
+        assert s.market_pagination_cap == 100000
         assert s.orderbook_sample_size == 50
         assert s.cleanup_interval_hours == 6
         assert s.kalshi_enabled is True

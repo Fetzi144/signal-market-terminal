@@ -90,9 +90,9 @@ async def test_dedupe_prevents_duplicate_signals(session):
     assert created2 == 0
     assert new_signals2 == []
 
-    # Only one signal in DB
+    # Same number of signals as first persist (multi-timeframe may produce >1, but no duplicates)
     result = await session.execute(select(Signal).where(Signal.market_id == market.id))
-    assert len(result.scalars().all()) == 1
+    assert len(result.scalars().all()) == created1
 
 
 @pytest.mark.asyncio

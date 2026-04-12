@@ -150,15 +150,14 @@ async def test_thin_orderbook_confidence_penalty(session):
 
 @pytest.mark.asyncio
 async def test_insufficient_snapshots_no_signal(session):
-    """Fewer than ofi_min_snapshots orderbook snapshots -> no signal."""
+    """Fewer than ofi_min_snapshots (2) orderbook snapshots -> no signal."""
     m = make_market(session)
     await session.flush()
     o = make_outcome(session, m.id)
     await session.flush()
 
     now = datetime.now(timezone.utc)
-    # Only 2 snapshots (default min is 3)
-    make_orderbook_snapshot(session, o.id, spread=0.02, depth_bid=5000, depth_ask=5000, captured_at=now - timedelta(minutes=20))
+    # Only 1 snapshot (default min is 2)
     make_orderbook_snapshot(session, o.id, spread=0.02, depth_bid=10000, depth_ask=5000, captured_at=now - timedelta(minutes=1))
 
     make_price_snapshot(session, o.id, price=0.50, captured_at=now - timedelta(minutes=25))

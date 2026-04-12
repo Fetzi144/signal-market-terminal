@@ -94,10 +94,10 @@ async def test_spread_no_fire_below_threshold(session):
             captured_at=now - timedelta(hours=3, minutes=i * 10),
         )
 
-    # Current: spread=0.03 (1.5x, below 2.0 threshold)
+    # Current: spread=0.025 (1.25x, below 1.5 threshold)
     make_orderbook_snapshot(
         session, outcome.id,
-        spread="0.03",
+        spread="0.025",
         captured_at=now - timedelta(minutes=5),
     )
     await session.commit()
