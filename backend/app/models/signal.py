@@ -43,6 +43,9 @@ class Signal(Base):
     estimated_probability: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     probability_adjustment: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
 
+    # Trading intelligence (Phase 3 Q2) — populated at detection time
+    expected_value: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+
     evaluations: Mapped[list["SignalEvaluation"]] = relationship(back_populates="signal")
 
     __table_args__ = (

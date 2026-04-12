@@ -49,6 +49,12 @@ class SignalOut(BaseModel):
     # Probability engine fields
     estimated_probability: Decimal | None = None
     probability_adjustment: Decimal | None = None
+    # Trading intelligence fields
+    expected_value: Decimal | None = None
+    direction: str | None = None
+    edge_pct: Decimal | None = None
+    recommended_size_usd: Decimal | None = None
+    kelly_fraction: Decimal | None = None
 
 
 class SignalListOut(BaseModel):
@@ -56,6 +62,62 @@ class SignalListOut(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+def _build_signal_out(signal: Signal, question: str | None, platform: str | None) -> SignalOut:
+    """Build a SignalOut with trading intelligence fields computed on the fly."""
+    direction = None
+    edge_pct = None
+    recommended_size_usd = None
+    kelly_fraction = None
+
+    if (
+        signal.estimated_probability is not None
+        and signal.price_at_fire is not None
+        and signal.expected_value is not None
+    ):
+        from app.config import settings
+        from app.signals.ev import compute_ev_full
+        from app.signals.kelly import kelly_size
+
+        ev_data = compute_ev_full(signal.estimated_probability, signal.price_at_fire)
+        direction = ev_data["direction"].replace("_", " ").upper()
+        edge_pct = ev_data["edge_pct"]
+
+        sizing = kelly_size(
+            estimated_prob=signal.estimated_probability,
+            market_price=signal.price_at_fire,
+            bankroll=Decimal(str(settings.default_bankroll)),
+            kelly_fraction=Decimal(str(settings.kelly_multiplier)),
+            max_position_pct=Decimal(str(settings.max_single_position_pct)),
+        )
+        recommended_size_usd = sizing["recommended_size_usd"]
+        kelly_fraction = sizing["kelly_used"]
+
+    return SignalOut(
+        id=signal.id,
+        signal_type=signal.signal_type,
+        timeframe=signal.timeframe,
+        market_id=signal.market_id,
+        outcome_id=signal.outcome_id,
+        fired_at=signal.fired_at,
+        signal_score=signal.signal_score,
+        confidence=signal.confidence,
+        rank_score=signal.rank_score,
+        details=signal.details,
+        price_at_fire=signal.price_at_fire,
+        resolved=signal.resolved,
+        resolved_correctly=signal.resolved_correctly,
+        market_question=question,
+        platform=platform,
+        estimated_probability=signal.estimated_probability,
+        probability_adjustment=signal.probability_adjustment,
+        expected_value=signal.expected_value,
+        direction=direction,
+        edge_pct=edge_pct,
+        recommended_size_usd=recommended_size_usd,
+        kelly_fraction=kelly_fraction,
+    )
 
 
 @router.get("", response_model=SignalListOut)
@@ -100,25 +162,7 @@ async def list_signals(
 
     signals = []
     for signal, question, mkt_platform in rows:
-        signals.append(SignalOut(
-            id=signal.id,
-            signal_type=signal.signal_type,
-            timeframe=signal.timeframe,
-            market_id=signal.market_id,
-            outcome_id=signal.outcome_id,
-            fired_at=signal.fired_at,
-            signal_score=signal.signal_score,
-            confidence=signal.confidence,
-            rank_score=signal.rank_score,
-            details=signal.details,
-            price_at_fire=signal.price_at_fire,
-            resolved=signal.resolved,
-            resolved_correctly=signal.resolved_correctly,
-            market_question=question,
-            platform=mkt_platform,
-            estimated_probability=signal.estimated_probability,
-            probability_adjustment=signal.probability_adjustment,
-        ))
+        signals.append(_build_signal_out(signal, question, mkt_platform))
 
     return SignalListOut(signals=signals, total=total, page=page, page_size=page_size)
 
@@ -170,26 +214,9 @@ async def get_signal(request: Request, signal_id: uuid.UUID, db: AsyncSession = 
         for e in eval_result.scalars().all()
     ]
 
-    return SignalOut(
-        id=signal.id,
-        signal_type=signal.signal_type,
-        timeframe=signal.timeframe,
-        market_id=signal.market_id,
-        outcome_id=signal.outcome_id,
-        fired_at=signal.fired_at,
-        signal_score=signal.signal_score,
-        confidence=signal.confidence,
-        rank_score=signal.rank_score,
-        details=signal.details,
-        price_at_fire=signal.price_at_fire,
-        resolved=signal.resolved,
-        resolved_correctly=signal.resolved_correctly,
-        market_question=question,
-        platform=mkt_platform,
-        evaluations=evals,
-        estimated_probability=signal.estimated_probability,
-        probability_adjustment=signal.probability_adjustment,
-    )
+    out = _build_signal_out(signal, question, mkt_platform)
+    out.evaluations = evals
+    return out
 
 
 @router.get("/export/csv")

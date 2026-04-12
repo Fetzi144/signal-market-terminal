@@ -11,7 +11,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.api import alerts, analytics, backtest, health, markets, performance, portfolio, push, signals, sse
+from app.api import alerts, analytics, backtest, health, markets, paper_trading, performance, portfolio, push, signals, sse
 from app.api.signals import signals_limiter
 from app.config import settings
 from app.jobs.scheduler import start_scheduler, stop_scheduler
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Signal Market Terminal",
-    version="0.2.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -94,6 +94,7 @@ app.include_router(backtest.router)
 app.include_router(performance.router)
 app.include_router(portfolio.router)
 app.include_router(push.router)
+app.include_router(paper_trading.router)
 
 # Prometheus auto-instrumentation — exposes /metrics
 Instrumentator().instrument(app).expose(app)
@@ -101,4 +102,4 @@ Instrumentator().instrument(app).expose(app)
 
 @app.get("/")
 async def root():
-    return {"name": "Signal Market Terminal", "version": "0.2.0"}
+    return {"name": "Signal Market Terminal", "version": "0.4.0"}

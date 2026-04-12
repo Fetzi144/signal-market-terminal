@@ -52,6 +52,12 @@ async def persist_signals(session: AsyncSession, candidates: list[SignalCandidat
 
         rank = compute_rank_score(c.signal_score, c.confidence)
 
+        # Compute EV if probability data available
+        ev = None
+        if c.estimated_probability is not None and c.price_at_fire is not None:
+            from app.signals.ev import compute_ev
+            ev = compute_ev(c.estimated_probability, c.price_at_fire)
+
         signal = Signal(
             id=uuid.uuid4(),
             signal_type=c.signal_type,
@@ -67,6 +73,7 @@ async def persist_signals(session: AsyncSession, candidates: list[SignalCandidat
             price_at_fire=c.price_at_fire,
             estimated_probability=c.estimated_probability,
             probability_adjustment=c.probability_adjustment,
+            expected_value=ev,
         )
         session.add(signal)
         new_signals.append(signal)

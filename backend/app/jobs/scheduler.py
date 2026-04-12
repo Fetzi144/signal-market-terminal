@@ -69,10 +69,15 @@ async def _run_signal_detection():
                 logger.info("Job: signal_detection done, %d new signals", created)
 
                 # Run Bayesian confluence engine on recent signals
+                confluence_signals = []
                 if created > 0:
-                    confluence_count = await _run_confluence(session, all_candidates)
+                    confluence_count, confluence_signals = await _run_confluence(session, all_candidates)
                     if confluence_count > 0:
                         logger.info("Job: confluence engine created %d fused signals", confluence_count)
+
+                # Auto-open paper trades for EV-positive signals
+                if created > 0:
+                    await _run_paper_trading(session, [*new_signals, *confluence_signals])
 
                 # Broadcast new signals via SSE
                 if created > 0:
@@ -111,9 +116,41 @@ async def _run_confluence(session, candidates):
             confluence_candidates.append(fused)
 
     if confluence_candidates:
-        created, _ = await persist_signals(session, confluence_candidates)
-        return created
-    return 0
+        created, new_signals = await persist_signals(session, confluence_candidates)
+        return created, new_signals
+    return 0, []
+
+
+async def _run_paper_trading(session, signals):
+    """Auto-open paper trades for EV-positive signals."""
+    from app.default_strategy import matches_default_strategy
+    from app.paper_trading.engine import open_trade
+
+    if not settings.paper_trading_enabled:
+        return
+
+    count = 0
+
+    for signal in signals:
+        if not matches_default_strategy(signal):
+            continue
+
+        market_question = (signal.details or {}).get("market_question", "")
+        trade = await open_trade(
+            session=session,
+            signal_id=signal.id,
+            outcome_id=signal.outcome_id,
+            market_id=signal.market_id,
+            estimated_probability=signal.estimated_probability,
+            market_price=signal.price_at_fire,
+            market_question=market_question,
+        )
+        if trade is not None:
+            count += 1
+
+    if count > 0:
+        await session.commit()
+        logger.info("Paper trading: opened %d trades from %d signals", count, len(signals))
 
 
 async def _broadcast_new_signals(session, signals):
@@ -236,6 +273,8 @@ async def _run_resolution():
                 if resolved_markets:
                     count = await resolve_signals(session, platform, resolved_markets)
                     total += count
+                    # Resolve paper trades for settled markets
+                    await _resolve_paper_trades(session, resolved_markets)
                 await connector.close()
                 run.status = "success"
                 run.markets_processed = count
@@ -247,6 +286,31 @@ async def _run_resolution():
             run.finished_at = datetime.now(timezone.utc)
             await session.commit()
         logger.info("Job: resolution done, %d signals resolved", total)
+
+
+async def _resolve_paper_trades(session, resolved_markets):
+    """Resolve paper trades when markets settle."""
+    import uuid
+
+    from app.paper_trading.engine import resolve_trades
+
+    total = 0
+    for market_data in resolved_markets:
+        outcomes = market_data.get("outcomes", [])
+        for outcome in outcomes:
+            outcome_id = outcome.get("id") or outcome.get("outcome_id")
+            won = outcome.get("won", False)
+            if outcome_id:
+                try:
+                    oid = uuid.UUID(str(outcome_id))
+                    count = await resolve_trades(session, oid, won)
+                    total += count
+                except (ValueError, Exception):
+                    continue
+
+    if total > 0:
+        await session.commit()
+        logger.info("Paper trading: resolved %d trades", total)
 
 
 async def _run_evaluation():

@@ -68,6 +68,23 @@ class Settings(BaseSettings):
     polygon_rpc_url: str = ""  # Polygon RPC endpoint
     whale_scan_interval_seconds: int = 300  # scan every 5 minutes
 
+    # Trading Intelligence (Phase 3 Q2)
+    default_bankroll: float = 10000.0
+    kelly_multiplier: float = 0.25  # quarter-Kelly
+    max_single_position_pct: float = 0.05  # 5% of bankroll per trade
+    max_total_exposure_pct: float = 0.30  # 30% of bankroll total
+    min_ev_threshold: float = 0.03  # $0.03 minimum EV to surface
+    max_cluster_exposure_pct: float = 0.15  # 15% of bankroll per correlated cluster
+    drawdown_circuit_breaker_pct: float = 0.15  # pause at -15% from peak
+    paper_trading_enabled: bool = True
+    default_strategy_name: str = "prove_the_edge_default"
+    default_strategy_signal_type: str = "confluence"
+    default_strategy_min_observation_days: int = 14
+    default_strategy_preferred_observation_days: int = 30
+    strategy_review_lookback_days: int = 30
+    strategy_review_recent_mistakes_limit: int = 5
+    legacy_benchmark_rank_threshold: float = 0.55
+
     # Evaluation
     evaluation_interval_seconds: int = 300
 
@@ -90,7 +107,7 @@ class Settings(BaseSettings):
     # API
     api_rate_limit: str = "60/minute"
     api_key: str | None = None  # Set to require X-API-Key header
-    cors_origins: str = "http://localhost:5173"  # Comma-separated origins
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"  # Comma-separated origins
 
     # SSE
     sse_max_connections: int = 50
@@ -157,7 +174,23 @@ class Settings(BaseSettings):
             raise ValueError("alert_rank_threshold must be between 0.0 and 1.0")
         return v
 
-    @field_validator("alert_batch_limit", "market_pagination_cap", "orderbook_sample_size", "cleanup_interval_hours")
+    @field_validator("legacy_benchmark_rank_threshold")
+    @classmethod
+    def legacy_benchmark_rank_threshold_bounds(cls, v: float) -> float:
+        if v < 0.0 or v > 1.0:
+            raise ValueError("legacy_benchmark_rank_threshold must be between 0.0 and 1.0")
+        return v
+
+    @field_validator(
+        "alert_batch_limit",
+        "market_pagination_cap",
+        "orderbook_sample_size",
+        "cleanup_interval_hours",
+        "default_strategy_min_observation_days",
+        "default_strategy_preferred_observation_days",
+        "strategy_review_lookback_days",
+        "strategy_review_recent_mistakes_limit",
+    )
     @classmethod
     def limits_must_be_positive(cls, v: int) -> int:
         if v < 1:
