@@ -12,7 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.paper_trade import PaperTrade
-from app.paper_trading.analysis import get_strategy_health
+from app.paper_trading.analysis import (
+    get_strategy_health,
+    get_strategy_history,
+    get_strategy_metrics,
+    get_strategy_pnl_curve,
+    get_strategy_portfolio_state,
+)
 from app.paper_trading.engine import get_metrics, get_pnl_curve, get_portfolio_state
 
 router = APIRouter(prefix="/api/v1/paper-trading", tags=["paper-trading"])
@@ -78,10 +84,14 @@ class PnlPointOut(BaseModel):
 
 @router.get("/portfolio", response_model=PortfolioOut)
 @paper_limiter.limit("10/second")
-async def get_portfolio(request: Request, db: AsyncSession = Depends(get_db)):
+async def get_portfolio(
+    request: Request,
+    scope: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
     """Current paper trading portfolio: open positions + summary stats."""
     from app.config import settings
-    state = await get_portfolio_state(db)
+    state = await get_strategy_portfolio_state(db) if scope == "default_strategy" else await get_portfolio_state(db)
     return PortfolioOut(
         bankroll=float(settings.default_bankroll),
         open_exposure=float(state["open_exposure"]),
@@ -118,11 +128,47 @@ async def get_history(
     request: Request,
     status: str | None = None,
     direction: str | None = None,
+    scope: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
     """Trade history with optional filters."""
+    if scope == "default_strategy":
+        scoped = await get_strategy_history(
+            db,
+            status=status,
+            direction=direction,
+            page=page,
+            page_size=page_size,
+        )
+        trades = scoped["trades"]
+        total = scoped["total"]
+        return TradeHistoryOut(
+            trades=[
+                PaperTradeOut(
+                    id=t.id,
+                    signal_id=t.signal_id,
+                    outcome_id=t.outcome_id,
+                    market_id=t.market_id,
+                    direction=t.direction,
+                    entry_price=t.entry_price,
+                    size_usd=t.size_usd,
+                    shares=t.shares,
+                    exit_price=t.exit_price,
+                    pnl=t.pnl,
+                    status=t.status,
+                    opened_at=t.opened_at,
+                    resolved_at=t.resolved_at,
+                    details=t.details or {},
+                )
+                for t in trades
+            ],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+
     query = select(PaperTrade)
     count_query = select(func.count(PaperTrade.id))
 
@@ -169,9 +215,13 @@ async def get_history(
 
 @router.get("/metrics", response_model=MetricsOut)
 @paper_limiter.limit("10/second")
-async def get_trading_metrics(request: Request, db: AsyncSession = Depends(get_db)):
+async def get_trading_metrics(
+    request: Request,
+    scope: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
     """Paper trading performance metrics: Sharpe, drawdown, win rate, cumulative P&L."""
-    metrics = await get_metrics(db)
+    metrics = await get_strategy_metrics(db) if scope == "default_strategy" else await get_metrics(db)
     return MetricsOut(**metrics)
 
 
@@ -184,6 +234,10 @@ async def get_strategy_health_endpoint(request: Request, db: AsyncSession = Depe
 
 @router.get("/pnl-curve", response_model=list[PnlPointOut])
 @paper_limiter.limit("10/second")
-async def get_pnl_curve_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
+async def get_pnl_curve_endpoint(
+    request: Request,
+    scope: str | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
     """Cumulative P&L curve for charting."""
-    return await get_pnl_curve(db)
+    return await get_strategy_pnl_curve(db) if scope == "default_strategy" else await get_pnl_curve(db)

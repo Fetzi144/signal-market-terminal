@@ -18,6 +18,7 @@ import {
 } from "../api";
 
 const PAGE_SIZE = 20;
+const STRATEGY_SCOPE = "default_strategy";
 
 function fmtCurrency(value) {
   if (value == null) return "-";
@@ -122,6 +123,7 @@ function buildStrategyBrief(health) {
   const observation = health?.observation || {};
   const headline = health?.headline || {};
   const benchmark = health?.benchmark || {};
+  const funnel = health?.trade_funnel || {};
   const detectorRows = health?.detector_review || [];
   const cutCount = detectorRows.filter((row) => row.verdict === "cut").length;
   const watchCount = detectorRows.filter((row) => row.verdict === "watch").length;
@@ -164,24 +166,34 @@ function buildStrategyBrief(health) {
   }
 
   const evidence = [
-    Number(headline.resolved_trades || 0) > 0
-      ? `${fmtWhole(headline.resolved_trades)} resolved paper trades and ${fmtWhole(headline.resolved_signals)} resolved default-strategy signals are in the sample.`
-      : "No resolved paper trades yet, so the edge verdict is still provisional.",
-    `${fmtWhole(headline.open_trades || 0)} live trades currently use ${fmtCurrency(openExposure)} of ${fmtCurrency(bankroll)} bankroll.`,
-    cutCount > 0
-      ? `${cutCount} detector${cutCount === 1 ? "" : "s"} ${cutCount === 1 ? "is" : "are"} already marked cut in the legacy review loop.`
-      : `${watchCount} detector${watchCount === 1 ? "" : "s"} ${watchCount === 1 ? "is" : "are"} still on watch and none are cut yet.`,
+    Number(funnel.traded_signals || 0) > 0
+      ? `${fmtWhole(funnel.traded_signals)} traded default-strategy signal(s) came from ${fmtWhole(funnel.qualified_signals)} qualified opportunities.`
+      : Number(funnel.qualified_signals || 0) > 0
+        ? `${fmtWhole(funnel.qualified_signals)} qualified default-strategy signals exist, but none have turned into measured baseline trades yet.`
+        : "No default-strategy trades exist yet, so the edge verdict is still provisional.",
+    `${fmtWhole(headline.open_trades || 0)} live baseline trade(s) currently use ${fmtCurrency(openExposure)} of ${fmtCurrency(bankroll)} bankroll.`,
+    Number(funnel.excluded_legacy_trades || 0) > 0
+      ? `${fmtWhole(funnel.excluded_legacy_trades)} legacy paper trade(s) are excluded from the frozen baseline read.`
+      : cutCount > 0
+        ? `${cutCount} detector${cutCount === 1 ? "" : "s"} ${cutCount === 1 ? "is" : "are"} already marked cut in the detector review loop.`
+        : `${watchCount} detector${watchCount === 1 ? "" : "s"} ${watchCount === 1 ? "is" : "are"} still on watch and none are cut yet.`,
   ];
 
   const priorities = [];
   if (observation.status === "collecting_data") {
     priorities.push(`Do not re-tune the baseline for another ${observation.days_until_minimum_window} day(s).`);
   }
+  if (Number(funnel.qualified_not_traded || 0) > 0) {
+    priorities.push(`Review why ${fmtWhole(funnel.qualified_not_traded)} qualified signal(s) did not turn into baseline trades.`);
+  }
   if (Number(headline.missing_resolutions || 0) > 0) {
-    priorities.push(`Track the ${fmtWhole(headline.missing_resolutions)} unresolved default-strategy signals so CLV and P&L can settle cleanly.`);
+    priorities.push(`Track the ${fmtWhole(headline.missing_resolutions)} traded signal(s) that are still waiting to resolve.`);
   }
   if (exposurePct >= 0.25) {
     priorities.push(`Open exposure is already ${(exposurePct * 100).toFixed(0)}% of bankroll, so avoid layering in discretionary trades that muddy the read.`);
+  }
+  if (Number(funnel.excluded_legacy_trades || 0) > 0) {
+    priorities.push(`Keep legacy paper trades out of the default-strategy read until they are archived or analyzed separately.`);
   }
   if (Number(benchmark.resolved_signals || 0) === 0) {
     priorities.push("The legacy benchmark has no resolved sample yet, so benchmark deltas are not decision-grade.");
@@ -369,6 +381,7 @@ function OperatorBrief({ health }) {
   const brief = buildStrategyBrief(health);
   const observation = health?.observation;
   const headline = health?.headline;
+  const funnel = health?.trade_funnel;
   const toneColor = briefToneColor(brief.tone);
   const progress = observationProgress(observation);
 
@@ -498,6 +511,12 @@ function OperatorBrief({ health }) {
                 {fmtWhole(headline?.missing_resolutions)}
               </span>
             </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <span style={{ fontSize: 12, color: "var(--text-dim)" }}>Legacy trades excluded</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: Number(funnel?.excluded_legacy_trades || 0) > 0 ? "var(--yellow)" : "var(--green)" }}>
+                {fmtWhole(funnel?.excluded_legacy_trades)}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -543,6 +562,79 @@ function StrategyContract({ health }) {
       <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
         Observation window: minimum {strategy.minimum_observation_days} days, preferred {strategy.preferred_observation_days} days. Legacy benchmark rank threshold at least {strategy.legacy_benchmark_rank_threshold.toFixed(2)}.
       </div>
+    </div>
+  );
+}
+
+function FunnelCard({ label, value, sub, color }) {
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
+      <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 26, fontWeight: 700, fontFamily: "var(--mono)", color: color || "var(--text)" }}>
+        {fmtWhole(value)}
+      </div>
+      <div style={{ marginTop: 6, fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>
+        {sub}
+      </div>
+    </div>
+  );
+}
+
+function StrategyFunnel({ health }) {
+  const funnel = health?.trade_funnel;
+  if (!funnel) return <EmptyState text="Strategy funnel unavailable." />;
+
+  const cards = [
+    {
+      label: "Candidate Path",
+      value: funnel.candidate_signals,
+      sub: "Signals on the frozen confluence path, regardless of EV qualification.",
+    },
+    {
+      label: "Qualified",
+      value: funnel.qualified_signals,
+      sub: "Signals that met the default strategy contract and were eligible to trade.",
+      color: funnel.qualified_signals > 0 ? "var(--accent)" : "var(--text)",
+    },
+    {
+      label: "Traded",
+      value: funnel.traded_signals,
+      sub: "Qualified signals that actually became default-strategy paper trades.",
+      color: funnel.traded_signals > 0 ? "var(--green)" : "var(--text)",
+    },
+    {
+      label: "Resolved",
+      value: funnel.resolved_signals,
+      sub: "Traded signals with a settled outcome and usable edge measurements.",
+      color: funnel.resolved_signals > 0 ? "var(--green)" : "var(--text)",
+    },
+  ];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+      {cards.map((card) => (
+        <FunnelCard
+          key={card.label}
+          label={card.label}
+          value={card.value}
+          sub={card.sub}
+          color={card.color}
+        />
+      ))}
+      <FunnelCard
+        label="Not Traded"
+        value={funnel.qualified_not_traded}
+        sub="Qualified signals that never entered the measured baseline."
+        color={funnel.qualified_not_traded > 0 ? "var(--yellow)" : "var(--text)"}
+      />
+      <FunnelCard
+        label="Legacy Excluded"
+        value={funnel.excluded_legacy_trades}
+        sub="Older paper trades that stay outside the frozen default-strategy sample."
+        color={funnel.excluded_legacy_trades > 0 ? "var(--yellow)" : "var(--text)"}
+      />
     </div>
   );
 }
@@ -798,9 +890,9 @@ export default function PaperTrading() {
     if (!silent) setRefreshing(true);
     try {
       const results = await Promise.allSettled([
-      getPaperTradingPortfolio(),
-      getPaperTradingMetrics(),
-      getPaperTradingPnlCurve(),
+      getPaperTradingPortfolio({ scope: STRATEGY_SCOPE }),
+      getPaperTradingMetrics({ scope: STRATEGY_SCOPE }),
+      getPaperTradingPnlCurve({ scope: STRATEGY_SCOPE }),
       getPaperTradingStrategyHealth(),
       ]);
 
@@ -840,6 +932,7 @@ export default function PaperTrading() {
       const data = await getPaperTradingHistory({
       status: statusFilter || undefined,
       direction: directionFilter || undefined,
+      scope: STRATEGY_SCOPE,
       page,
       pageSize: PAGE_SIZE,
       });
@@ -885,6 +978,7 @@ export default function PaperTrading() {
   }, [history]);
 
   const headline = strategyHealth?.headline;
+  const funnel = strategyHealth?.trade_funnel;
   const brief = useMemo(
     () => (strategyHealth ? buildStrategyBrief(strategyHealth) : null),
     [strategyHealth]
@@ -909,9 +1003,9 @@ export default function PaperTrading() {
         sub: `${((brief?.exposurePct || 0) * 100).toFixed(0)}% of bankroll across ${fmtWhole(headline?.open_trades)} live trades`,
       },
       {
-        label: "Resolved Evidence",
-        value: fmtWhole(headline?.resolved_trades),
-        sub: `${fmtWhole(headline?.resolved_signals)} resolved default-strategy signals`,
+        label: "Qualified Signals",
+        value: fmtWhole(funnel?.qualified_signals),
+        sub: `${fmtWhole(funnel?.traded_signals)} traded from the frozen baseline`,
       },
       {
         label: "Avg CLV",
@@ -920,19 +1014,24 @@ export default function PaperTrading() {
         sub: headline?.avg_clv == null ? "Wait for settled signals" : "Average closing-line edge on the baseline",
       },
       {
-        label: "Detector Cuts",
-        value: fmtWhole(brief?.cutCount || 0),
-        color: (brief?.cutCount || 0) > 0 ? "var(--red)" : "var(--green)",
-        sub: `${fmtWhole(brief?.watchCount || 0)} watch verdicts in the loop`,
+        label: "Resolved Evidence",
+        value: fmtWhole(headline?.resolved_trades),
+        sub: `${fmtWhole(headline?.resolved_signals)} resolved traded signals`,
       },
       {
-        label: "Missing Resolutions",
-        value: fmtWhole(headline?.missing_resolutions),
-        color: Number(headline?.missing_resolutions || 0) > 0 ? "var(--yellow)" : "var(--green)",
-        sub: "Default-strategy signals still waiting to settle",
+        label: "Qualified Not Traded",
+        value: fmtWhole(funnel?.qualified_not_traded),
+        color: Number(funnel?.qualified_not_traded || 0) > 0 ? "var(--yellow)" : "var(--green)",
+        sub: "Qualified signals that never entered the measured baseline",
+      },
+      {
+        label: "Legacy Trades Excluded",
+        value: fmtWhole(funnel?.excluded_legacy_trades),
+        color: Number(funnel?.excluded_legacy_trades || 0) > 0 ? "var(--yellow)" : "var(--green)",
+        sub: "Historical paper trades kept outside the frozen strategy read",
       },
     ];
-  }, [brief, headline, strategyHealth]);
+  }, [brief, funnel, headline, strategyHealth]);
 
   return (
     <div>
@@ -991,6 +1090,10 @@ export default function PaperTrading() {
 
       <Section title="Default vs Legacy Benchmark">
         {strategyHealth ? <BenchmarkComparison health={strategyHealth} /> : <div className="skeleton" style={{ height: 220, borderRadius: 8 }} />}
+      </Section>
+
+      <Section title="Strategy Funnel">
+        {strategyHealth ? <StrategyFunnel health={strategyHealth} /> : <div className="skeleton" style={{ height: 180, borderRadius: 8 }} />}
       </Section>
 
       <Section title="Detector Verdicts">

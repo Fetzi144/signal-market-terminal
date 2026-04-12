@@ -164,27 +164,37 @@ export function getPerformanceSummary() {
 }
 
 // Paper Trading API
-export function getPaperTradingPortfolio() {
-  return fetchJson(`${API_BASE}/paper-trading/portfolio`);
+export function getPaperTradingPortfolio({ scope } = {}) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
+  return fetchJson(`${API_BASE}/paper-trading/portfolio${query ? `?${query}` : ""}`);
 }
 
-export function getPaperTradingHistory({ status, direction, page = 1, pageSize = 50 } = {}) {
+export function getPaperTradingHistory({ status, direction, scope, page = 1, pageSize = 50 } = {}) {
   const params = new URLSearchParams({ page, page_size: pageSize });
   if (status) params.set("status", status);
   if (direction) params.set("direction", direction);
+  if (scope) params.set("scope", scope);
   return fetchJson(`${API_BASE}/paper-trading/history?${params}`);
 }
 
-export function getPaperTradingMetrics() {
-  return fetchJson(`${API_BASE}/paper-trading/metrics`);
+export function getPaperTradingMetrics({ scope } = {}) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
+  return fetchJson(`${API_BASE}/paper-trading/metrics${query ? `?${query}` : ""}`);
 }
 
 export function getPaperTradingStrategyHealth() {
   return fetchJson(`${API_BASE}/paper-trading/strategy-health`);
 }
 
-export function getPaperTradingPnlCurve() {
-  return fetchJson(`${API_BASE}/paper-trading/pnl-curve`);
+export function getPaperTradingPnlCurve({ scope } = {}) {
+  const params = new URLSearchParams();
+  if (scope) params.set("scope", scope);
+  const query = params.toString();
+  return fetchJson(`${API_BASE}/paper-trading/pnl-curve${query ? `?${query}` : ""}`);
 }
 
 // Portfolio API

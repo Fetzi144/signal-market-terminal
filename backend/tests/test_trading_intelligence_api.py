@@ -346,10 +346,91 @@ async def test_scheduler_only_auto_trades_default_strategy_signals(client, sessi
 
 
 @pytest.mark.asyncio
+async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(client, session):
+    market = make_market(session, question="Scoped strategy market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    now = datetime.now(timezone.utc)
+
+    confluence_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        estimated_probability=Decimal("0.6700"),
+        probability_adjustment=Decimal("0.1700"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.170000"),
+        details={"direction": "up", "market_question": "Scoped strategy market", "outcome_name": "Yes"},
+    )
+    legacy_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="price_move",
+        estimated_probability=Decimal("0.6200"),
+        probability_adjustment=Decimal("0.1200"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.120000"),
+        details={"direction": "up", "market_question": "Scoped strategy market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        confluence_signal.id,
+        outcome.id,
+        market.id,
+        status="resolved",
+        pnl=Decimal("100.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now,
+        opened_at=now - timedelta(hours=3),
+        details={"market_question": "Scoped strategy market", "ev_per_share": "0.170000"},
+    )
+    _make_paper_trade(
+        session,
+        legacy_signal.id,
+        outcome.id,
+        market.id,
+        status="resolved",
+        pnl=Decimal("40.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now + timedelta(hours=1),
+        opened_at=now - timedelta(hours=2),
+        details={"market_question": "Scoped strategy market", "ev_per_share": "0.120000"},
+    )
+    await session.commit()
+
+    resp = await client.get("/api/v1/paper-trading/portfolio?scope=default_strategy")
+    assert resp.status_code == 200
+    portfolio = resp.json()
+    assert portfolio["total_resolved"] == 1
+    assert portfolio["cumulative_pnl"] == 100.0
+    assert portfolio["open_trades"] == []
+
+    resp = await client.get("/api/v1/paper-trading/history?scope=default_strategy")
+    assert resp.status_code == 200
+    history = resp.json()
+    assert history["total"] == 1
+    assert history["trades"][0]["signal_id"] == str(confluence_signal.id)
+
+    resp = await client.get("/api/v1/paper-trading/metrics?scope=default_strategy")
+    assert resp.status_code == 200
+    metrics = resp.json()
+    assert metrics["total_trades"] == 1
+    assert metrics["cumulative_pnl"] == 100.0
+
+    resp = await client.get("/api/v1/paper-trading/pnl-curve?scope=default_strategy")
+    assert resp.status_code == 200
+    curve = resp.json()
+    assert len(curve) == 1
+    assert curve[0]["pnl"] == 100.0
+
+
+@pytest.mark.asyncio
 async def test_strategy_health_endpoint_returns_default_strategy_contract_and_benchmark(client, session):
     market = make_market(session, question="Strategy health market")
     outcome = make_outcome(session, market.id, name="Yes")
     now = datetime.now(timezone.utc)
+    opened_at = now - timedelta(days=3)
 
     confluence_signal = make_signal(
         session,
@@ -366,6 +447,32 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
         resolved_correctly=True,
         clv=Decimal("0.050000"),
         profit_loss=Decimal("0.100000"),
+        details={"direction": "up", "market_question": "Strategy health market", "outcome_name": "Yes"},
+    )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(days=2),
+        dedupe_bucket=(now - timedelta(days=2)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6400"),
+        probability_adjustment=Decimal("0.1400"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.140000"),
+        resolved=True,
+        resolved_correctly=True,
+        clv=Decimal("0.070000"),
+        profit_loss=Decimal("0.120000"),
+        details={"direction": "up", "market_question": "Strategy health market", "outcome_name": "Yes"},
+    )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(days=1),
+        dedupe_bucket=(now - timedelta(days=1)).replace(minute=0, second=0, microsecond=0),
         details={"direction": "up", "market_question": "Strategy health market", "outcome_name": "Yes"},
     )
     make_signal(
@@ -396,8 +503,38 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
         pnl=Decimal("125.00"),
         exit_price=Decimal("1.000000"),
         resolved_at=now - timedelta(days=1),
-        opened_at=now - timedelta(days=3),
+        opened_at=opened_at,
         details={"market_question": "Strategy health market", "ev_per_share": "0.120000"},
+    )
+    legacy_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="price_move",
+        timeframe="1h",
+        fired_at=now - timedelta(hours=20),
+        dedupe_bucket=(now - timedelta(hours=20)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6100"),
+        probability_adjustment=Decimal("0.1100"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.110000"),
+        resolved=True,
+        resolved_correctly=True,
+        clv=Decimal("0.040000"),
+        profit_loss=Decimal("0.090000"),
+        details={"direction": "up", "market_question": "Strategy health market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        legacy_signal.id,
+        outcome.id,
+        market.id,
+        status="resolved",
+        pnl=Decimal("75.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now - timedelta(hours=12),
+        opened_at=now - timedelta(hours=20),
+        details={"market_question": "Strategy health market", "ev_per_share": "0.110000"},
     )
     await session.commit()
 
@@ -406,7 +543,17 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
     data = resp.json()
 
     assert data["strategy"]["signal_type"] == "confluence"
+    assert data["observation"]["started_at"] == opened_at.isoformat()
+    assert data["trade_funnel"]["candidate_signals"] == 3
+    assert data["trade_funnel"]["qualified_signals"] == 2
+    assert data["trade_funnel"]["traded_signals"] == 1
+    assert data["trade_funnel"]["qualified_not_traded"] == 1
+    assert data["trade_funnel"]["resolved_trades"] == 1
+    assert data["trade_funnel"]["resolved_signals"] == 1
+    assert data["trade_funnel"]["excluded_legacy_trades"] == 1
     assert data["headline"]["cumulative_pnl"] == 125.0
+    assert data["headline"]["resolved_trades"] == 1
+    assert data["headline"]["resolved_signals"] == 1
     assert data["headline"]["avg_clv"] == pytest.approx(0.05)
     assert data["headline"]["brier_score"] is not None
     assert data["benchmark"]["resolved_signals"] >= 1
