@@ -68,6 +68,12 @@ async def _run_signal_detection():
                 created, new_signals = await persist_signals(session, all_candidates)
                 logger.info("Job: signal_detection done, %d new signals", created)
 
+                # Run Bayesian confluence engine on recent signals
+                if created > 0:
+                    confluence_count = await _run_confluence(session, all_candidates)
+                    if confluence_count > 0:
+                        logger.info("Job: confluence engine created %d fused signals", confluence_count)
+
                 # Broadcast new signals via SSE
                 if created > 0:
                     await _broadcast_new_signals(session, new_signals)
@@ -76,6 +82,38 @@ async def _run_signal_detection():
                 logger.info("Job: signal_detection done, no candidates")
         except Exception:
             logger.error("Job: signal_detection failed", exc_info=True)
+
+
+async def _run_confluence(session, candidates):
+    """Run Bayesian confluence on candidates grouped by outcome_id."""
+    from collections import defaultdict
+    from decimal import Decimal
+
+    from app.ranking.scorer import persist_signals
+    from app.signals.confluence import fuse_signals
+
+    # Group candidates by outcome_id
+    by_outcome: dict[str, list] = defaultdict(list)
+    for c in candidates:
+        if c.outcome_id:
+            by_outcome[c.outcome_id].append(c)
+
+    confluence_candidates = []
+    for outcome_id, group in by_outcome.items():
+        if len(group) < 2:
+            continue
+        # Use the first candidate's price_at_fire as market price
+        market_price = group[0].price_at_fire
+        if market_price is None:
+            continue
+        fused = fuse_signals(group, market_price)
+        if fused is not None:
+            confluence_candidates.append(fused)
+
+    if confluence_candidates:
+        created, _ = await persist_signals(session, confluence_candidates)
+        return created
+    return 0
 
 
 async def _broadcast_new_signals(session, signals):
