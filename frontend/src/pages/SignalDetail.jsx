@@ -2,6 +2,26 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { getSignal } from "../api";
 
+function fmtCurrency(value) {
+  if (value == null) return "-";
+  return Number(value).toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function fmtPercent(value) {
+  if (value == null) return "-";
+  return `${Number(value).toFixed(2)}%`;
+}
+
+function fmtEdgeCents(value) {
+  if (value == null) return "-";
+  return `${(Math.abs(Number(value)) * 100).toFixed(1)}c`;
+}
+
 export default function SignalDetail() {
   const { id } = useParams();
   const [signal, setSignal] = useState(null);
@@ -129,6 +149,10 @@ export default function SignalDetail() {
             </div>
           </div>
         </div>
+
+        {(s.direction || s.expected_value != null) && (
+          <TradingSetup signal={s} />
+        )}
 
         {s.signal_type === "order_flow_imbalance" && (
           <div
@@ -391,6 +415,52 @@ export default function SignalDetail() {
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+function TradingSetup({ signal }) {
+  return (
+    <div
+      style={{
+        background: "var(--bg)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        padding: 16,
+        marginBottom: 20,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+        <h3 style={{ fontSize: 14, fontWeight: 600, color: "var(--accent)" }}>Trading Setup</h3>
+        {signal.direction && (
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 700,
+              color: signal.direction === "BUY NO" ? "var(--yellow)" : "var(--green)",
+              background: "var(--bg-card)",
+              padding: "3px 10px",
+              borderRadius: 999,
+            }}
+          >
+            {signal.direction}
+          </span>
+        )}
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+          gap: 12,
+        }}
+      >
+        <Stat label="Market Price" value={fmtCurrency(signal.price_at_fire)} />
+        <Stat label="Est. Probability" value={signal.estimated_probability == null ? "-" : `${(Number(signal.estimated_probability) * 100).toFixed(1)}%`} />
+        <Stat label="Expected Value / Share" value={fmtEdgeCents(signal.expected_value)} />
+        <Stat label="Edge %" value={fmtPercent(signal.edge_pct)} />
+        <Stat label="Recommended Size" value={fmtCurrency(signal.recommended_size_usd)} />
+        <Stat label="Kelly Fraction" value={signal.kelly_fraction == null ? "-" : `${(Number(signal.kelly_fraction) * 100).toFixed(2)}%`} />
       </div>
     </div>
   );

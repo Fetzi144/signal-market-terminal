@@ -1,8 +1,8 @@
-# Signal Market Terminal v0.2.0
+# Signal Market Terminal v0.4.0
 
-A prediction-market intelligence platform that ingests market data from **Polymarket** and **Kalshi**, detects unusual market behavior, ranks signals, and evaluates signal quality over time. Think "Bloomberg terminal lite for prediction markets."
+A prediction-market intelligence platform that ingests market data from **Polymarket** and **Kalshi**, detects unusual market behavior, estimates probabilities, computes expected value, tracks closing line value, and paper-trades a fixed default strategy to prove whether the system has real edge.
 
-This is **not** an auto-trading bot. It is a monitoring, research, and decision-support tool for serious operators.
+This is **not** an auto-trading bot. It is a monitoring, research, and decision-support tool for serious operators. The current product focus is **prove the edge first**: freeze one default strategy, track it honestly, and let the P&L line decide what survives.
 
 ## Architecture
 
@@ -81,7 +81,21 @@ npm install
 npm run dev
 ```
 
+Local development supports both `localhost` and `127.0.0.1` frontend origins by default. The frontend API base lives in [frontend/.env.development](<C:/Code/Signal Market Terminal/frontend/.env.development>) and can be overridden with `VITE_API_BASE`.
+
 ## Features
+
+### Default Strategy Baseline
+
+The repo now carries one explicit validation path for the "prove the edge" phase:
+
+- **Signal path:** `confluence`
+- **Filter:** EV threshold of `>= $0.03/share`
+- **Sizing:** quarter-Kelly on a `$10,000` paper bankroll
+- **Risk guardrails:** `5%` max single position, `30%` max total exposure, `15%` max cluster exposure, drawdown circuit breaker at `-15%`
+- **Primary source of truth:** paper-trading portfolio, P&L curve, strategy-health review, and detector verdicts
+
+See [docs/default-strategy.md](<C:/Code/Signal Market Terminal/docs/default-strategy.md>) for the full contract.
 
 ### Signal Detection (5 families)
 
@@ -120,7 +134,7 @@ The backend streams new signal and alert events via Server-Sent Events (`GET /ap
 
 ### Observability
 
-- **Prometheus metrics** at `/metrics` — auto-instrumented HTTP metrics plus custom counters/gauges for signals, alerts, ingestion, SSE connections
+- **Prometheus metrics** at `/metrics` - auto-instrumented HTTP metrics plus custom counters/gauges for signals, alerts, ingestion, SSE connections
 - **Structured JSON logging** in production (`LOG_FORMAT=json`)
 - **Circuit breaker** on both connectors (closed/open/half-open states)
 

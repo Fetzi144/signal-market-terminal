@@ -2,6 +2,23 @@
 
 All notable changes to Signal Market Terminal are documented here.
 
+## [Unreleased]
+
+### Added
+- **Default strategy contract** for the prove-the-edge phase: confluence + EV filter + quarter-Kelly + current paper-trading risk guardrails
+- **Strategy health endpoint** consolidating paper-trading P&L, CLV, Brier score, benchmark comparison, detector verdicts, and recent mistakes
+- **Detector keep/watch/cut review loop** based on recent CLV, hypothetical P&L, calibration, and trade contribution
+- **Default strategy docs and review artifact** so weekly analysis has a stable contract and repeatable checklist
+
+### Changed
+- Paper trading now measures the **default confluence strategy** instead of auto-trading every EV-qualified detector signal
+- The `/paper-trading` page is now the primary **strategy health** console for the current phase
+- Local dev defaults now support both `localhost` and `127.0.0.1` frontend origins more reliably
+
+### Fixed
+- Backend/frontend dev defaults are aligned across API base and CORS settings
+- Backend app version metadata and repo docs now reflect the current `v0.4.0` baseline instead of stale `v0.2.0` labels
+
 ## [0.4.0] - 2026-04-08
 
 ### Added

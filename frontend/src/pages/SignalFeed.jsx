@@ -29,6 +29,26 @@ function ScoreBadge({ value, label }) {
   );
 }
 
+function fmtCurrency(value) {
+  if (value == null) return "-";
+  return Number(value).toLocaleString(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function fmtEdgeCents(value) {
+  if (value == null) return "-";
+  return `${(Math.abs(Number(value)) * 100).toFixed(1)}c`;
+}
+
+function fmtPercent(value) {
+  if (value == null) return "-";
+  return `${Number(value).toFixed(2)}%`;
+}
+
 function DirectionBadge({ direction }) {
   if (!direction) return null;
   const isUp = direction === "up";
@@ -121,6 +141,48 @@ function ResolutionBadge({ resolved_correctly }) {
   );
 }
 
+function TradingRecommendation({ signal }) {
+  if (!signal.direction || signal.recommended_size_usd == null) {
+    return null;
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 8,
+        paddingTop: 8,
+        borderTop: "1px solid var(--border)",
+        display: "flex",
+        gap: 12,
+        alignItems: "center",
+        flexWrap: "wrap",
+        fontSize: 12,
+      }}
+    >
+      <span
+        style={{
+          fontWeight: 700,
+          color: signal.direction === "BUY NO" ? "var(--yellow)" : "var(--green)",
+          background: "var(--bg)",
+          borderRadius: 999,
+          padding: "2px 10px",
+        }}
+      >
+        {signal.direction}
+      </span>
+      <span style={{ color: "var(--text-dim)" }}>
+        EV/share: <span style={{ color: "var(--text)", fontFamily: "var(--mono)" }}>{fmtEdgeCents(signal.expected_value)}</span>
+      </span>
+      <span style={{ color: "var(--text-dim)" }}>
+        Edge: <span style={{ color: "var(--text)", fontFamily: "var(--mono)" }}>{fmtPercent(signal.edge_pct)}</span>
+      </span>
+      <span style={{ color: "var(--text-dim)" }}>
+        Size: <span style={{ color: "var(--text)", fontFamily: "var(--mono)" }}>{fmtCurrency(signal.recommended_size_usd)}</span>
+      </span>
+    </div>
+  );
+}
+
 function SkeletonCard() {
   return (
     <div className="skeleton" style={{ borderRadius: 8, height: 100, marginBottom: 8 }} />
@@ -183,6 +245,7 @@ function SignalCard({ signal }) {
             </div>
           )}
         </div>
+        <TradingRecommendation signal={s} />
       </div>
     </Link>
   );

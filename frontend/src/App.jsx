@@ -10,6 +10,7 @@ import Backtest from "./pages/Backtest";
 import BacktestResult from "./pages/BacktestResult";
 import Alerts from "./pages/Alerts";
 import Performance from "./pages/Performance";
+import PaperTrading from "./pages/PaperTrading";
 import Health from "./pages/Health";
 import Portfolio from "./pages/Portfolio";
 import PushNotificationToggle from "./components/PushNotificationToggle";
@@ -44,6 +45,7 @@ function ThemeToggle() {
 const NAV_LINKS = [
   { to: "/", label: "Feed" },
   { to: "/performance", label: "Performance" },
+  { to: "/paper-trading", label: "Strategy Health" },
   { to: "/portfolio", label: "Portfolio" },
   { to: "/markets", label: "Markets" },
   { to: "/analytics", label: "Analytics" },
@@ -138,6 +140,7 @@ export default function App() {
         <Route path="/markets" element={<Markets />} />
         <Route path="/markets/:id" element={<MarketDetail />} />
         <Route path="/performance" element={<Performance />} />
+        <Route path="/paper-trading" element={<PaperTrading />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/backtests" element={<Backtest />} />
