@@ -14,6 +14,7 @@ from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
 from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow, timeframe_to_minutes
+from app.signals.probability import compute_estimated_probability
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,15 @@ class PriceMoveDetector(BaseDetector):
 
             direction = "up" if new_price > old_price else "down"
 
+            # Probability engine: the observed price move suggests the market
+            # is adjusting. Our signal says this move reflects real information.
+            # raw_adjustment = signed change as fraction of price space.
+            # Calibration factor starts at 1.0 (will be tuned from CLV data).
+            direction_sign = Decimal("1") if direction == "up" else Decimal("-1")
+            calibration_factor = Decimal("1.0")
+            raw_adjustment = direction_sign * change_pct * calibration_factor
+            est_prob, adj_applied = compute_estimated_probability(new_price, raw_adjustment)
+
             candidates.append(SignalCandidate(
                 signal_type="price_move",
                 market_id=str(market.id),
@@ -118,6 +128,8 @@ class PriceMoveDetector(BaseDetector):
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=new_price,
                 timeframe=timeframe,
+                estimated_probability=est_prob,
+                probability_adjustment=adj_applied,
                 details={
                     "direction": direction,
                     "old_price": str(old_price),
@@ -127,6 +139,8 @@ class PriceMoveDetector(BaseDetector):
                     "timeframe": timeframe,
                     "market_question": market.question,
                     "outcome_name": outcome.name,
+                    "raw_probability_adjustment": str(raw_adjustment.quantize(Decimal("0.0001"))),
+                    "calibration_factor": str(calibration_factor),
                 },
             ))
 

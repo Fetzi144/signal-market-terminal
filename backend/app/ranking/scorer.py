@@ -65,6 +65,8 @@ async def persist_signals(session: AsyncSession, candidates: list[SignalCandidat
             rank_score=rank,
             details=c.details,
             price_at_fire=c.price_at_fire,
+            estimated_probability=c.estimated_probability,
+            probability_adjustment=c.probability_adjustment,
         )
         session.add(signal)
         new_signals.append(signal)

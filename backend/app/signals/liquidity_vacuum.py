@@ -128,6 +128,9 @@ class LiquidityVacuumDetector(BaseDetector):
 
             vacuum_side = "both" if both_sides else ("bid" if bid_vacuum else "ask")
 
+            # Probability engine: liquidity_vacuum is an uncertainty modifier,
+            # not a directional signal. probability_adjustment = 0.
+            # Thin orderbooks = higher uncertainty, more price impact risk.
             candidates.append(SignalCandidate(
                 signal_type="liquidity_vacuum",
                 market_id=str(market.id),
@@ -135,6 +138,9 @@ class LiquidityVacuumDetector(BaseDetector):
                 signal_score=signal_score.quantize(Decimal("0.001")),
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=latest_price,
+                estimated_probability=None,
+                probability_adjustment=Decimal("0"),
+                is_directional=False,
                 details={
                     "vacuum_side": vacuum_side,
                     "bid_depth_ratio": str(bid_ratio.quantize(Decimal("0.01"))),
@@ -143,6 +149,7 @@ class LiquidityVacuumDetector(BaseDetector):
                     "current_ask_depth": str(current_ask),
                     "baseline_avg_bid": str(avg_bid_dec.quantize(Decimal("0.01"))),
                     "baseline_avg_ask": str(avg_ask_dec.quantize(Decimal("0.01"))),
+                    "uncertainty_modifier": "liquidity_vacuum",
                     "market_question": market.question,
                     "outcome_name": outcome.name,
                 },

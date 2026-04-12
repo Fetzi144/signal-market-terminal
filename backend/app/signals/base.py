@@ -34,6 +34,10 @@ class SignalCandidate:
     price_at_fire: Decimal | None
     details: dict
     timeframe: str = "30m"
+    # Probability engine fields (Phase 2 Q2)
+    estimated_probability: Decimal | None = None  # P(YES | signal_data), clamped [0.01, 0.99]
+    probability_adjustment: Decimal | None = None  # delta from market price (positive = bullish)
+    is_directional: bool = True  # False for modifiers like spread_change, liquidity_vacuum
 
 
 @dataclass

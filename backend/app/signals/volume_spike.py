@@ -15,6 +15,7 @@ from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
 from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
+from app.signals.probability import compute_estimated_probability
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,36 @@ class VolumeSpikeDetector(BaseDetector):
             elif avg_vol_dec < 5000:
                 confidence *= Decimal("0.6")
 
+            # Probability engine: volume confirms the current price trend.
+            # Determine trend from recent price movement relative to baseline.
+            # Get a baseline price from the recent window for trend direction.
+            baseline_price_result = await session.execute(
+                select(PriceSnapshot.price)
+                .where(
+                    PriceSnapshot.outcome_id == snap.outcome_id,
+                    PriceSnapshot.captured_at >= recent_window - timedelta(hours=1),
+                    PriceSnapshot.captured_at < recent_window,
+                )
+                .order_by(PriceSnapshot.captured_at.asc())
+                .limit(1)
+            )
+            baseline_price = baseline_price_result.scalar_one_or_none()
+
+            est_prob = None
+            adj_applied = None
+            trend_direction = "neutral"
+            if baseline_price is not None and snap.price is not None:
+                price_delta = snap.price - baseline_price
+                if abs(price_delta) > Decimal("0.005"):
+                    # Volume spike in direction of price move = confirmation
+                    direction_sign = Decimal("1") if price_delta > 0 else Decimal("-1")
+                    trend_direction = "up" if price_delta > 0 else "down"
+                    # Adjustment scales with log of volume ratio, capped reasonably
+                    volume_factor = min(Decimal("0.15"), (multiplier - Decimal("1")) * Decimal("0.03"))
+                    calibration_factor = Decimal("1.0")
+                    raw_adjustment = direction_sign * volume_factor * calibration_factor
+                    est_prob, adj_applied = compute_estimated_probability(snap.price, raw_adjustment)
+
             candidates.append(SignalCandidate(
                 signal_type="volume_spike",
                 market_id=str(market.id),
@@ -116,6 +147,8 @@ class VolumeSpikeDetector(BaseDetector):
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=snap.price,
                 timeframe=timeframe,
+                estimated_probability=est_prob,
+                probability_adjustment=adj_applied,
                 details={
                     "current_volume_24h": str(current_vol),
                     "baseline_avg_volume": str(avg_vol_dec.quantize(Decimal("0.01"))),
@@ -123,6 +156,7 @@ class VolumeSpikeDetector(BaseDetector):
                     "baseline_snapshots": snap_count,
                     "baseline_hours": baseline_hours,
                     "timeframe": timeframe,
+                    "trend_direction": trend_direction,
                     "market_question": market.question,
                     "outcome_name": outcome.name,
                 },

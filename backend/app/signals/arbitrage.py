@@ -9,6 +9,7 @@ from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import PriceSnapshot
 from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
+from app.signals.probability import clamp_probability
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,13 @@ class ArbitrageDetector(BaseDetector):
                         cheap_market, cheap_outcome, cheap_price = market2, outcome2, price2
                         expensive_market, expensive_price = market1, price1
 
+                    # Probability engine: for arb, the estimated probability is
+                    # the average of the two platform prices (market consensus).
+                    # The cheap platform is below consensus → buy signal.
+                    avg_price = (cheap_price + expensive_price) / 2
+                    est_prob = clamp_probability(avg_price).quantize(Decimal("0.0001"))
+                    adj_applied = (est_prob - cheap_price).quantize(Decimal("0.0001"))
+
                     candidates.append(SignalCandidate(
                         signal_type="arbitrage",
                         market_id=str(cheap_market.id),
@@ -122,6 +130,8 @@ class ArbitrageDetector(BaseDetector):
                         signal_score=signal_score.quantize(Decimal("0.001")),
                         confidence=Decimal("1.000"),
                         price_at_fire=cheap_price,
+                        estimated_probability=est_prob,
+                        probability_adjustment=adj_applied,
                         details={
                             "direction": "up",
                             "question_slug": q_slug,

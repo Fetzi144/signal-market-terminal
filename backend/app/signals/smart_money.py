@@ -10,6 +10,7 @@ from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.whale import WalletActivity, WalletProfile
 from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow
+from app.signals.probability import compute_estimated_probability
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,17 @@ class SmartMoneyDetector(BaseDetector):
 
             direction = "up" if activity.action == "buy" else "down"
 
+            # Probability engine: smart money adjustment proportional to
+            # how far above 50% the wallet's win rate is.
+            est_prob = None
+            adj_applied = None
+            if activity.price is not None and wallet.win_rate is not None:
+                direction_sign = Decimal("1") if direction == "up" else Decimal("-1")
+                # Edge over random: win_rate - 0.5, scaled by 0.2 factor
+                wallet_edge = max(Decimal("0"), wallet.win_rate - Decimal("0.5"))
+                raw_adjustment = direction_sign * wallet_edge * Decimal("0.2")
+                est_prob, adj_applied = compute_estimated_probability(activity.price, raw_adjustment)
+
             candidates.append(SignalCandidate(
                 signal_type="smart_money",
                 market_id=str(market.id),
@@ -79,6 +91,8 @@ class SmartMoneyDetector(BaseDetector):
                 signal_score=signal_score.quantize(Decimal("0.001")),
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=activity.price,
+                estimated_probability=est_prob,
+                probability_adjustment=adj_applied,
                 details={
                     "direction": direction,
                     "market_question": market.question,

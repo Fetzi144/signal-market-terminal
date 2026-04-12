@@ -39,6 +39,10 @@ class Signal(Base):
     clv: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
     profit_loss: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
 
+    # Probability engine (Phase 2 Q2) — populated at detection time
+    estimated_probability: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    probability_adjustment: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+
     evaluations: Mapped[list["SignalEvaluation"]] = relationship(back_populates="signal")
 
     __table_args__ = (

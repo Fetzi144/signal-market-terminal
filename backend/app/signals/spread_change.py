@@ -120,6 +120,9 @@ class SpreadChangeDetector(BaseDetector):
             if snap_count < 12:
                 confidence *= Decimal("0.6")
 
+            # Probability engine: spread_change is an uncertainty modifier,
+            # not a directional signal. probability_adjustment = 0.
+            # Widening spread = more uncertainty; narrowing = less uncertainty.
             candidates.append(SignalCandidate(
                 signal_type="spread_change",
                 market_id=str(market.id),
@@ -127,12 +130,16 @@ class SpreadChangeDetector(BaseDetector):
                 signal_score=signal_score.quantize(Decimal("0.001")),
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=latest_price,
+                estimated_probability=None,
+                probability_adjustment=Decimal("0"),
+                is_directional=False,
                 details={
                     "direction": direction,
                     "current_spread": str(current_spread),
                     "baseline_avg_spread": str(avg_spread_dec.quantize(Decimal("0.000001"))),
                     "ratio": str(ratio.quantize(Decimal("0.1"))),
                     "baseline_snapshots": snap_count,
+                    "uncertainty_modifier": direction,
                     "market_question": market.question,
                     "outcome_name": outcome.name,
                 },

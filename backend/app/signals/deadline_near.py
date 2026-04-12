@@ -107,6 +107,9 @@ class DeadlineNearDetector(BaseDetector):
 
                 direction = "up" if new_price > old_price else "down"
 
+                # Probability engine: deadline_near is a confidence modifier,
+                # not a directional signal. probability_adjustment = 0.
+                # Its value is amplifying confidence in concurrent directional signals.
                 candidates.append(SignalCandidate(
                     signal_type="deadline_near",
                     market_id=str(market.id),
@@ -114,6 +117,9 @@ class DeadlineNearDetector(BaseDetector):
                     signal_score=signal_score.quantize(Decimal("0.001")),
                     confidence=confidence.quantize(Decimal("0.001")),
                     price_at_fire=new_price,
+                    estimated_probability=None,
+                    probability_adjustment=Decimal("0"),
+                    is_directional=False,
                     details={
                         "direction": direction,
                         "old_price": str(old_price),
@@ -122,6 +128,7 @@ class DeadlineNearDetector(BaseDetector):
                         "hours_until_deadline": round(hours_remaining, 1),
                         "end_date": market.end_date.isoformat(),
                         "urgency": str(urgency.quantize(Decimal("0.01"))),
+                        "confidence_modifier": "deadline_urgency",
                         "market_question": market.question,
                         "outcome_name": outcome.name,
                     },

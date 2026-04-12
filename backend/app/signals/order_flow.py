@@ -15,6 +15,7 @@ from app.config import settings
 from app.models.market import Market, Outcome
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 from app.signals.base import BaseDetector, SignalCandidate, SnapshotWindow, timeframe_to_minutes
+from app.signals.probability import compute_estimated_probability
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,16 @@ class OrderFlowImbalanceDetector(BaseDetector):
 
         direction = "up" if ofi > 0 else "down"
 
+        # Probability engine: OFI captures informed flow not yet priced in.
+        # Adjustment = ofi_magnitude * (1 - price_change_magnitude) * calibration_factor
+        # Flat price + high OFI = large adjustment (informed money accumulating).
+        # Price already moved + OFI = smaller adjustment (already partially priced in).
+        calibration_factor = Decimal("1.0")
+        price_flatness = Decimal("1") - min(Decimal("1"), price_change_pct / Decimal("0.03"))
+        ofi_direction = Decimal("1") if ofi > 0 else Decimal("-1")
+        raw_adjustment = ofi_direction * abs(ofi) * price_flatness * Decimal("0.12") * calibration_factor
+        est_prob, adj_applied = compute_estimated_probability(last_price, raw_adjustment)
+
         return SignalCandidate(
             signal_type="order_flow_imbalance",
             market_id=str(market.id),
@@ -243,6 +254,8 @@ class OrderFlowImbalanceDetector(BaseDetector):
             confidence=confidence.quantize(Decimal("0.001")),
             price_at_fire=last_price,
             timeframe=timeframe,
+            estimated_probability=est_prob,
+            probability_adjustment=adj_applied,
             details={
                 "direction": direction,
                 "ofi_value": str(ofi.quantize(Decimal("0.001"))),
@@ -251,6 +264,7 @@ class OrderFlowImbalanceDetector(BaseDetector):
                 "bid_depth_previous": str(bid_depth_prev),
                 "ask_depth_previous": str(ask_depth_prev),
                 "price_current": str(last_price),
+                "price_flatness": str(price_flatness.quantize(Decimal("0.001"))),
                 "timeframe": timeframe,
                 "market_question": market.question,
                 "outcome_name": outcome.name,
