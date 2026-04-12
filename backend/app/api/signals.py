@@ -46,6 +46,9 @@ class SignalOut(BaseModel):
     market_question: str | None = None
     platform: str | None = None
     evaluations: list[EvaluationOut] = []
+    # Probability engine fields
+    estimated_probability: Decimal | None = None
+    probability_adjustment: Decimal | None = None
 
 
 class SignalListOut(BaseModel):
@@ -113,6 +116,8 @@ async def list_signals(
             resolved_correctly=signal.resolved_correctly,
             market_question=question,
             platform=mkt_platform,
+            estimated_probability=signal.estimated_probability,
+            probability_adjustment=signal.probability_adjustment,
         ))
 
     return SignalListOut(signals=signals, total=total, page=page, page_size=page_size)
@@ -182,6 +187,8 @@ async def get_signal(request: Request, signal_id: uuid.UUID, db: AsyncSession = 
         market_question=question,
         platform=mkt_platform,
         evaluations=evals,
+        estimated_probability=signal.estimated_probability,
+        probability_adjustment=signal.probability_adjustment,
     )
 
 

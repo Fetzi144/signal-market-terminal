@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.signal import Signal
+from app.signals.probability import brier_score, calibration_buckets
 
 router = APIRouter(prefix="/api/v1/performance", tags=["performance"])
 
@@ -268,4 +269,67 @@ async def performance_summary(db: AsyncSession = Depends(get_db)):
         "threshold_curve": threshold_curve,
         "recent_calls": recent_calls,
         "lookback_days": _LOOKBACK_DAYS,
+    }
+
+
+@router.get("/calibration")
+async def calibration_report(db: AsyncSession = Depends(get_db)):
+    """Calibration data: Brier scores and predicted-vs-actual buckets per detector.
+
+    Only includes signals that have both estimated_probability and a resolution outcome.
+    """
+    # Fetch all resolved signals with probability estimates
+    result = await db.execute(
+        select(
+            Signal.signal_type,
+            Signal.estimated_probability,
+            Signal.resolved_correctly,
+        ).where(
+            Signal.resolved_correctly.isnot(None),
+            Signal.estimated_probability.isnot(None),
+        )
+    )
+    rows = result.all()
+
+    if not rows:
+        return {
+            "total_calibrated_signals": 0,
+            "overall_brier_score": None,
+            "by_detector": [],
+            "overall_calibration_curve": [],
+        }
+
+    # Group by detector type
+    by_type: dict[str, list[tuple[Decimal, bool]]] = {}
+    all_predictions: list[tuple[Decimal, bool]] = []
+
+    for signal_type, est_prob, resolved_correctly in rows:
+        pair = (est_prob, resolved_correctly)
+        by_type.setdefault(signal_type, []).append(pair)
+        all_predictions.append(pair)
+
+    # Per-detector calibration
+    detector_results = []
+    for signal_type, predictions in sorted(by_type.items()):
+        bs = brier_score(predictions)
+        buckets = calibration_buckets(predictions)
+        detector_results.append({
+            "signal_type": signal_type,
+            "sample_size": len(predictions),
+            "brier_score": float(bs) if bs is not None else None,
+            "calibration_curve": buckets,
+        })
+
+    # Sort by Brier score (lower = better)
+    detector_results.sort(key=lambda d: d["brier_score"] if d["brier_score"] is not None else 999)
+
+    # Overall calibration
+    overall_bs = brier_score(all_predictions)
+    overall_curve = calibration_buckets(all_predictions)
+
+    return {
+        "total_calibrated_signals": len(all_predictions),
+        "overall_brier_score": float(overall_bs) if overall_bs is not None else None,
+        "by_detector": detector_results,
+        "overall_calibration_curve": overall_curve,
     }
