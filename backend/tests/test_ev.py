@@ -1,7 +1,7 @@
 """Tests for Expected Value calculator."""
 from decimal import Decimal
 
-from app.signals.ev import compute_ev, compute_ev_full
+from app.signals.ev import compute_directional_ev_full, compute_ev, compute_ev_full
 
 
 class TestComputeEV:
@@ -57,3 +57,27 @@ class TestComputeEVFull:
         """Edge percentage is abs(prob - price) * 100"""
         result = compute_ev_full(Decimal("0.58"), Decimal("0.50"))
         assert result["edge_pct"] == Decimal("8.00")
+
+
+class TestComputeDirectionalEVFull:
+    def test_buy_yes_uses_yes_probability(self):
+        result = compute_directional_ev_full(
+            direction="buy_yes",
+            estimated_probability=Decimal("0.65"),
+            entry_price=Decimal("0.40"),
+        )
+        assert result["direction"] == "buy_yes"
+        assert result["win_probability"] == Decimal("0.650000")
+        assert result["ev_per_share"] == Decimal("0.250000")
+        assert result["edge_pct"] == Decimal("25.00")
+
+    def test_buy_no_uses_no_probability(self):
+        result = compute_directional_ev_full(
+            direction="buy_no",
+            estimated_probability=Decimal("0.35"),
+            entry_price=Decimal("0.40"),
+        )
+        assert result["direction"] == "buy_no"
+        assert result["win_probability"] == Decimal("0.650000")
+        assert result["ev_per_share"] == Decimal("0.250000")
+        assert result["potential_profit"] == Decimal("0.600000")

@@ -34,10 +34,12 @@ def _dedupe_bucket(dt: datetime) -> datetime:
 async def persist_signals(session: AsyncSession, candidates: list[SignalCandidate]) -> tuple[int, list[Signal]]:
     """Persist signal candidates with dedupe. Returns (count, list of new Signal objects)."""
     now = datetime.now(timezone.utc)
-    bucket = _dedupe_bucket(now)
     new_signals: list[Signal] = []
 
     for c in candidates:
+        reference_ts = c.reference_timestamp() or now
+        bucket = _dedupe_bucket(reference_ts)
+
         # Check dedupe: same type + outcome + timeframe + bucket already exists?
         existing = await session.execute(
             select(Signal.id).where(
@@ -63,7 +65,15 @@ async def persist_signals(session: AsyncSession, candidates: list[SignalCandidat
             signal_type=c.signal_type,
             market_id=uuid.UUID(c.market_id),
             outcome_id=uuid.UUID(c.outcome_id),
-            fired_at=now,
+            fired_at=reference_ts,
+            observed_at_exchange=c.observed_at_exchange,
+            received_at_local=c.received_at_local,
+            detected_at_local=now,
+            source_platform=c.source_platform,
+            source_token_id=c.source_token_id,
+            source_stream_session_id=c.source_stream_session_id,
+            source_event_hash=c.source_event_hash,
+            source_event_type=c.source_event_type,
             dedupe_bucket=bucket,
             timeframe=c.timeframe,
             signal_score=c.signal_score,
@@ -83,7 +93,7 @@ async def persist_signals(session: AsyncSession, candidates: list[SignalCandidat
         logger.info("Persisted %d new signals (dedupe filtered %d)", len(new_signals), len(candidates) - len(new_signals))
 
         # Apply confluence scoring for multi-timeframe signals
-        confluence_count = await _apply_confluence_scoring(session, new_signals, bucket)
+        confluence_count = await _apply_confluence_scoring(session, new_signals)
         if confluence_count > 0:
             logger.info("Applied confluence scoring to %d signals", confluence_count)
 
@@ -91,19 +101,19 @@ async def persist_signals(session: AsyncSession, candidates: list[SignalCandidat
 
 
 async def _apply_confluence_scoring(
-    session: AsyncSession, new_signals: list[Signal], bucket: datetime
+    session: AsyncSession, new_signals: list[Signal]
 ) -> int:
     """Check for confluence: same signal_type + outcome across multiple timeframes
     in the current dedupe bucket. Apply bonus to rank_score and store metadata."""
-    # Group new signals by (signal_type, outcome_id) to find confluence candidates
-    groups: dict[tuple[str, uuid.UUID], list[Signal]] = defaultdict(list)
+    # Group new signals by (signal_type, outcome_id, dedupe_bucket) to find confluence candidates
+    groups: dict[tuple[str, uuid.UUID, datetime], list[Signal]] = defaultdict(list)
     for sig in new_signals:
-        if sig.outcome_id is not None:
-            groups[(sig.signal_type, sig.outcome_id)].append(sig)
+        if sig.outcome_id is not None and sig.dedupe_bucket is not None:
+            groups[(sig.signal_type, sig.outcome_id, sig.dedupe_bucket)].append(sig)
 
     updated = 0
 
-    for (signal_type, outcome_id), signals in groups.items():
+    for (signal_type, outcome_id, bucket), signals in groups.items():
         # Also check for existing signals in same bucket with different timeframes
         existing_result = await session.execute(
             select(Signal).where(

@@ -22,6 +22,14 @@ class Signal(Base):
     fired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    observed_at_exchange: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    received_at_local: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    detected_at_local: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_platform: Mapped[str | None] = mapped_column(String(32))
+    source_token_id: Mapped[str | None] = mapped_column(String(128))
+    source_stream_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    source_event_hash: Mapped[str | None] = mapped_column(String(128))
+    source_event_type: Mapped[str | None] = mapped_column(String(64))
     # Truncated to 15-min bucket for dedupe. Set by application before insert.
     dedupe_bucket: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     signal_score: Mapped[Decimal] = mapped_column(Numeric(5, 3), nullable=False)
@@ -47,6 +55,7 @@ class Signal(Base):
     expected_value: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
 
     evaluations: Mapped[list["SignalEvaluation"]] = relationship(back_populates="signal")
+    execution_decisions: Mapped[list["ExecutionDecision"]] = relationship(back_populates="signal")
 
     __table_args__ = (
         # Dedupe: one signal per type per outcome per timeframe per 15-min window
@@ -55,6 +64,11 @@ class Signal(Base):
             unique=True,
         ),
         Index("ix_signal_fired", "fired_at"),
+        Index("ix_signal_observed_at_exchange", "observed_at_exchange"),
+        Index("ix_signal_received_at_local", "received_at_local"),
+        Index("ix_signal_source_platform_observed_at_exchange", "source_platform", "observed_at_exchange"),
+        Index("ix_signal_source_token_id_observed_at_exchange", "source_token_id", "observed_at_exchange"),
+        Index("ix_signal_source_stream_session_id", "source_stream_session_id"),
         Index("ix_signal_market", "market_id", "fired_at"),
         Index("ix_signal_type", "signal_type", "fired_at"),
         Index("ix_signal_rank", "rank_score"),

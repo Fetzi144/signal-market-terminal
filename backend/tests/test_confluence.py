@@ -1,4 +1,5 @@
 """Tests for the Bayesian confluence engine: signal fusion, correlation discounts, modifiers."""
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -25,6 +26,10 @@ def _make_candidate(
     confidence: Decimal = Decimal("0.800"),
     details: dict | None = None,
     timeframe: str = "30m",
+    received_at_local: datetime | None = None,
+    source_platform: str | None = None,
+    source_token_id: str | None = None,
+    source_event_type: str | None = None,
 ) -> SignalCandidate:
     return SignalCandidate(
         signal_type=signal_type,
@@ -34,14 +39,15 @@ def _make_candidate(
         confidence=confidence,
         price_at_fire=price_at_fire,
         details=details or {"market_question": "Test?", "outcome_name": "Yes"},
+        received_at_local=received_at_local,
+        source_platform=source_platform,
+        source_token_id=source_token_id,
+        source_event_type=source_event_type,
         timeframe=timeframe,
         estimated_probability=None,
         probability_adjustment=probability_adjustment,
         is_directional=is_directional,
     )
-
-
-# ── Odds conversion ───────────────────────────────────────────
 
 
 class TestOddsConversion:
@@ -54,26 +60,19 @@ class TestOddsConversion:
         assert odds == Decimal("3")
 
     def test_round_trip(self):
-        """probability → odds → probability should be identity"""
+        """probability to odds to probability should be identity"""
         for p_str in ["0.10", "0.25", "0.50", "0.75", "0.90"]:
             p = Decimal(p_str)
             assert abs(_odds_to_probability(_probability_to_odds(p)) - p) < Decimal("0.0001")
 
 
-# ── Likelihood ratio ──────────────────────────────────────────
-
-
 class TestLikelihoodRatio:
     def test_positive_adjustment(self):
         lr = _adjustment_to_likelihood_ratio(Decimal("0.50"), Decimal("0.10"))
-        # Prior odds = 1.0, adjusted p=0.60 → odds = 1.5
-        # LR = 1.5 / 1.0 = 1.5
         assert abs(lr - Decimal("1.5")) < Decimal("0.01")
 
     def test_negative_adjustment(self):
         lr = _adjustment_to_likelihood_ratio(Decimal("0.50"), Decimal("-0.10"))
-        # adjusted p=0.40 → odds = 0.667
-        # LR = 0.667 / 1.0 ≈ 0.667
         assert lr < Decimal("1")
 
     def test_zero_adjustment(self):
@@ -81,23 +80,20 @@ class TestLikelihoodRatio:
         assert abs(lr - Decimal("1")) < Decimal("0.001")
 
 
-# ── Correlation discount ──────────────────────────────────────
-
-
 class TestCorrelationDiscount:
     def test_zero_correlation(self):
-        """No correlation → no discount"""
+        """No correlation means no discount."""
         lr = Decimal("2.0")
         result = _apply_correlation_discount(lr, Decimal("0"))
         assert result == lr
 
     def test_full_correlation(self):
-        """Full correlation → LR becomes 1 (no new information)"""
+        """Full correlation collapses LR to neutral."""
         result = _apply_correlation_discount(Decimal("2.0"), Decimal("1.0"))
         assert result == Decimal("1")
 
     def test_partial_correlation(self):
-        """Partial correlation → LR reduced but still > 1 for LR > 1"""
+        """Partial correlation reduces LR but keeps it informative."""
         lr = Decimal("2.0")
         result = _apply_correlation_discount(lr, Decimal("0.5"))
         assert Decimal("1") < result < lr
@@ -111,18 +107,15 @@ class TestCorrelationDiscount:
         assert corr == DEFAULT_CORRELATION
 
 
-# ── Fusion engine ─────────────────────────────────────────────
-
-
 class TestFuseSignals:
     def test_returns_none_with_single_signal(self):
-        """Need at least 2 directional signals for confluence"""
+        """Need at least 2 directional signals for confluence."""
         signals = [_make_candidate()]
         result = fuse_signals(signals, Decimal("0.50"))
         assert result is None
 
     def test_returns_none_with_no_directional(self):
-        """Non-directional signals alone can't produce confluence"""
+        """Non-directional signals alone can't produce confluence."""
         signals = [
             _make_candidate(signal_type="spread_change", is_directional=False, probability_adjustment=Decimal("0")),
             _make_candidate(signal_type="liquidity_vacuum", is_directional=False, probability_adjustment=Decimal("0")),
@@ -131,7 +124,7 @@ class TestFuseSignals:
         assert result is None
 
     def test_returns_none_with_different_outcomes(self):
-        """Signals must be for the same outcome"""
+        """Signals must be for the same outcome."""
         signals = [
             _make_candidate(outcome_id="00000000-0000-0000-0000-000000000001"),
             _make_candidate(outcome_id="00000000-0000-0000-0000-000000000002"),
@@ -140,7 +133,7 @@ class TestFuseSignals:
         assert result is None
 
     def test_basic_two_signal_fusion(self):
-        """Two agreeing signals should shift probability further than either alone"""
+        """Two agreeing signals should shift probability further than either alone."""
         signals = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.05")),
             _make_candidate(signal_type="order_flow_imbalance", probability_adjustment=Decimal("0.05")),
@@ -148,29 +141,25 @@ class TestFuseSignals:
         result = fuse_signals(signals, Decimal("0.50"))
         assert result is not None
         assert result.signal_type == "confluence"
-        assert result.estimated_probability > Decimal("0.55")  # more than either alone
-        assert result.probability_adjustment > Decimal("0.05")  # combined > individual
+        assert result.estimated_probability > Decimal("0.55")
+        assert result.probability_adjustment > Decimal("0.05")
 
     def test_opposing_signals_cancel(self):
-        """Opposing signals should partially cancel each other"""
+        """Opposing signals should partially cancel each other."""
         signals = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.08")),
             _make_candidate(signal_type="order_flow_imbalance", probability_adjustment=Decimal("-0.06")),
         ]
         result = fuse_signals(signals, Decimal("0.50"))
         assert result is not None
-        # Net effect should be small
         assert abs(result.probability_adjustment) < Decimal("0.08")
 
     def test_correlation_discount_applied(self):
-        """Highly correlated detectors should produce weaker fusion than uncorrelated"""
-        # High correlation pair: price_move + volume_spike (0.6)
+        """Highly correlated detectors should produce weaker fusion than uncorrelated."""
         correlated = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.06")),
             _make_candidate(signal_type="volume_spike", probability_adjustment=Decimal("0.06")),
         ]
-
-        # Low correlation pair: price_move + order_flow (0.3)
         uncorrelated = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.06")),
             _make_candidate(signal_type="order_flow_imbalance", probability_adjustment=Decimal("0.06")),
@@ -181,7 +170,6 @@ class TestFuseSignals:
 
         assert r_corr is not None
         assert r_uncorr is not None
-        # Uncorrelated pair should produce stronger combined signal
         assert r_uncorr.probability_adjustment > r_corr.probability_adjustment
 
     def test_confluence_details_structure(self):
@@ -200,7 +188,7 @@ class TestFuseSignals:
         assert "market_price" in details
 
     def test_three_signal_fusion(self):
-        """Three signals should produce even stronger combined estimate"""
+        """Three signals should produce even stronger combined estimate."""
         two_signals = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.05")),
             _make_candidate(signal_type="order_flow_imbalance", probability_adjustment=Decimal("0.05")),
@@ -217,7 +205,7 @@ class TestFuseSignals:
         assert r3.estimated_probability > r2.estimated_probability
 
     def test_non_directional_modifiers_affect_confidence(self):
-        """Non-directional modifiers should affect confidence, not probability"""
+        """Non-directional modifiers should affect confidence, not probability."""
         base = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.05")),
             _make_candidate(signal_type="order_flow_imbalance", probability_adjustment=Decimal("0.05")),
@@ -237,13 +225,11 @@ class TestFuseSignals:
 
         assert r_base is not None
         assert r_deadline is not None
-        # Probability should be the same (modifier doesn't shift probability)
         assert r_base.estimated_probability == r_deadline.estimated_probability
-        # But confidence should be higher with deadline urgency
         assert r_deadline.confidence >= r_base.confidence
 
     def test_probability_clamped(self):
-        """Extreme fusion should still be clamped to [0.01, 0.99]"""
+        """Extreme fusion should still be clamped to [0.01, 0.99]."""
         signals = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.30")),
             _make_candidate(signal_type="order_flow_imbalance", probability_adjustment=Decimal("0.30")),
@@ -255,11 +241,40 @@ class TestFuseSignals:
         assert result.estimated_probability >= Decimal("0.01")
 
     def test_filters_zero_adjustment_directional(self):
-        """Directional signals with zero adjustment are filtered out"""
+        """Directional signals with zero adjustment are filtered out."""
         signals = [
             _make_candidate(signal_type="price_move", probability_adjustment=Decimal("0.05")),
             _make_candidate(signal_type="volume_spike", probability_adjustment=Decimal("0")),
         ]
         result = fuse_signals(signals, Decimal("0.50"))
-        # Only 1 directional with nonzero adjustment → returns None
         assert result is None
+
+    def test_confluence_carries_latest_contributing_timestamp(self):
+        earlier = datetime(2026, 4, 13, 12, 5, tzinfo=timezone.utc)
+        later = datetime(2026, 4, 13, 12, 19, tzinfo=timezone.utc)
+        signals = [
+            _make_candidate(
+                signal_type="price_move",
+                probability_adjustment=Decimal("0.05"),
+                received_at_local=earlier,
+                source_platform="polymarket",
+                source_token_id="token-1",
+                source_event_type="price_snapshot",
+            ),
+            _make_candidate(
+                signal_type="order_flow_imbalance",
+                probability_adjustment=Decimal("0.05"),
+                received_at_local=later,
+                source_platform="polymarket",
+                source_token_id="token-1",
+                source_event_type="orderbook_snapshot",
+            ),
+        ]
+
+        result = fuse_signals(signals, Decimal("0.50"))
+
+        assert result is not None
+        assert result.received_at_local == later
+        assert result.source_platform == "polymarket"
+        assert result.source_token_id == "token-1"
+        assert result.source_event_type == "confluence_fusion"

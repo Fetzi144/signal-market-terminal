@@ -329,21 +329,19 @@ async def _run_paper_trading(session, signals):
         candidate_count += 1
         market_question = (signal.details or {}).get("market_question", "")
         attempted_at = datetime.now(timezone.utc).isoformat()
-
-        if evaluation.eligible:
-            result = await attempt_open_trade(
-                session=session,
-                signal_id=signal.id,
-                outcome_id=signal.outcome_id,
-                market_id=signal.market_id,
-                estimated_probability=signal.estimated_probability,
-                market_price=signal.price_at_fire,
-                market_question=market_question,
-                fired_at=signal.fired_at,
-                strategy_run_id=strategy_run.id,
-            )
-        else:
-            result = None
+        result = await attempt_open_trade(
+            session=session,
+            signal_id=signal.id,
+            outcome_id=signal.outcome_id,
+            market_id=signal.market_id,
+            estimated_probability=signal.estimated_probability,
+            market_price=signal.price_at_fire,
+            market_question=market_question,
+            fired_at=signal.fired_at,
+            strategy_run_id=strategy_run.id,
+            precheck_reason_code=None if evaluation.eligible else evaluation.reason_code,
+            precheck_reason_label=evaluation.reason_label,
+        )
 
         details = dict(signal.details or {})
         strategy_details = dict(details.get("default_strategy") or {})
@@ -353,18 +351,18 @@ async def _run_paper_trading(session, signals):
             "baseline_start_at": baseline_start_at,
             "evaluated_at": attempted_at,
             "eligible": evaluation.eligible,
-            "decision": (result.decision if result is not None else "skipped"),
-            "reason_code": (result.reason_code if result is not None else evaluation.reason_code),
-            "reason_label": (result.reason_label if result is not None else evaluation.reason_label),
-            "detail": (result.detail if result is not None else None),
-            "trade_id": str(result.trade.id) if result is not None and result.trade is not None else None,
+            "decision": result.decision,
+            "reason_code": result.reason_code,
+            "reason_label": result.reason_label,
+            "detail": result.detail,
+            "trade_id": str(result.trade.id) if result.trade is not None else None,
         })
-        if result is not None and result.diagnostics:
+        if result.diagnostics:
             strategy_details["diagnostics"] = result.diagnostics
         details["default_strategy"] = strategy_details
         signal.details = details
 
-        if result is not None and result.trade is not None:
+        if result.trade is not None:
             count += 1
         else:
             reason_code = strategy_details.get("reason_code") or "unknown"

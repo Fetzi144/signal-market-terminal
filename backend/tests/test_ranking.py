@@ -86,8 +86,8 @@ def test_dedupe_bucket_45min():
 # ── Deduplication in persist_signals ────────────────────
 
 
-def _make_candidate(market_id, outcome_id, signal_type="price_move"):
-    return SignalCandidate(
+def _make_candidate(market_id, outcome_id, signal_type="price_move", **overrides):
+    candidate = SignalCandidate(
         signal_type=signal_type,
         market_id=str(market_id),
         outcome_id=str(outcome_id),
@@ -96,6 +96,20 @@ def _make_candidate(market_id, outcome_id, signal_type="price_move"):
         details={"direction": "up", "market_question": "Test?", "outcome_name": "Yes"},
         price_at_fire=Decimal("0.500"),
     )
+    for key, value in overrides.items():
+        setattr(candidate, key, value)
+    return candidate
+
+
+def _freeze_scorer_now(monkeypatch, frozen: datetime):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return frozen.replace(tzinfo=None)
+            return frozen.astimezone(tz)
+
+    monkeypatch.setattr("app.ranking.scorer.datetime", FrozenDateTime)
 
 
 @pytest.mark.asyncio
@@ -148,3 +162,61 @@ async def test_same_outcome_different_type_both_inserted(session):
     assert count == 2
     types = {s.signal_type for s in signals}
     assert types == {"price_move", "volume_spike"}
+
+
+@pytest.mark.asyncio
+async def test_persist_signals_uses_candidate_timing_instead_of_scheduler_clock(session, monkeypatch):
+    market = make_market(session)
+    await session.flush()
+    outcome = make_outcome(session, market.id, token_id="token-123")
+    await session.flush()
+
+    reference_ts = datetime(2026, 4, 13, 12, 22, tzinfo=timezone.utc)
+    persistence_now = datetime(2026, 4, 13, 18, 5, tzinfo=timezone.utc)
+    _freeze_scorer_now(monkeypatch, persistence_now)
+
+    candidate = _make_candidate(
+        market.id,
+        outcome.id,
+        received_at_local=reference_ts,
+        source_platform="polymarket",
+        source_token_id=outcome.token_id,
+        source_event_type="price_snapshot",
+    )
+
+    count, signals = await persist_signals(session, [candidate])
+
+    assert count == 1
+    persisted = signals[0]
+    assert persisted.fired_at == reference_ts
+    assert persisted.received_at_local == reference_ts
+    assert persisted.detected_at_local == persistence_now
+    assert persisted.source_platform == "polymarket"
+    assert persisted.source_token_id == "token-123"
+    assert persisted.source_event_type == "price_snapshot"
+
+
+@pytest.mark.asyncio
+async def test_persist_signals_uses_candidate_reference_time_for_dedupe_bucket(session, monkeypatch):
+    market = make_market(session)
+    await session.flush()
+    outcome = make_outcome(session, market.id)
+    await session.flush()
+
+    reference_ts = datetime(2026, 4, 13, 12, 22, tzinfo=timezone.utc)
+    candidate = _make_candidate(
+        market.id,
+        outcome.id,
+        received_at_local=reference_ts,
+    )
+
+    _freeze_scorer_now(monkeypatch, datetime(2026, 4, 13, 18, 5, tzinfo=timezone.utc))
+    count1, signals1 = await persist_signals(session, [candidate])
+
+    _freeze_scorer_now(monkeypatch, datetime(2026, 4, 13, 19, 35, tzinfo=timezone.utc))
+    count2, signals2 = await persist_signals(session, [candidate])
+
+    assert count1 == 1
+    assert signals1[0].dedupe_bucket == datetime(2026, 4, 13, 12, 15, tzinfo=timezone.utc)
+    assert count2 == 0
+    assert signals2 == []

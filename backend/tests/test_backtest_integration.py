@@ -13,6 +13,7 @@ from app.backtesting.sweep import parameter_sweep
 from app.db import get_db
 from app.main import app
 from app.models.backtest import BacktestRun, BacktestSignal
+from app.models.execution_decision import ExecutionDecision
 from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_price_snapshot, make_signal
 
 
@@ -138,6 +139,16 @@ async def test_strategy_comparison_replays_default_and_legacy_paths(session: Asy
         bids=[["0.39", "500"]],
         asks=[["0.41", "600"]],
     )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="800",
+        depth_ask="900",
+        captured_at=legacy_time,
+        bids=[["0.41", "500"]],
+        asks=[["0.43", "600"]],
+    )
 
     make_signal(
         session,
@@ -207,6 +218,10 @@ async def test_strategy_comparison_replays_default_and_legacy_paths(session: Asy
     assert len(bt_signals) == 2
     replay_paths = {signal.details["replay"]["replay_path"] for signal in bt_signals}
     assert replay_paths == {"default_strategy", "legacy"}
+
+    execution_decisions = (await session.execute(select(ExecutionDecision))).scalars().all()
+    assert len(execution_decisions) == 2
+    assert {decision.decision_status for decision in execution_decisions} == {"opened"}
 
 
 @pytest.mark.asyncio

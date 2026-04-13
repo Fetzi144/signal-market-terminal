@@ -24,6 +24,37 @@ def compute_ev(
     return (estimated_probability - market_price).quantize(Decimal("0.000001"))
 
 
+def compute_directional_ev_full(
+    direction: str,
+    estimated_probability: Decimal,
+    entry_price: Decimal,
+) -> dict:
+    """Compute EV breakdown for an already-chosen trade direction and entry price."""
+    if direction == "buy_yes":
+        win_probability = estimated_probability
+    elif direction == "buy_no":
+        win_probability = Decimal("1") - estimated_probability
+    else:
+        raise ValueError(f"Unsupported direction: {direction}")
+
+    potential_profit = Decimal("1") - entry_price
+    potential_loss = entry_price
+    ev_per_share = (
+        win_probability * potential_profit
+        - (Decimal("1") - win_probability) * potential_loss
+    ).quantize(Decimal("0.000001"))
+
+    return {
+        "direction": direction,
+        "win_probability": win_probability.quantize(Decimal("0.000001")),
+        "ev_per_share": ev_per_share,
+        "edge_pct": (ev_per_share.copy_abs() * Decimal("100")).quantize(Decimal("0.01")),
+        "entry_price": entry_price.quantize(Decimal("0.000001")),
+        "potential_profit": potential_profit.quantize(Decimal("0.000001")),
+        "potential_loss": potential_loss.quantize(Decimal("0.000001")),
+    }
+
+
 def compute_ev_full(
     estimated_probability: Decimal,
     market_price: Decimal,
@@ -42,21 +73,14 @@ def compute_ev_full(
     if raw_ev >= Decimal("0"):
         direction = "buy_yes"
         entry_price = market_price
-        prob = estimated_probability
     else:
         direction = "buy_no"
         entry_price = Decimal("1") - market_price
-        prob = Decimal("1") - estimated_probability
 
-    potential_profit = Decimal("1") - entry_price
-    potential_loss = entry_price
-    ev_per_share = (prob * potential_profit - (Decimal("1") - prob) * potential_loss).quantize(Decimal("0.000001"))
-
-    return {
-        "direction": direction,
-        "ev_per_share": ev_per_share,
-        "edge_pct": (abs(raw_ev) * Decimal("100")).quantize(Decimal("0.01")),
-        "entry_price": entry_price.quantize(Decimal("0.000001")),
-        "potential_profit": potential_profit.quantize(Decimal("0.000001")),
-        "potential_loss": potential_loss.quantize(Decimal("0.000001")),
-    }
+    result = compute_directional_ev_full(
+        direction=direction,
+        estimated_probability=estimated_probability,
+        entry_price=entry_price,
+    )
+    result["edge_pct"] = (abs(raw_ev) * Decimal("100")).quantize(Decimal("0.01"))
+    return result

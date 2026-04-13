@@ -5,9 +5,11 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
+from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
 from app.paper_trading.engine import (
     attempt_open_trade,
@@ -47,11 +49,24 @@ async def test_open_trade_positive_ev(session):
     """EV-positive signal opens a paper trade."""
     market = make_market(session)
     outcome = make_outcome(session, market.id)
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
     signal = make_signal(
         session, market.id, outcome.id,
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
         estimated_probability=Decimal("0.6500"),
         price_at_fire=Decimal("0.400000"),
         expected_value=Decimal("0.250000"),
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
     )
     await session.commit()
 
@@ -63,12 +78,14 @@ async def test_open_trade_positive_ev(session):
         estimated_probability=Decimal("0.6500"),
         market_price=Decimal("0.400000"),
         market_question="Test question?",
+        fired_at=fired_at,
     )
     await session.commit()
 
     assert trade is not None
     assert trade.direction == "buy_yes"
-    assert trade.entry_price == Decimal("0.400000")
+    assert trade.entry_price == Decimal("0.410000")
+    assert trade.shadow_entry_price == Decimal("0.410000")
     assert trade.size_usd > Decimal("0")
     assert trade.shares > Decimal("0")
     assert trade.status == "open"
@@ -129,6 +146,44 @@ async def test_attempt_open_trade_returns_skip_reason(session):
 
 
 @pytest.mark.asyncio
+async def test_attempt_open_trade_persists_execution_decision_for_precheck_skip(session):
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        estimated_probability=Decimal("0.6500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=None,
+    )
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=signal.fired_at)
+    await session.commit()
+
+    result = await attempt_open_trade(
+        session=session,
+        signal_id=signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6500"),
+        market_price=Decimal("0.400000"),
+        fired_at=signal.fired_at,
+        strategy_run_id=strategy_run.id,
+        precheck_reason_code="missing_expected_value",
+        precheck_reason_label="Missing expected value",
+    )
+    await session.commit()
+
+    assert result.trade is None
+    assert result.execution_decision is not None
+    assert result.reason_code == "missing_expected_value"
+    assert result.reason_label == "Missing expected value"
+    assert result.execution_decision.reason_code == "missing_expected_value"
+    assert result.execution_decision.decision_status == "skipped"
+
+
+@pytest.mark.asyncio
 async def test_attempt_open_trade_persists_strategy_run_and_shadow_execution(session):
     market = make_market(session)
     outcome = make_outcome(session, market.id)
@@ -171,10 +226,14 @@ async def test_attempt_open_trade_persists_strategy_run_and_shadow_execution(ses
     await session.commit()
 
     assert result.trade is not None
+    assert result.execution_decision is not None
     assert result.trade.strategy_run_id == strategy_run.id
-    assert result.trade.shadow_entry_price is not None
-    assert result.trade.shadow_entry_price >= result.trade.entry_price
+    assert result.trade.execution_decision_id == result.execution_decision.id
+    assert result.trade.entry_price == Decimal("0.410000")
+    assert result.trade.shadow_entry_price == Decimal("0.410000")
     assert result.trade.details["shadow_execution"]["missing_orderbook_context"] is False
+    assert result.execution_decision.executable_entry_price == Decimal("0.410000")
+    assert result.execution_decision.reason_code == "opened"
 
 
 @pytest.mark.asyncio
@@ -220,14 +279,17 @@ async def test_attempt_open_trade_partial_shadow_fill_when_near_touch_depth_is_t
     await session.commit()
 
     assert result.trade is not None
+    assert result.execution_decision is not None
     shadow = result.trade.details["shadow_execution"]
     assert result.trade.shadow_entry_price == Decimal("0.410000")
+    assert result.trade.entry_price == Decimal("0.410000")
+    assert result.trade.size_usd == Decimal("207.00")
     assert shadow["fill_status"] == "partial_fill"
     assert shadow["fill_reason"] == "insufficient_near_touch_depth"
     assert shadow["liquidity_constrained"] is True
     assert Decimal(shadow["filled_size_usd"]) == Decimal("207.00")
     assert Decimal(shadow["fill_pct"]) == Decimal("0.4140")
-    assert Decimal(shadow["shadow_shares"]) < result.trade.shares
+    assert Decimal(shadow["shadow_shares"]) == result.trade.shares
 
 
 @pytest.mark.asyncio
@@ -273,20 +335,16 @@ async def test_attempt_open_trade_shadow_no_fill_when_visible_depth_is_too_small
     )
     await session.commit()
 
-    assert result.trade is not None
-    shadow = result.trade.details["shadow_execution"]
-    assert result.trade.shadow_entry_price is None
+    assert result.trade is None
+    assert result.execution_decision is not None
+    assert result.reason_code == "execution_partial_fill_below_minimum"
+    shadow = result.execution_decision.details["shadow_execution"]
+    assert result.execution_decision.executable_entry_price is None
     assert shadow["fill_status"] == "no_fill"
     assert shadow["fill_reason"] == "fill_below_minimum_threshold"
     assert shadow["liquidity_constrained"] is True
     assert Decimal(shadow["filled_size_usd"]) == Decimal("0.00")
     assert Decimal(shadow["shadow_shares"]) == Decimal("0.0000")
-
-    count = await resolve_trades(session, outcome.id, outcome_won=True, strategy_run_id=strategy_run.id)
-    await session.commit()
-
-    assert count == 1
-    assert result.trade.shadow_pnl == Decimal("0.00")
 
 
 @pytest.mark.asyncio
@@ -321,19 +379,15 @@ async def test_attempt_open_trade_shadow_no_fill_without_orderbook_context(sessi
     )
     await session.commit()
 
-    assert result.trade is not None
-    shadow = result.trade.details["shadow_execution"]
-    assert result.trade.shadow_entry_price is None
+    assert result.trade is None
+    assert result.execution_decision is not None
+    assert result.reason_code == "execution_missing_orderbook_context"
+    shadow = result.execution_decision.details["shadow_execution"]
+    assert result.execution_decision.executable_entry_price is None
     assert shadow["missing_orderbook_context"] is True
     assert shadow["stale_orderbook_context"] is False
     assert shadow["fill_status"] == "no_fill"
     assert shadow["fill_reason"] == "no_snapshot"
-
-    count = await resolve_trades(session, outcome.id, outcome_won=True, strategy_run_id=strategy_run.id)
-    await session.commit()
-
-    assert count == 1
-    assert result.trade.shadow_pnl == Decimal("0.00")
 
 
 @pytest.mark.asyncio
@@ -379,9 +433,11 @@ async def test_attempt_open_trade_shadow_no_fill_with_stale_orderbook_context(se
     )
     await session.commit()
 
-    assert result.trade is not None
-    shadow = result.trade.details["shadow_execution"]
-    assert result.trade.shadow_entry_price is None
+    assert result.trade is None
+    assert result.execution_decision is not None
+    assert result.reason_code == "execution_stale_orderbook_context"
+    shadow = result.execution_decision.details["shadow_execution"]
+    assert result.execution_decision.executable_entry_price is None
     assert shadow["missing_orderbook_context"] is True
     assert shadow["stale_orderbook_context"] is True
     assert shadow["fill_status"] == "no_fill"
@@ -389,11 +445,105 @@ async def test_attempt_open_trade_shadow_no_fill_with_stale_orderbook_context(se
     assert shadow["snapshot_side"] == "before"
     assert shadow["snapshot_age_seconds"] >= 600
 
-    count = await resolve_trades(session, outcome.id, outcome_won=True, strategy_run_id=strategy_run.id)
+
+@pytest.mark.asyncio
+async def test_attempt_open_trade_skips_when_orderbook_has_no_fillable_depth(session):
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="0",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[],
+    )
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=fired_at)
     await session.commit()
 
-    assert count == 1
-    assert result.trade.shadow_pnl == Decimal("0.00")
+    result = await attempt_open_trade(
+        session=session,
+        signal_id=signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6500"),
+        market_price=Decimal("0.400000"),
+        market_question="No executable depth?",
+        fired_at=fired_at,
+        strategy_run_id=strategy_run.id,
+    )
+    await session.commit()
+
+    assert result.trade is None
+    assert result.execution_decision is not None
+    assert result.reason_code == "execution_no_fill"
+    shadow = result.execution_decision.details["shadow_execution"]
+    assert shadow["fill_status"] == "no_fill"
+    assert shadow["fill_reason"] == "no_near_touch_depth"
+    assert result.execution_decision.fillable_size_usd == Decimal("0.0000")
+
+
+@pytest.mark.asyncio
+async def test_attempt_open_trade_skips_when_executable_ev_falls_below_threshold(session):
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
+        estimated_probability=Decimal("0.5400"),
+        price_at_fire=Decimal("0.450000"),
+        expected_value=Decimal("0.090000"),
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.1600",
+        depth_bid="900",
+        depth_ask="900",
+        captured_at=fired_at,
+        bids=[["0.37", "500"], ["0.36", "400"]],
+        asks=[["0.53", "500"], ["0.54", "400"]],
+    )
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=fired_at)
+    await session.commit()
+
+    result = await attempt_open_trade(
+        session=session,
+        signal_id=signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.5400"),
+        market_price=Decimal("0.450000"),
+        market_question="Executable EV?",
+        fired_at=fired_at,
+        strategy_run_id=strategy_run.id,
+    )
+    await session.commit()
+
+    assert result.trade is None
+    assert result.execution_decision is not None
+    assert result.reason_code == "execution_ev_below_threshold"
+    assert result.execution_decision.executable_entry_price == Decimal("0.530000")
+    assert result.execution_decision.net_ev_per_share == Decimal("0.010000")
 
 
 @pytest.mark.asyncio
@@ -411,6 +561,16 @@ async def test_attempt_open_trade_skips_duplicate_signal_in_same_strategy_run(se
         estimated_probability=Decimal("0.6500"),
         price_at_fire=Decimal("0.400000"),
         expected_value=Decimal("0.250000"),
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
     )
     strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=fired_at)
     await session.commit()
@@ -444,6 +604,13 @@ async def test_attempt_open_trade_skips_duplicate_signal_in_same_strategy_run(se
     assert second_result.trade is None
     assert second_result.reason_code == "already_recorded"
     assert second_result.reason_label == "Already recorded in run"
+    count = await session.scalar(
+        select(func.count()).select_from(ExecutionDecision).where(
+            ExecutionDecision.signal_id == signal.id,
+            ExecutionDecision.strategy_run_id == strategy_run.id,
+        )
+    )
+    assert count == 1
 
 
 @pytest.mark.asyncio
@@ -737,6 +904,16 @@ async def test_attempt_open_trade_ignores_legacy_open_exposure_for_strategy_run(
         market.id,
         outcome.id,
         signal_type="price_move",
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
     )
     strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=fired_at)
     _make_paper_trade(

@@ -108,12 +108,16 @@ class LiquidityVacuumDetector(BaseDetector):
 
             # Get latest price
             price_row = await session.execute(
-                select(PriceSnapshot.price)
+                select(PriceSnapshot)
                 .where(PriceSnapshot.outcome_id == outcome.id)
                 .order_by(PriceSnapshot.captured_at.desc())
                 .limit(1)
             )
-            latest_price = price_row.scalar_one_or_none()
+            latest_price_snapshot = price_row.scalar_one_or_none()
+            latest_price = latest_price_snapshot.price if latest_price_snapshot is not None else None
+            received_at_local = snap.captured_at
+            if latest_price_snapshot is not None and latest_price_snapshot.captured_at > received_at_local:
+                received_at_local = latest_price_snapshot.captured_at
 
             # Score higher when both sides are thin
             both_sides = bid_vacuum and ask_vacuum
@@ -138,6 +142,10 @@ class LiquidityVacuumDetector(BaseDetector):
                 signal_score=signal_score.quantize(Decimal("0.001")),
                 confidence=confidence.quantize(Decimal("0.001")),
                 price_at_fire=latest_price,
+                received_at_local=received_at_local,
+                source_platform=market.platform,
+                source_token_id=outcome.token_id,
+                source_event_type="orderbook_snapshot",
                 estimated_probability=None,
                 probability_adjustment=Decimal("0"),
                 is_directional=False,

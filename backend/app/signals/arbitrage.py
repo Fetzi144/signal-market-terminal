@@ -62,7 +62,7 @@ class ArbitrageDetector(BaseDetector):
                 continue
 
             # Get latest price for the YES outcome of each market
-            platform_prices: dict[str, tuple[Decimal, Market, Outcome]] = {}
+            platform_prices: dict[str, tuple[PriceSnapshot, Market, Outcome]] = {}
 
             for market in group_markets:
                 # Get YES outcome (or first outcome)
@@ -91,15 +91,17 @@ class ArbitrageDetector(BaseDetector):
                 if snap is None:
                     continue
 
-                platform_prices[market.platform] = (snap.price, market, yes_outcome)
+                platform_prices[market.platform] = (snap, market, yes_outcome)
 
             # Compare all platform pairs
             platform_list = list(platform_prices.keys())
             for i in range(len(platform_list)):
                 for j in range(i + 1, len(platform_list)):
                     p1, p2 = platform_list[i], platform_list[j]
-                    price1, market1, outcome1 = platform_prices[p1]
-                    price2, market2, outcome2 = platform_prices[p2]
+                    snap1, market1, outcome1 = platform_prices[p1]
+                    snap2, market2, outcome2 = platform_prices[p2]
+                    price1 = snap1.price
+                    price2 = snap2.price
 
                     spread = abs(price1 - price2)
                     if spread < threshold:
@@ -110,11 +112,11 @@ class ArbitrageDetector(BaseDetector):
 
                     # Direction: "up" on the cheaper platform's outcome (the one to buy)
                     if price1 < price2:
-                        cheap_market, cheap_outcome, cheap_price = market1, outcome1, price1
-                        expensive_market, expensive_price = market2, price2
+                        cheap_market, cheap_outcome, cheap_price, cheap_snapshot = market1, outcome1, price1, snap1
+                        expensive_market, expensive_price, expensive_snapshot = market2, price2, snap2
                     else:
-                        cheap_market, cheap_outcome, cheap_price = market2, outcome2, price2
-                        expensive_market, expensive_price = market1, price1
+                        cheap_market, cheap_outcome, cheap_price, cheap_snapshot = market2, outcome2, price2, snap2
+                        expensive_market, expensive_price, expensive_snapshot = market1, price1, snap1
 
                     # Probability engine: for arb, the estimated probability is
                     # the average of the two platform prices (market consensus).
@@ -130,6 +132,10 @@ class ArbitrageDetector(BaseDetector):
                         signal_score=signal_score.quantize(Decimal("0.001")),
                         confidence=Decimal("1.000"),
                         price_at_fire=cheap_price,
+                        received_at_local=max(cheap_snapshot.captured_at, expensive_snapshot.captured_at),
+                        source_platform=cheap_market.platform,
+                        source_token_id=cheap_outcome.token_id,
+                        source_event_type="cross_platform_snapshot",
                         estimated_probability=est_prob,
                         probability_adjustment=adj_applied,
                         details={

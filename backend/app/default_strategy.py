@@ -22,6 +22,12 @@ SKIP_REASON_LABELS = {
     "missing_market_price": "Missing market price",
     "missing_expected_value": "Missing expected value",
     "ev_below_threshold": "EV below threshold",
+    "execution_missing_orderbook_context": "Missing orderbook context",
+    "execution_stale_orderbook_context": "Stale orderbook context",
+    "execution_no_fill": "No fill available",
+    "execution_partial_fill_below_minimum": "Partial fill below minimum",
+    "execution_ev_below_threshold": "Executable EV below threshold",
+    "execution_size_zero_after_fill_cap": "Executable size is zero after fill cap",
 }
 
 

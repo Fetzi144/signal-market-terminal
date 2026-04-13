@@ -29,6 +29,7 @@ class PaperTradeOut(BaseModel):
     id: uuid.UUID
     signal_id: uuid.UUID
     strategy_run_id: uuid.UUID | None = None
+    execution_decision_id: uuid.UUID | None = None
     outcome_id: uuid.UUID
     market_id: uuid.UUID
     direction: str
@@ -41,8 +42,35 @@ class PaperTradeOut(BaseModel):
     shadow_pnl: Decimal | None = None
     status: str
     opened_at: datetime
+    submitted_at: datetime | None = None
+    confirmed_at: datetime | None = None
     resolved_at: datetime | None = None
     details: dict
+
+
+def _paper_trade_out(trade: PaperTrade) -> PaperTradeOut:
+    return PaperTradeOut(
+        id=trade.id,
+        signal_id=trade.signal_id,
+        strategy_run_id=trade.strategy_run_id,
+        execution_decision_id=trade.execution_decision_id,
+        outcome_id=trade.outcome_id,
+        market_id=trade.market_id,
+        direction=trade.direction,
+        entry_price=trade.entry_price,
+        shadow_entry_price=trade.shadow_entry_price,
+        size_usd=trade.size_usd,
+        shares=trade.shares,
+        exit_price=trade.exit_price,
+        pnl=trade.pnl,
+        shadow_pnl=trade.shadow_pnl,
+        status=trade.status,
+        opened_at=trade.opened_at,
+        submitted_at=trade.submitted_at,
+        confirmed_at=trade.confirmed_at,
+        resolved_at=trade.resolved_at,
+        details=trade.details or {},
+    )
 
 
 class PortfolioOut(BaseModel):
@@ -103,28 +131,7 @@ async def get_portfolio(
     return PortfolioOut(
         bankroll=float(settings.default_bankroll),
         open_exposure=float(state["open_exposure"]),
-        open_trades=[
-            PaperTradeOut(
-                id=t.id,
-                signal_id=t.signal_id,
-                strategy_run_id=t.strategy_run_id,
-                outcome_id=t.outcome_id,
-                market_id=t.market_id,
-                direction=t.direction,
-                entry_price=t.entry_price,
-                shadow_entry_price=t.shadow_entry_price,
-                size_usd=t.size_usd,
-                shares=t.shares,
-                exit_price=t.exit_price,
-                pnl=t.pnl,
-                shadow_pnl=t.shadow_pnl,
-                status=t.status,
-                opened_at=t.opened_at,
-                resolved_at=t.resolved_at,
-                details=t.details or {},
-            )
-            for t in state["open_trades"]
-        ],
+        open_trades=[_paper_trade_out(t) for t in state["open_trades"]],
         total_resolved=state["total_resolved"],
         cumulative_pnl=float(state["cumulative_pnl"]),
         wins=state["wins"],
@@ -156,28 +163,7 @@ async def get_history(
         trades = scoped["trades"]
         total = scoped["total"]
         return TradeHistoryOut(
-            trades=[
-                PaperTradeOut(
-                    id=t.id,
-                    signal_id=t.signal_id,
-                    strategy_run_id=t.strategy_run_id,
-                    outcome_id=t.outcome_id,
-                    market_id=t.market_id,
-                    direction=t.direction,
-                    entry_price=t.entry_price,
-                    shadow_entry_price=t.shadow_entry_price,
-                    size_usd=t.size_usd,
-                    shares=t.shares,
-                    exit_price=t.exit_price,
-                    pnl=t.pnl,
-                    shadow_pnl=t.shadow_pnl,
-                    status=t.status,
-                    opened_at=t.opened_at,
-                    resolved_at=t.resolved_at,
-                    details=t.details or {},
-                )
-                for t in trades
-            ],
+            trades=[_paper_trade_out(t) for t in trades],
             total=total,
             page=page,
             page_size=page_size,
@@ -202,28 +188,7 @@ async def get_history(
     trades = result.scalars().all()
 
     return TradeHistoryOut(
-        trades=[
-            PaperTradeOut(
-                id=t.id,
-                signal_id=t.signal_id,
-                strategy_run_id=t.strategy_run_id,
-                outcome_id=t.outcome_id,
-                market_id=t.market_id,
-                direction=t.direction,
-                entry_price=t.entry_price,
-                shadow_entry_price=t.shadow_entry_price,
-                size_usd=t.size_usd,
-                shares=t.shares,
-                exit_price=t.exit_price,
-                pnl=t.pnl,
-                shadow_pnl=t.shadow_pnl,
-                status=t.status,
-                opened_at=t.opened_at,
-                resolved_at=t.resolved_at,
-                details=t.details or {},
-            )
-            for t in trades
-        ],
+        trades=[_paper_trade_out(t) for t in trades],
         total=total,
         page=page,
         page_size=page_size,

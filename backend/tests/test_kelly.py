@@ -1,7 +1,7 @@
 """Tests for Kelly Criterion position sizing."""
 from decimal import Decimal
 
-from app.signals.kelly import kelly_size
+from app.signals.kelly import kelly_size, kelly_size_for_trade
 
 
 class TestKellySize:
@@ -119,3 +119,26 @@ class TestKellySize:
         # Same Kelly fraction, different absolute sizes
         assert small["kelly_full"] == large["kelly_full"]
         assert small["recommended_size_usd"] < large["recommended_size_usd"]
+
+
+class TestKellySizeForTrade:
+    def test_uses_directional_entry_price(self):
+        result = kelly_size_for_trade(
+            direction="buy_no",
+            estimated_probability=Decimal("0.30"),
+            entry_price=Decimal("0.45"),
+            bankroll=Decimal("10000"),
+        )
+        assert result["direction"] == "buy_no"
+        assert result["entry_price"] == Decimal("0.450000")
+        assert result["recommended_size_usd"] > Decimal("0")
+
+    def test_zero_when_directional_edge_is_negative(self):
+        result = kelly_size_for_trade(
+            direction="buy_yes",
+            estimated_probability=Decimal("0.45"),
+            entry_price=Decimal("0.50"),
+            bankroll=Decimal("10000"),
+        )
+        assert result["direction"] == "buy_yes"
+        assert result["recommended_size_usd"] == Decimal("0")

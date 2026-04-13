@@ -8,10 +8,11 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.jobs.scheduler import _resolve_paper_trades, _run_paper_trading
+from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
 from app.strategy_runs.service import ensure_active_default_strategy_run
-from tests.conftest import make_market, make_outcome, make_signal
+from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_signal
 
 
 def _make_paper_trade(session, signal_id, outcome_id, market_id, **kwargs):
@@ -40,6 +41,13 @@ def _decimal_json(value) -> Decimal | None:
     return Decimal(str(value))
 
 
+def _datetime_json(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
 @pytest.mark.asyncio
 async def test_signal_list_includes_trading_fields_for_ev_capable_signal(client, session):
     market = make_market(session, question="Trading field market")
@@ -65,6 +73,44 @@ async def test_signal_list_includes_trading_fields_for_ev_capable_signal(client,
     assert _decimal_json(signal["edge_pct"]) == Decimal("25.00")
     assert _decimal_json(signal["recommended_size_usd"]) == Decimal("500.00")
     assert float(_decimal_json(signal["kelly_fraction"])) == pytest.approx(0.1042, abs=1e-4)
+
+
+@pytest.mark.asyncio
+async def test_signal_api_exposes_phase0_timing_and_source_fields(client, session):
+    market = make_market(session, question="Signal timing market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    observed_at_exchange = datetime.now(timezone.utc) - timedelta(minutes=6)
+    received_at_local = observed_at_exchange + timedelta(seconds=2)
+    detected_at_local = received_at_local + timedelta(seconds=1)
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        observed_at_exchange=observed_at_exchange,
+        received_at_local=received_at_local,
+        detected_at_local=detected_at_local,
+        source_platform="polymarket",
+        source_token_id=outcome.token_id,
+        source_event_type="confluence_fusion",
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Signal timing market", "outcome_name": "Yes"},
+    )
+    await session.commit()
+
+    resp = await client.get(f"/api/v1/signals/{signal.id}")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert _datetime_json(data["observed_at_exchange"]) == observed_at_exchange
+    assert _datetime_json(data["received_at_local"]) == received_at_local
+    assert _datetime_json(data["detected_at_local"]) == detected_at_local
+    assert data["source_platform"] == "polymarket"
+    assert data["source_token_id"] == outcome.token_id
+    assert data["source_event_type"] == "confluence_fusion"
 
 
 @pytest.mark.asyncio
@@ -103,6 +149,20 @@ async def test_paper_trading_portfolio_populated(client, session):
     market = make_market(session, question="Portfolio market")
     outcome = make_outcome(session, market.id, name="Yes")
     signal = make_signal(session, market.id, outcome.id)
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=signal.fired_at)
+    execution_decision = ExecutionDecision(
+        id=uuid.uuid4(),
+        signal_id=signal.id,
+        strategy_run_id=strategy_run.id,
+        decision_at=datetime.now(timezone.utc),
+        decision_status="opened",
+        action="cross",
+        direction="buy_yes",
+        executable_entry_price=Decimal("0.41000000"),
+        reason_code="opened",
+        details={},
+    )
+    session.add(execution_decision)
 
     _make_paper_trade(
         session,
@@ -112,6 +172,9 @@ async def test_paper_trading_portfolio_populated(client, session):
         direction="buy_yes",
         size_usd=Decimal("450.00"),
         status="open",
+        execution_decision_id=execution_decision.id,
+        submitted_at=datetime.now(timezone.utc) - timedelta(seconds=3),
+        confirmed_at=datetime.now(timezone.utc) - timedelta(seconds=1),
     )
     _make_paper_trade(
         session,
@@ -133,6 +196,9 @@ async def test_paper_trading_portfolio_populated(client, session):
     assert data["open_exposure"] == 450.0
     assert len(data["open_trades"]) == 1
     assert data["open_trades"][0]["direction"] == "buy_yes"
+    assert data["open_trades"][0]["execution_decision_id"] == str(execution_decision.id)
+    assert data["open_trades"][0]["submitted_at"] is not None
+    assert data["open_trades"][0]["confirmed_at"] is not None
     assert data["total_resolved"] == 1
     assert data["cumulative_pnl"] == 120.0
     assert data["wins"] == 1
@@ -266,16 +332,29 @@ async def test_paper_trading_pnl_curve_endpoint(client, session):
 async def test_scheduler_paper_trade_lifecycle_reflected_in_api(client, session):
     market = make_market(session, question="Lifecycle market")
     outcome = make_outcome(session, market.id, name="Yes")
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
     signal = make_signal(
         session,
         market.id,
         outcome.id,
         signal_type="confluence",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
         estimated_probability=Decimal("0.6500"),
         probability_adjustment=Decimal("0.2500"),
         price_at_fire=Decimal("0.400000"),
         expected_value=Decimal("0.250000"),
         details={"direction": "up", "market_question": "Lifecycle market", "outcome_name": "Yes"},
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
     )
     await session.commit()
 
@@ -307,12 +386,15 @@ async def test_scheduler_paper_trade_lifecycle_reflected_in_api(client, session)
 async def test_scheduler_only_auto_trades_default_strategy_signals(client, session):
     market = make_market(session, question="Default strategy gate")
     outcome = make_outcome(session, market.id, name="Yes")
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
 
     make_signal(
         session,
         market.id,
         outcome.id,
         signal_type="price_move",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
         estimated_probability=Decimal("0.6500"),
         probability_adjustment=Decimal("0.2500"),
         price_at_fire=Decimal("0.400000"),
@@ -325,11 +407,23 @@ async def test_scheduler_only_auto_trades_default_strategy_signals(client, sessi
         outcome.id,
         signal_type="confluence",
         timeframe="1h",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
         estimated_probability=Decimal("0.6500"),
         probability_adjustment=Decimal("0.2500"),
         price_at_fire=Decimal("0.400000"),
         expected_value=Decimal("0.250000"),
         details={"direction": "up", "market_question": "Default strategy gate", "outcome_name": "Yes"},
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
     )
     await session.commit()
 
@@ -345,6 +439,39 @@ async def test_scheduler_only_auto_trades_default_strategy_signals(client, sessi
     data = resp.json()
     assert data["total"] == 1
     assert data["trades"][0]["signal_id"] == str(confluence_signal.id)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_execution_skip_and_strategy_metadata_for_missing_orderbook(session):
+    market = make_market(session, question="Execution skip market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Execution skip market", "outcome_name": "Yes"},
+    )
+    await session.commit()
+
+    await _run_paper_trading(session, [signal])
+    await session.refresh(signal)
+
+    metadata = signal.details["default_strategy"]
+    assert metadata["decision"] == "skipped"
+    assert metadata["reason_code"] == "execution_missing_orderbook_context"
+    assert metadata["reason_label"] == "Missing orderbook context"
+    assert metadata["trade_id"] is None
+
+    execution_decision = await session.scalar(
+        select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id)
+    )
+    assert execution_decision is not None
+    assert execution_decision.reason_code == "execution_missing_orderbook_context"
 
 
 @pytest.mark.asyncio
@@ -372,6 +499,64 @@ async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
     assert metadata["reason_code"] == "ev_below_threshold"
     assert metadata["reason_label"] == "EV below threshold"
     assert metadata["trade_id"] is None
+    execution_decision = await session.scalar(
+        select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id)
+    )
+    assert execution_decision is not None
+    assert execution_decision.reason_code == "ev_below_threshold"
+
+
+@pytest.mark.asyncio
+async def test_legacy_phase0_null_rows_still_serialize_and_query_cleanly(client, session):
+    market = make_market(session, question="Legacy compatibility market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        details={"direction": "up", "market_question": "Legacy compatibility market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        signal.id,
+        outcome.id,
+        market.id,
+        status="open",
+        execution_decision_id=None,
+        submitted_at=None,
+        confirmed_at=None,
+    )
+    await session.commit()
+
+    resp = await client.get(f"/api/v1/signals/{signal.id}")
+    assert resp.status_code == 200
+    signal_data = resp.json()
+    assert signal_data["observed_at_exchange"] is None
+    assert signal_data["received_at_local"] is None
+    assert signal_data["detected_at_local"] is None
+    assert signal_data["source_platform"] is None
+    assert signal_data["source_token_id"] is None
+    assert signal_data["source_event_type"] is None
+
+    resp = await client.get("/api/v1/signals")
+    assert resp.status_code == 200
+    listed_signal = resp.json()["signals"][0]
+    assert listed_signal["observed_at_exchange"] is None
+    assert listed_signal["received_at_local"] is None
+
+    resp = await client.get("/api/v1/paper-trading/portfolio")
+    assert resp.status_code == 200
+    portfolio = resp.json()
+    assert len(portfolio["open_trades"]) == 1
+    assert portfolio["open_trades"][0]["execution_decision_id"] is None
+    assert portfolio["open_trades"][0]["submitted_at"] is None
+    assert portfolio["open_trades"][0]["confirmed_at"] is None
+
+    resp = await client.get("/api/v1/paper-trading/history")
+    assert resp.status_code == 200
+    history = resp.json()
+    assert history["total"] == 1
+    assert history["trades"][0]["execution_decision_id"] is None
 
 
 @pytest.mark.asyncio

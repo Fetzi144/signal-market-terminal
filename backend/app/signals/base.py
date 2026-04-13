@@ -1,3 +1,4 @@
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -33,11 +34,21 @@ class SignalCandidate:
     confidence: Decimal
     price_at_fire: Decimal | None
     details: dict
+    observed_at_exchange: datetime | None = None
+    received_at_local: datetime | None = None
+    source_platform: str | None = None
+    source_token_id: str | None = None
+    source_stream_session_id: uuid.UUID | None = None
+    source_event_hash: str | None = None
+    source_event_type: str | None = None
     timeframe: str = "30m"
     # Probability engine fields (Phase 2 Q2)
     estimated_probability: Decimal | None = None  # P(YES | signal_data), clamped [0.01, 0.99]
     probability_adjustment: Decimal | None = None  # delta from market price (positive = bullish)
     is_directional: bool = True  # False for modifiers like spread_change, liquidity_vacuum
+
+    def reference_timestamp(self) -> datetime | None:
+        return self.observed_at_exchange or self.received_at_local
 
 
 @dataclass

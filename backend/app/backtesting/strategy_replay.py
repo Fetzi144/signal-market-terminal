@@ -382,12 +382,13 @@ async def _simulate_default_strategy(
 
             candidate_count += 1
             evaluation = evaluate_default_strategy_signal(signal, started_at=start_at)
-            if not evaluation.eligible:
+            if not evaluation.signal_type_match or not evaluation.in_window:
                 reason_code = evaluation.reason_code or "filtered_out"
                 skip_counts[reason_code] = skip_counts.get(reason_code, 0) + 1
                 continue
 
-            qualified_count += 1
+            if evaluation.eligible:
+                qualified_count += 1
             result = await attempt_open_trade(
                 session=session,
                 signal_id=signal.id,
@@ -398,6 +399,8 @@ async def _simulate_default_strategy(
                 market_question=(signal.details or {}).get("market_question", ""),
                 fired_at=signal_time,
                 strategy_run_id=strategy_run.id,
+                precheck_reason_code=None if evaluation.eligible else evaluation.reason_code,
+                precheck_reason_label=evaluation.reason_label,
             )
             if result.trade is not None:
                 result.trade.opened_at = signal_time

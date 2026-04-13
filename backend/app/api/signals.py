@@ -36,6 +36,12 @@ class SignalOut(BaseModel):
     market_id: uuid.UUID
     outcome_id: uuid.UUID | None
     fired_at: datetime
+    observed_at_exchange: datetime | None = None
+    received_at_local: datetime | None = None
+    detected_at_local: datetime | None = None
+    source_platform: str | None = None
+    source_token_id: str | None = None
+    source_event_type: str | None = None
     signal_score: Decimal
     confidence: Decimal
     rank_score: Decimal
@@ -101,6 +107,12 @@ def _build_signal_out(signal: Signal, question: str | None, platform: str | None
         market_id=signal.market_id,
         outcome_id=signal.outcome_id,
         fired_at=signal.fired_at,
+        observed_at_exchange=signal.observed_at_exchange,
+        received_at_local=signal.received_at_local,
+        detected_at_local=signal.detected_at_local,
+        source_platform=signal.source_platform,
+        source_token_id=signal.source_token_id,
+        source_event_type=signal.source_event_type,
         signal_score=signal.signal_score,
         confidence=signal.confidence,
         rank_score=signal.rank_score,

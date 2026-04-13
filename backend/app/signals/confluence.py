@@ -197,6 +197,16 @@ def fuse_signals(
 
     # Use the first signal's market/outcome info
     ref = sorted_signals[0]
+    contributing_timestamps = [
+        signal.reference_timestamp()
+        for signal in signals
+        if signal.reference_timestamp() is not None
+    ]
+    source_stream_session_ids = {
+        signal.source_stream_session_id
+        for signal in signals
+        if signal.source_stream_session_id is not None
+    }
 
     return SignalCandidate(
         signal_type="confluence",
@@ -205,6 +215,11 @@ def fuse_signals(
         signal_score=min(Decimal("1.0"), avg_score + agreement_boost).quantize(Decimal("0.001")),
         confidence=final_confidence.quantize(Decimal("0.001")),
         price_at_fire=ref.price_at_fire,
+        received_at_local=max(contributing_timestamps) if contributing_timestamps else None,
+        source_platform=ref.source_platform,
+        source_token_id=ref.source_token_id,
+        source_stream_session_id=next(iter(source_stream_session_ids)) if len(source_stream_session_ids) == 1 else None,
+        source_event_type="confluence_fusion",
         estimated_probability=posterior,
         probability_adjustment=total_adjustment,
         is_directional=True,

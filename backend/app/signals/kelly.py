@@ -15,6 +15,82 @@ from decimal import Decimal
 ZERO = Decimal("0")
 
 
+def kelly_size_for_trade(
+    direction: str,
+    estimated_probability: Decimal,
+    entry_price: Decimal,
+    bankroll: Decimal,
+    kelly_fraction: Decimal = Decimal("0.25"),
+    max_position_pct: Decimal = Decimal("0.05"),
+) -> dict:
+    """Compute Kelly-optimal size for a chosen trade direction and entry price."""
+    if direction == "buy_yes":
+        win_probability = estimated_probability
+    elif direction == "buy_no":
+        win_probability = Decimal("1") - estimated_probability
+    else:
+        return {
+            "direction": "none",
+            "kelly_full": ZERO,
+            "kelly_used": ZERO,
+            "recommended_size_usd": ZERO,
+            "shares": ZERO,
+            "edge_pct": ZERO,
+            "entry_price": entry_price.quantize(Decimal("0.000001")),
+        }
+
+    edge = win_probability - entry_price
+    if edge <= ZERO:
+        return {
+            "direction": direction,
+            "kelly_full": ZERO,
+            "kelly_used": ZERO,
+            "recommended_size_usd": ZERO,
+            "shares": ZERO,
+            "edge_pct": (edge.copy_abs() * Decimal("100")).quantize(Decimal("0.01")),
+            "entry_price": entry_price.quantize(Decimal("0.000001")),
+        }
+
+    if entry_price <= ZERO or entry_price >= Decimal("1"):
+        return {
+            "direction": direction,
+            "kelly_full": ZERO,
+            "kelly_used": ZERO,
+            "recommended_size_usd": ZERO,
+            "shares": ZERO,
+            "edge_pct": (edge.copy_abs() * Decimal("100")).quantize(Decimal("0.01")),
+            "entry_price": entry_price.quantize(Decimal("0.000001")),
+        }
+
+    kelly_f = edge / (Decimal("1") - entry_price)
+    if kelly_f <= ZERO:
+        return {
+            "direction": direction,
+            "kelly_full": ZERO,
+            "kelly_used": ZERO,
+            "recommended_size_usd": ZERO,
+            "shares": ZERO,
+            "edge_pct": (edge.copy_abs() * Decimal("100")).quantize(Decimal("0.01")),
+            "entry_price": entry_price.quantize(Decimal("0.000001")),
+        }
+
+    kelly_used = kelly_f * kelly_fraction
+    raw_size = bankroll * kelly_used
+    max_size = bankroll * max_position_pct
+    capped_size = min(raw_size, max_size)
+    shares = (capped_size / entry_price).quantize(Decimal("0.0001")) if entry_price > ZERO else ZERO
+
+    return {
+        "direction": direction,
+        "kelly_full": kelly_f.quantize(Decimal("0.0001")),
+        "kelly_used": kelly_used.quantize(Decimal("0.0001")),
+        "recommended_size_usd": capped_size.quantize(Decimal("0.01")),
+        "shares": shares,
+        "edge_pct": (edge.copy_abs() * Decimal("100")).quantize(Decimal("0.01")),
+        "entry_price": entry_price.quantize(Decimal("0.000001")),
+    }
+
+
 def kelly_size(
     estimated_prob: Decimal,
     market_price: Decimal,
@@ -41,18 +117,12 @@ def kelly_size(
         entry_price: Price per share
     """
     edge = estimated_prob - market_price
-
     if edge > ZERO:
-        # Buy YES
         direction = "buy_yes"
         entry_price = market_price
-        prob = estimated_prob
     elif edge < ZERO:
-        # Buy NO
         direction = "buy_no"
         entry_price = Decimal("1") - market_price
-        prob = Decimal("1") - estimated_prob
-        edge = prob - entry_price
     else:
         return {
             "direction": "none",
@@ -61,53 +131,13 @@ def kelly_size(
             "recommended_size_usd": ZERO,
             "shares": ZERO,
             "edge_pct": ZERO,
-            "entry_price": market_price,
+            "entry_price": market_price.quantize(Decimal("0.000001")),
         }
-
-    # Avoid division by zero for extreme prices
-    if entry_price <= ZERO or entry_price >= Decimal("1"):
-        return {
-            "direction": direction,
-            "kelly_full": ZERO,
-            "kelly_used": ZERO,
-            "recommended_size_usd": ZERO,
-            "shares": ZERO,
-            "edge_pct": (abs(estimated_prob - market_price) * 100).quantize(Decimal("0.01")),
-            "entry_price": entry_price,
-        }
-
-    # Kelly fraction: f = edge / (1 - entry_price)
-    kelly_f = edge / (Decimal("1") - entry_price)
-
-    # No negative sizing
-    if kelly_f <= ZERO:
-        return {
-            "direction": direction,
-            "kelly_full": ZERO,
-            "kelly_used": ZERO,
-            "recommended_size_usd": ZERO,
-            "shares": ZERO,
-            "edge_pct": (abs(estimated_prob - market_price) * 100).quantize(Decimal("0.01")),
-            "entry_price": entry_price,
-        }
-
-    # Apply fractional Kelly
-    kelly_used = kelly_f * kelly_fraction
-    raw_size = bankroll * kelly_used
-
-    # Cap at max position percentage
-    max_size = bankroll * max_position_pct
-    capped_size = min(raw_size, max_size)
-
-    # Shares = dollars / price_per_share
-    shares = (capped_size / entry_price).quantize(Decimal("0.0001")) if entry_price > ZERO else ZERO
-
-    return {
-        "direction": direction,
-        "kelly_full": kelly_f.quantize(Decimal("0.0001")),
-        "kelly_used": kelly_used.quantize(Decimal("0.0001")),
-        "recommended_size_usd": capped_size.quantize(Decimal("0.01")),
-        "shares": shares,
-        "edge_pct": (abs(estimated_prob - market_price) * 100).quantize(Decimal("0.01")),
-        "entry_price": entry_price.quantize(Decimal("0.000001")),
-    }
+    return kelly_size_for_trade(
+        direction=direction,
+        estimated_probability=estimated_prob,
+        entry_price=entry_price,
+        bankroll=bankroll,
+        kelly_fraction=kelly_fraction,
+        max_position_pct=max_position_pct,
+    )

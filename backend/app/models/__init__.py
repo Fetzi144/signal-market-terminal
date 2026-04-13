@@ -1,4 +1,5 @@
 from app.models.backtest import BacktestRun, BacktestSignal
+from app.models.execution_decision import ExecutionDecision
 from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
 from app.models.paper_trade import PaperTrade
@@ -21,6 +22,7 @@ __all__ = [
     "IngestionRun",
     "BacktestRun",
     "BacktestSignal",
+    "ExecutionDecision",
     "Position",
     "Trade",
     "PushSubscription",
