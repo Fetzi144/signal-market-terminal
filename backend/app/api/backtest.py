@@ -2,6 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -9,8 +10,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.backtesting.engine import BacktestEngine
+from app.backtesting.modes import DETECTOR_REPLAY_MODE, STRATEGY_COMPARISON_REPLAY_MODE, with_replay_mode
 from app.backtesting.sweep import parameter_sweep
 from app.db import get_db
+from app.models.signal import Signal
 from app.models.backtest import BacktestRun, BacktestSignal
 from app.models.snapshot import PriceSnapshot
 
@@ -27,6 +30,7 @@ class BacktestCreateRequest(BaseModel):
     name: str
     start_date: datetime
     end_date: datetime
+    replay_mode: Literal["detector_replay", "strategy_comparison"] = DETECTOR_REPLAY_MODE
     detector_configs: dict = {}
     rank_threshold: float = 0.5
 
@@ -95,6 +99,7 @@ class BacktestRunOut(BaseModel):
     start_date: datetime
     end_date: datetime
     detector_configs: dict | None
+    replay_mode: str
     rank_threshold: float
     status: str
     started_at: datetime | None
@@ -158,26 +163,39 @@ async def create_backtest(
     db: AsyncSession = Depends(get_db),
 ):
     """Create and enqueue a backtest run. Returns immediately with status=pending."""
-    # Validate that snapshot data exists for the start_date
-    snap_check = await db.execute(
-        select(func.count(PriceSnapshot.id)).where(
-            PriceSnapshot.captured_at >= body.start_date,
-            PriceSnapshot.captured_at <= body.end_date,
+    if body.replay_mode == STRATEGY_COMPARISON_REPLAY_MODE:
+        signal_check = await db.execute(
+            select(func.count(Signal.id)).where(
+                Signal.fired_at >= body.start_date,
+                Signal.fired_at <= body.end_date,
+            )
         )
-    )
-    snap_count = snap_check.scalar() or 0
-    if snap_count == 0:
-        raise HTTPException(
-            status_code=422,
-            detail="No price snapshot data found in the requested date range.",
+        signal_count = signal_check.scalar() or 0
+        if signal_count == 0:
+            raise HTTPException(
+                status_code=422,
+                detail="No historical signals found in the requested date range.",
+            )
+    else:
+        snap_check = await db.execute(
+            select(func.count(PriceSnapshot.id)).where(
+                PriceSnapshot.captured_at >= body.start_date,
+                PriceSnapshot.captured_at <= body.end_date,
+            )
         )
+        snap_count = snap_check.scalar() or 0
+        if snap_count == 0:
+            raise HTTPException(
+                status_code=422,
+                detail="No price snapshot data found in the requested date range.",
+            )
 
     run = BacktestRun(
         id=uuid.uuid4(),
         name=body.name,
         start_date=body.start_date,
         end_date=body.end_date,
-        detector_configs=body.detector_configs or None,
+        detector_configs=with_replay_mode(body.detector_configs, body.replay_mode),
         rank_threshold=body.rank_threshold,
         status="pending",
     )

@@ -529,6 +529,7 @@ async def test_strategy_health_respects_launch_boundary_and_skip_reasons(client,
     assert data["observation"]["started_at"] == launch_at.isoformat()
     assert data["observation"]["baseline_start_at"] == launch_at.isoformat()
     assert data["observation"]["status"] == "live_waiting_for_trades"
+    assert data["strategy_run"]["contract_snapshot"]["bootstrap_source"] == "DEFAULT_STRATEGY_START_AT"
     assert data["trade_funnel"]["candidate_signals"] == 1
     assert data["trade_funnel"]["pre_launch_candidate_signals"] == 1
     assert data["trade_funnel"]["traded_signals"] == 0
@@ -665,6 +666,7 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
 
     assert data["strategy"]["signal_type"] == "confluence"
     assert data["strategy_run"]["id"] == str(strategy_run.id)
+    assert data["strategy_run"]["contract_snapshot"]["bootstrap_source"] == "BOOTSTRAP_STARTED_AT"
     assert data["observation"]["started_at"] == opened_at.isoformat()
     assert data["trade_funnel"]["candidate_signals"] == 3
     assert data["trade_funnel"]["qualified_signals"] == 2

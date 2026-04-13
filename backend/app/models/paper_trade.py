@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,4 +39,12 @@ class PaperTrade(Base):
         Index("ix_paper_trades_strategy_run", "strategy_run_id", "opened_at"),
         Index("ix_paper_trades_outcome", "outcome_id"),
         Index("ix_paper_trades_opened", "opened_at"),
+        Index(
+            "uq_paper_trades_strategy_run_signal",
+            "strategy_run_id",
+            "signal_id",
+            unique=True,
+            sqlite_where=text("strategy_run_id IS NOT NULL"),
+            postgresql_where=text("strategy_run_id IS NOT NULL"),
+        ),
     )

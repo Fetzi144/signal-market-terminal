@@ -4,6 +4,7 @@ from app.models.market import Market, Outcome
 from app.models.paper_trade import PaperTrade
 from app.models.portfolio import Position, Trade
 from app.models.push_subscription import PushSubscription
+from app.models.scheduler_lease import SchedulerLease
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 from app.models.strategy_run import StrategyRun
@@ -23,6 +24,7 @@ __all__ = [
     "Position",
     "Trade",
     "PushSubscription",
+    "SchedulerLease",
     "WalletProfile",
     "WalletActivity",
     "PaperTrade",

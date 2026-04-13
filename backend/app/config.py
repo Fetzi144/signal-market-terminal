@@ -83,6 +83,8 @@ class Settings(BaseSettings):
     shadow_execution_max_forward_seconds: int = 30
     shadow_execution_min_fill_pct: float = 0.20
     scheduler_enabled: bool = False
+    scheduler_lease_seconds: int = 45
+    scheduler_lease_renew_interval_seconds: int = 15
     default_strategy_name: str = "prove_the_edge_default"
     default_strategy_signal_type: str = "confluence"
     default_strategy_start_at: datetime | None = datetime(2026, 4, 13, tzinfo=timezone.utc)
@@ -203,6 +205,8 @@ class Settings(BaseSettings):
         "cleanup_interval_hours",
         "shadow_execution_max_staleness_seconds",
         "shadow_execution_max_forward_seconds",
+        "scheduler_lease_seconds",
+        "scheduler_lease_renew_interval_seconds",
         "default_strategy_min_observation_days",
         "default_strategy_preferred_observation_days",
         "strategy_review_lookback_days",

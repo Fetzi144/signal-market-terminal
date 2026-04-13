@@ -1,15 +1,190 @@
 """Scheduled jobs: market discovery, snapshot capture, signal detection, evaluation."""
-from datetime import datetime, timezone
+import asyncio
+from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 import logging
+import os
+import socket
+import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import delete, or_
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
 from app.db import async_session
+from app.models.scheduler_lease import SchedulerLease
 
 logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
+SCHEDULER_LEASE_NAME = "default"
+
+_scheduler_owner_token: str | None = None
+_scheduler_lease_task: asyncio.Task | None = None
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _scheduler_owner_label() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _build_scheduler_owner_token() -> str:
+    return f"{_scheduler_owner_label()}:{uuid.uuid4()}"
+
+
+async def _upsert_scheduler_lease(
+    owner_token: str,
+    *,
+    allow_takeover: bool,
+) -> bool:
+    now = _utcnow()
+    expires_at = now + timedelta(seconds=settings.scheduler_lease_seconds)
+
+    async with async_session() as session:
+        bind = session.sync_session.get_bind()
+        values = {
+            "scheduler_name": SCHEDULER_LEASE_NAME,
+            "owner_token": owner_token,
+            "acquired_at": now,
+            "heartbeat_at": now,
+            "expires_at": expires_at,
+        }
+        if bind.dialect.name == "postgresql":
+            stmt = postgresql_insert(SchedulerLease).values(values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[SchedulerLease.scheduler_name],
+                set_=values,
+                where=(
+                    SchedulerLease.owner_token == owner_token
+                    if not allow_takeover
+                    else or_(
+                        SchedulerLease.owner_token == owner_token,
+                        SchedulerLease.expires_at < now,
+                    )
+                ),
+            )
+            await session.execute(stmt)
+        elif bind.dialect.name == "sqlite":
+            stmt = sqlite_insert(SchedulerLease).values(values)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[SchedulerLease.scheduler_name],
+                set_=values,
+                where=(
+                    SchedulerLease.owner_token == owner_token
+                    if not allow_takeover
+                    else or_(
+                        SchedulerLease.owner_token == owner_token,
+                        SchedulerLease.expires_at < now,
+                    )
+                ),
+            )
+            await session.execute(stmt)
+        else:
+            lease = await session.get(SchedulerLease, SCHEDULER_LEASE_NAME)
+            if lease is None:
+                session.add(SchedulerLease(**values))
+            elif lease.owner_token == owner_token or (allow_takeover and lease.expires_at < now):
+                lease.owner_token = owner_token
+                lease.acquired_at = now
+                lease.heartbeat_at = now
+                lease.expires_at = expires_at
+            else:
+                await session.rollback()
+                return False
+
+        await session.commit()
+        lease = await session.get(SchedulerLease, SCHEDULER_LEASE_NAME)
+        return lease is not None and lease.owner_token == owner_token
+
+
+async def _acquire_scheduler_ownership(owner_token: str) -> bool:
+    return await _upsert_scheduler_lease(owner_token, allow_takeover=True)
+
+
+async def _renew_scheduler_ownership(owner_token: str) -> bool:
+    return await _upsert_scheduler_lease(owner_token, allow_takeover=False)
+
+
+async def _release_scheduler_ownership(owner_token: str) -> bool:
+    async with async_session() as session:
+        result = await session.execute(
+            delete(SchedulerLease).where(
+                SchedulerLease.scheduler_name == SCHEDULER_LEASE_NAME,
+                SchedulerLease.owner_token == owner_token,
+            )
+        )
+        await session.commit()
+        return bool(result.rowcount)
+
+
+async def _stop_scheduler_after_ownership_loss(owner_token: str | None) -> None:
+    global _scheduler_owner_token, _scheduler_lease_task
+
+    if owner_token is None or _scheduler_owner_token != owner_token:
+        return
+
+    logger.error(
+        "Scheduler ownership lost for %s; stopping local scheduler to avoid duplicate job execution",
+        _scheduler_owner_label(),
+    )
+    _scheduler_owner_token = None
+    current_task = asyncio.current_task()
+    lease_task = _scheduler_lease_task
+    if lease_task is not None and lease_task is not current_task:
+        lease_task.cancel()
+    _scheduler_lease_task = None
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
+
+
+async def _scheduler_lease_heartbeat(owner_token: str) -> None:
+    global _scheduler_lease_task
+
+    try:
+        while scheduler.running and _scheduler_owner_token == owner_token:
+            await asyncio.sleep(settings.scheduler_lease_renew_interval_seconds)
+            if not scheduler.running or _scheduler_owner_token != owner_token:
+                return
+            renewed = await _renew_scheduler_ownership(owner_token)
+            if not renewed:
+                await _stop_scheduler_after_ownership_loss(owner_token)
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.error("Scheduler lease heartbeat failed", exc_info=True)
+        await _stop_scheduler_after_ownership_loss(owner_token)
+    finally:
+        if _scheduler_lease_task is asyncio.current_task():
+            _scheduler_lease_task = None
+
+
+async def _run_owned_job(job_name: str, job_func) -> None:
+    owner_token = _scheduler_owner_token
+    if owner_token is None:
+        logger.warning("Skipping scheduler job %s because no scheduler owner is registered", job_name)
+        return
+    if not await _renew_scheduler_ownership(owner_token):
+        logger.warning("Skipping scheduler job %s because ownership renewal failed", job_name)
+        await _stop_scheduler_after_ownership_loss(owner_token)
+        return
+    await job_func()
+
+
+def _add_owned_job(job_name: str, job_func, trigger: str, **trigger_kwargs) -> None:
+    scheduler.add_job(
+        _run_owned_job,
+        trigger,
+        id=job_name,
+        replace_existing=True,
+        args=[job_name, job_func],
+        **trigger_kwargs,
+    )
 
 
 async def _run_market_discovery():
@@ -418,72 +593,97 @@ async def _run_whale_scan():
             logger.error("Job: whale_scan failed", exc_info=True)
 
 
-def start_scheduler():
+async def start_scheduler() -> bool:
+    global _scheduler_owner_token, _scheduler_lease_task
+
     if scheduler.running:
         logger.info("Scheduler already running; skipping duplicate start")
-        return
-    scheduler.add_job(
+        return True
+
+    owner_token = _build_scheduler_owner_token()
+    acquired = await _acquire_scheduler_ownership(owner_token)
+    if not acquired:
+        logger.warning(
+            "Scheduler ownership already held by another process; %s will not start scheduler jobs",
+            _scheduler_owner_label(),
+        )
+        return False
+
+    _scheduler_owner_token = owner_token
+    scheduler.remove_all_jobs()
+    _add_owned_job(
+        "market_discovery",
         _run_market_discovery,
         "interval",
         seconds=settings.market_discovery_interval_seconds,
-        id="market_discovery",
-        replace_existing=True,
     )
-    scheduler.add_job(
+    _add_owned_job(
+        "snapshot_capture",
         _run_snapshot_capture,
         "interval",
         seconds=settings.snapshot_interval_seconds,
-        id="snapshot_capture",
-        replace_existing=True,
     )
     # Run detection shortly after snapshots
-    scheduler.add_job(
+    _add_owned_job(
+        "signal_detection",
         _run_signal_detection,
         "interval",
         seconds=settings.snapshot_interval_seconds + 10,
-        id="signal_detection",
-        replace_existing=True,
     )
-    scheduler.add_job(
+    _add_owned_job(
+        "evaluation",
         _run_evaluation,
         "interval",
         seconds=settings.evaluation_interval_seconds,
-        id="evaluation",
-        replace_existing=True,
     )
-    scheduler.add_job(
+    _add_owned_job(
+        "resolution",
         _run_resolution,
         "interval",
         minutes=15,
-        id="resolution",
-        replace_existing=True,
     )
-    scheduler.add_job(
+    _add_owned_job(
+        "cleanup",
         _run_cleanup,
         "interval",
         hours=settings.cleanup_interval_hours,
-        id="cleanup",
-        replace_existing=True,
     )
-    scheduler.add_job(
+    _add_owned_job(
+        "portfolio_price_refresh",
         _run_portfolio_price_refresh,
         "interval",
         minutes=5,
-        id="portfolio_price_refresh",
-        replace_existing=True,
     )
     if settings.whale_tracking_enabled:
-        scheduler.add_job(
+        _add_owned_job(
+            "whale_scan",
             _run_whale_scan,
             "interval",
             seconds=settings.whale_scan_interval_seconds,
-            id="whale_scan",
-            replace_existing=True,
         )
     scheduler.start()
+    _scheduler_lease_task = asyncio.create_task(_scheduler_lease_heartbeat(owner_token))
     logger.info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
+    return True
 
 
-def stop_scheduler():
+async def stop_scheduler() -> None:
+    global _scheduler_owner_token, _scheduler_lease_task
+
+    owner_token = _scheduler_owner_token
+    lease_task = _scheduler_lease_task
+
+    if lease_task is not None:
+        lease_task.cancel()
+        _scheduler_lease_task = None
+        with suppress(asyncio.CancelledError):
+            await lease_task
+
     if scheduler.running:
         scheduler.shutdown(wait=False)
+    if owner_token is not None:
+        _scheduler_owner_token = None
+        try:
+            await _release_scheduler_ownership(owner_token)
+        except Exception:
+            logger.warning("Failed to release scheduler ownership", exc_info=True)

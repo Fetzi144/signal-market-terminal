@@ -1,4 +1,5 @@
 """Signal Market Terminal — FastAPI application."""
+import inspect
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -33,15 +34,21 @@ logger = logging.getLogger(__name__)
 limiter = Limiter(key_func=get_remote_address, default_limits=[settings.api_rate_limit])
 
 
+async def _maybe_await(result):
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Signal Market Terminal")
     if settings.scheduler_enabled:
-        start_scheduler()
+        await _maybe_await(start_scheduler())
     yield
     logger.info("Shutting down Signal Market Terminal")
     if settings.scheduler_enabled:
-        stop_scheduler()
+        await _maybe_await(stop_scheduler())
 
 
 app = FastAPI(

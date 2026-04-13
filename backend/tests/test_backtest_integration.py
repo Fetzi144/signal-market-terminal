@@ -13,7 +13,7 @@ from app.backtesting.sweep import parameter_sweep
 from app.db import get_db
 from app.main import app
 from app.models.backtest import BacktestRun, BacktestSignal
-from tests.conftest import make_market, make_outcome, make_price_snapshot
+from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_price_snapshot, make_signal
 
 
 def _make_naive(dt):
@@ -116,6 +116,97 @@ async def test_backtest_sweep_combinations(session: AsyncSession):
     for r in completed:
         assert r.result_summary is not None
         assert "total_signals" in r.result_summary
+
+
+@pytest.mark.asyncio
+async def test_strategy_comparison_replays_default_and_legacy_paths(session: AsyncSession):
+    market_end = datetime.now(timezone.utc) - timedelta(hours=1)
+    market = make_market(session, question="Strategy replay market", end_date=market_end)
+    outcome = make_outcome(session, market.id, name="Yes")
+    await session.flush()
+
+    confluence_time = datetime.now(timezone.utc) - timedelta(hours=4)
+    legacy_time = confluence_time + timedelta(minutes=30)
+
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="800",
+        depth_ask="900",
+        captured_at=confluence_time,
+        bids=[["0.39", "500"]],
+        asks=[["0.41", "600"]],
+    )
+
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        timeframe="30m",
+        fired_at=confluence_time,
+        dedupe_bucket=confluence_time.replace(minute=(confluence_time.minute // 15) * 15, second=0, microsecond=0),
+        signal_score=Decimal("0.850"),
+        confidence=Decimal("0.900"),
+        rank_score=Decimal("0.765"),
+        details={"market_question": market.question, "outcome_name": outcome.name},
+        estimated_probability=Decimal("0.6500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        resolution_price=Decimal("1.000000"),
+        closing_price=Decimal("0.700000"),
+    )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="price_move",
+        timeframe="30m",
+        fired_at=legacy_time,
+        dedupe_bucket=legacy_time.replace(minute=(legacy_time.minute // 15) * 15, second=0, microsecond=0),
+        signal_score=Decimal("0.700"),
+        confidence=Decimal("0.850"),
+        rank_score=Decimal("0.595"),
+        details={"direction": "up", "market_question": market.question, "outcome_name": outcome.name},
+        estimated_probability=Decimal("0.6300"),
+        price_at_fire=Decimal("0.420000"),
+        expected_value=Decimal("0.210000"),
+        resolved_correctly=True,
+        resolution_price=Decimal("1.000000"),
+        closing_price=Decimal("0.720000"),
+    )
+    await session.flush()
+
+    run = BacktestRun(
+        id=uuid.uuid4(),
+        name="strategy-comparison",
+        start_date=confluence_time - timedelta(minutes=10),
+        end_date=market_end + timedelta(minutes=10),
+        detector_configs={"_replay_mode": "strategy_comparison"},
+        rank_threshold=0.55,
+        status="pending",
+    )
+    session.add(run)
+    await session.flush()
+
+    engine = BacktestEngine()
+    result = await engine.run(session, run)
+
+    assert run.status == "completed"
+    assert result["replay_mode"] == "strategy_comparison"
+    assert result["comparison"]["default_strategy"]["resolved_trades"] == 1
+    assert result["comparison"]["legacy"]["resolved_trades"] == 1
+    assert result["comparison"]["default_strategy"]["cumulative_pnl"] > 0
+    assert result["comparison"]["legacy"]["cumulative_pnl"] > 0
+    assert result["total_signals"] == 1
+
+    bt_signals = (await session.execute(
+        select(BacktestSignal).where(BacktestSignal.backtest_run_id == run.id)
+    )).scalars().all()
+    assert len(bt_signals) == 2
+    replay_paths = {signal.details["replay"]["replay_path"] for signal in bt_signals}
+    assert replay_paths == {"default_strategy", "legacy"}
 
 
 @pytest.mark.asyncio

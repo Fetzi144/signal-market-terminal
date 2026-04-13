@@ -48,7 +48,6 @@ class OrderbookContext:
     missing_reason: str | None = None
 
 
-
 def _risk_reason_code(reason: str) -> str:
     if reason.startswith("Total exposure limit reached"):
         return "risk_total_exposure"
@@ -72,7 +71,6 @@ def _ensure_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
-
 
 
 async def get_portfolio_state(session: AsyncSession) -> dict:
@@ -175,14 +173,27 @@ async def attempt_open_trade(
             reason_label="Missing market price",
         )
 
-    existing = await session.execute(
-        select(PaperTrade.id).where(
-            PaperTrade.signal_id == signal_id,
-            PaperTrade.status == "open",
-        )
-    )
-    existing_trade_id = existing.scalar_one_or_none()
-    if existing_trade_id is not None:
+    existing_query = select(PaperTrade.id, PaperTrade.status).where(PaperTrade.signal_id == signal_id)
+    if strategy_run_id is not None:
+        existing_query = existing_query.where(PaperTrade.strategy_run_id == strategy_run_id)
+    else:
+        existing_query = existing_query.where(PaperTrade.status == "open")
+    existing_query = existing_query.order_by(PaperTrade.opened_at.desc()).limit(1)
+    existing = await session.execute(existing_query)
+    existing_trade = existing.first()
+    if existing_trade is not None:
+        existing_trade_id, existing_trade_status = existing_trade
+        if strategy_run_id is not None:
+            return TradeOpenResult(
+                trade=None,
+                decision="skipped",
+                reason_code="already_recorded",
+                reason_label="Already recorded in run",
+                detail=(
+                    f"Signal already has a {existing_trade_status} paper trade in "
+                    f"strategy run ({existing_trade_id})"
+                ),
+            )
         return TradeOpenResult(
             trade=None,
             decision="skipped",
@@ -384,27 +395,34 @@ async def resolve_trades(
     session: AsyncSession,
     outcome_id: uuid.UUID,
     outcome_won: bool,
+    *,
+    resolved_at: datetime | None = None,
+    strategy_run_id: uuid.UUID | None = None,
 ) -> int:
     """Resolve all open paper trades for a given outcome.
 
     Args:
         outcome_id: The resolved outcome
         outcome_won: True if the outcome resolved YES, False if NO
+        resolved_at: Optional historical resolution timestamp
+        strategy_run_id: Optional strategy run scope
 
     Returns count of resolved trades.
     """
-    result = await session.execute(
-        select(PaperTrade).where(
-            PaperTrade.outcome_id == outcome_id,
-            PaperTrade.status == "open",
-        )
+    query = select(PaperTrade).where(
+        PaperTrade.outcome_id == outcome_id,
+        PaperTrade.status == "open",
     )
+    if strategy_run_id is not None:
+        query = query.where(PaperTrade.strategy_run_id == strategy_run_id)
+
+    result = await session.execute(query)
     trades = result.scalars().all()
 
     if not trades:
         return 0
 
-    now = datetime.now(timezone.utc)
+    now = resolved_at or datetime.now(timezone.utc)
     count = 0
 
     for trade in trades:

@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import select
@@ -8,6 +9,26 @@ from app.default_strategy import get_default_strategy_contract
 from app.models.signal import Signal
 from app.models.strategy_run import StrategyRun
 
+ACTIVE_RUN_STATUS = "active"
+CLOSED_RUN_STATUS = "closed"
+
+BOOTSTRAP_SOURCE_EXPLICIT = "EXPLICIT_LAUNCH_BOUNDARY"
+BOOTSTRAP_SOURCE_CONFIG = "DEFAULT_STRATEGY_START_AT"
+BOOTSTRAP_SOURCE_ARGUMENT = "BOOTSTRAP_STARTED_AT"
+BOOTSTRAP_SOURCE_SIGNAL = "EARLIEST_SIGNAL_FIRED_AT"
+BOOTSTRAP_SOURCE_NOW = "CURRENT_TIME"
+
+
+class ActiveStrategyRunExistsError(RuntimeError):
+    """Raised when a caller explicitly opens a run while another one is active."""
+
+
+@dataclass(frozen=True)
+class StrategyRunBootstrap:
+    started_at: datetime
+    source: str
+    anchor_at: datetime
+
 
 def _ensure_utc(value: datetime | None) -> datetime | None:
     if value is None:
@@ -17,8 +38,12 @@ def _ensure_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
-def get_default_strategy_bootstrap_start_at() -> datetime | None:
+def get_default_strategy_launch_boundary() -> datetime | None:
     return _ensure_utc(settings.default_strategy_start_at)
+
+
+def get_default_strategy_bootstrap_start_at() -> datetime | None:
+    return get_default_strategy_launch_boundary()
 
 
 def serialize_strategy_run(strategy_run: StrategyRun | None) -> dict | None:
@@ -43,7 +68,7 @@ async def get_active_strategy_run(
         select(StrategyRun)
         .where(
             StrategyRun.strategy_name == strategy_name,
-            StrategyRun.status == "active",
+            StrategyRun.status == ACTIVE_RUN_STATUS,
         )
         .order_by(StrategyRun.created_at.desc())
     )
@@ -55,7 +80,13 @@ async def ensure_active_default_strategy_run(
     *,
     bootstrap_started_at: datetime | None = None,
 ) -> StrategyRun:
-    return await _ensure_active_default_strategy_run(session, bootstrap_started_at=bootstrap_started_at)
+    active_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    if active_run is not None:
+        return active_run
+    return await open_default_strategy_run(
+        session,
+        bootstrap_started_at=bootstrap_started_at,
+    )
 
 
 async def _infer_bootstrap_started_at(session: AsyncSession) -> datetime | None:
@@ -67,29 +98,105 @@ async def _infer_bootstrap_started_at(session: AsyncSession) -> datetime | None:
     return _ensure_utc(result.scalar_one_or_none())
 
 
-async def _ensure_active_default_strategy_run(
+async def _resolve_default_strategy_bootstrap(
     session: AsyncSession,
     *,
+    launch_boundary_at: datetime | None = None,
+    bootstrap_started_at: datetime | None = None,
+) -> StrategyRunBootstrap:
+    explicit_launch_boundary = _ensure_utc(launch_boundary_at)
+    if explicit_launch_boundary is not None:
+        return StrategyRunBootstrap(
+            started_at=explicit_launch_boundary,
+            source=BOOTSTRAP_SOURCE_EXPLICIT,
+            anchor_at=explicit_launch_boundary,
+        )
+
+    configured_launch_boundary = get_default_strategy_launch_boundary()
+    if configured_launch_boundary is not None:
+        return StrategyRunBootstrap(
+            started_at=configured_launch_boundary,
+            source=BOOTSTRAP_SOURCE_CONFIG,
+            anchor_at=configured_launch_boundary,
+        )
+
+    bootstrap_candidate = _ensure_utc(bootstrap_started_at)
+    if bootstrap_candidate is not None:
+        return StrategyRunBootstrap(
+            started_at=bootstrap_candidate,
+            source=BOOTSTRAP_SOURCE_ARGUMENT,
+            anchor_at=bootstrap_candidate,
+        )
+
+    inferred_started_at = await _infer_bootstrap_started_at(session)
+    if inferred_started_at is not None:
+        return StrategyRunBootstrap(
+            started_at=inferred_started_at,
+            source=BOOTSTRAP_SOURCE_SIGNAL,
+            anchor_at=inferred_started_at,
+        )
+
+    current_time = datetime.now(timezone.utc)
+    return StrategyRunBootstrap(
+        started_at=current_time,
+        source=BOOTSTRAP_SOURCE_NOW,
+        anchor_at=current_time,
+    )
+
+
+async def open_default_strategy_run(
+    session: AsyncSession,
+    *,
+    launch_boundary_at: datetime | None = None,
     bootstrap_started_at: datetime | None = None,
 ) -> StrategyRun:
     active_run = await get_active_strategy_run(session, settings.default_strategy_name)
     if active_run is not None:
-        return active_run
+        raise ActiveStrategyRunExistsError(
+            f"Strategy {settings.default_strategy_name} already has an active run ({active_run.id})"
+        )
 
-    started_at = _ensure_utc(bootstrap_started_at) or get_default_strategy_bootstrap_start_at()
-    if started_at is None:
-        started_at = await _infer_bootstrap_started_at(session)
-    if started_at is None:
-        started_at = datetime.now(timezone.utc)
-    contract_snapshot = get_default_strategy_contract(started_at=started_at)
-    contract_snapshot["bootstrap_source"] = "DEFAULT_STRATEGY_START_AT"
+    bootstrap = await _resolve_default_strategy_bootstrap(
+        session,
+        launch_boundary_at=launch_boundary_at,
+        bootstrap_started_at=bootstrap_started_at,
+    )
+    contract_snapshot = get_default_strategy_contract(started_at=bootstrap.started_at)
+    contract_snapshot["bootstrap_source"] = bootstrap.source
+    contract_snapshot["bootstrap_anchor_at"] = bootstrap.anchor_at.isoformat()
 
-    active_run = StrategyRun(
+    strategy_run = StrategyRun(
         strategy_name=settings.default_strategy_name,
-        status="active",
-        started_at=started_at,
+        status=ACTIVE_RUN_STATUS,
+        started_at=bootstrap.started_at,
         contract_snapshot=contract_snapshot,
     )
-    session.add(active_run)
+    session.add(strategy_run)
     await session.flush()
-    return active_run
+    return strategy_run
+
+
+async def close_strategy_run(
+    session: AsyncSession,
+    strategy_run: StrategyRun,
+    *,
+    ended_at: datetime | None = None,
+) -> StrategyRun:
+    resolved_end_at = _ensure_utc(ended_at) or datetime.now(timezone.utc)
+    if strategy_run.status != CLOSED_RUN_STATUS:
+        strategy_run.status = CLOSED_RUN_STATUS
+    if strategy_run.ended_at is None:
+        strategy_run.ended_at = resolved_end_at
+    await session.flush()
+    return strategy_run
+
+
+async def close_active_default_strategy_run(
+    session: AsyncSession,
+    *,
+    ended_at: datetime | None = None,
+) -> StrategyRun | None:
+    active_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    if active_run is None:
+        return None
+    return await close_strategy_run(session, active_run, ended_at=ended_at)

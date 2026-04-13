@@ -4,7 +4,12 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.models.strategy_run import StrategyRun
-from app.strategy_runs.service import ensure_active_default_strategy_run
+from app.strategy_runs.service import (
+    ActiveStrategyRunExistsError,
+    close_active_default_strategy_run,
+    ensure_active_default_strategy_run,
+    open_default_strategy_run,
+)
 from tests.conftest import make_market, make_outcome, make_signal
 
 
@@ -24,6 +29,28 @@ async def test_active_run_bootstraps_once_and_ignores_later_env_changes(session,
 
     assert second_run.id == first_run.id
     assert second_run.started_at == first_start
+    assert second_run.contract_snapshot["bootstrap_source"] == "DEFAULT_STRATEGY_START_AT"
+    assert second_run.contract_snapshot["bootstrap_anchor_at"] == first_start.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_active_run_prefers_configured_launch_boundary_over_bootstrap_candidate(session, monkeypatch):
+    from app.config import settings
+
+    launch_at = datetime(2026, 4, 13, tzinfo=timezone.utc)
+    bootstrap_started_at = launch_at + timedelta(days=2)
+
+    monkeypatch.setattr(settings, "default_strategy_start_at", launch_at)
+
+    strategy_run = await ensure_active_default_strategy_run(
+        session,
+        bootstrap_started_at=bootstrap_started_at,
+    )
+
+    assert strategy_run.started_at == launch_at
+    assert strategy_run.contract_snapshot["baseline_start_at"] == launch_at.isoformat()
+    assert strategy_run.contract_snapshot["bootstrap_source"] == "DEFAULT_STRATEGY_START_AT"
+    assert strategy_run.contract_snapshot["bootstrap_anchor_at"] == launch_at.isoformat()
 
 
 @pytest.mark.asyncio
@@ -44,6 +71,33 @@ async def test_active_run_bootstraps_from_earliest_signal_when_env_unset(session
     strategy_run = await ensure_active_default_strategy_run(session)
 
     assert strategy_run.started_at == fired_at
+    assert strategy_run.contract_snapshot["bootstrap_source"] == "EARLIEST_SIGNAL_FIRED_AT"
+    assert strategy_run.contract_snapshot["bootstrap_anchor_at"] == fired_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_strategy_run_open_close_lifecycle_requires_explicit_rollover(session):
+    first_launch_at = datetime(2026, 4, 13, tzinfo=timezone.utc)
+    second_launch_at = first_launch_at + timedelta(days=14)
+    first_end_at = first_launch_at + timedelta(days=7)
+
+    first_run = await open_default_strategy_run(session, launch_boundary_at=first_launch_at)
+
+    with pytest.raises(ActiveStrategyRunExistsError):
+        await open_default_strategy_run(session, launch_boundary_at=second_launch_at)
+
+    closed_run = await close_active_default_strategy_run(session, ended_at=first_end_at)
+    second_run = await open_default_strategy_run(session, launch_boundary_at=second_launch_at)
+
+    assert closed_run is not None
+    assert closed_run.id == first_run.id
+    assert closed_run.status == "closed"
+    assert closed_run.ended_at == first_end_at
+    assert second_run.id != first_run.id
+    assert second_run.status == "active"
+    assert second_run.started_at == second_launch_at
+    assert second_run.contract_snapshot["bootstrap_source"] == "EXPLICIT_LAUNCH_BOUNDARY"
+    assert second_run.contract_snapshot["bootstrap_anchor_at"] == second_launch_at.isoformat()
 
 
 @pytest.mark.asyncio

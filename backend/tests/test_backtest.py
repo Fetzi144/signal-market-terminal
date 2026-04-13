@@ -8,7 +8,7 @@ import pytest
 
 from app.backtesting.sweep import MAX_SWEEP_COMBINATIONS, _build_combinations, _flat_to_detector_configs
 from app.models.backtest import BacktestRun, BacktestSignal
-from tests.conftest import make_market, make_outcome, make_price_snapshot
+from tests.conftest import make_market, make_outcome, make_price_snapshot, make_signal
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                       #
@@ -270,6 +270,38 @@ async def test_create_backtest_starts_background_task(client, session):
 # --------------------------------------------------------------------------- #
 # API: Sweep — validation                                                       #
 # --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_create_strategy_comparison_backtest_uses_historical_signals(client, session):
+    """Strategy-comparison mode should validate against stored signals, not snapshots."""
+    now = datetime.now(timezone.utc)
+    market = make_market(session, end_date=now + timedelta(hours=6))
+    outcome = make_outcome(session, market.id)
+    fired_at = now - timedelta(hours=1)
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+    )
+    await session.commit()
+
+    with patch("app.api.backtest._run_backtest_background", new_callable=AsyncMock):
+        resp = await client.post("/api/v1/backtests", json={
+            "name": "strategy replay",
+            "start_date": (now - timedelta(days=2)).isoformat(),
+            "end_date": now.isoformat(),
+            "replay_mode": "strategy_comparison",
+        })
+
+    assert resp.status_code == 201
+    assert resp.json()["status"] == "pending"
+
 
 @pytest.mark.asyncio
 async def test_sweep_no_snapshots(client):

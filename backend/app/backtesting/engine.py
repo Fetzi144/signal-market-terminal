@@ -8,6 +8,8 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.backtesting.modes import DETECTOR_REPLAY_MODE, resolve_replay_mode, strip_meta_detector_configs
+from app.backtesting.strategy_replay import run_strategy_comparison_replay
 from app.models.backtest import BacktestRun, BacktestSignal
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 from app.ranking.scorer import compute_rank_score
@@ -52,7 +54,15 @@ class BacktestEngine:
 
     async def _execute(self, session: AsyncSession, run: BacktestRun) -> dict:
         """Core replay loop."""
-        detectors = self._build_detectors(run.detector_configs or {})
+        replay_mode = resolve_replay_mode(run.detector_configs)
+        if replay_mode != DETECTOR_REPLAY_MODE:
+            result_summary, backtest_signals = await run_strategy_comparison_replay(session, run)
+            for signal in backtest_signals:
+                session.add(signal)
+            await session.flush()
+            return result_summary
+
+        detectors = self._build_detectors(strip_meta_detector_configs(run.detector_configs))
         rank_threshold = Decimal(str(run.rank_threshold))
 
         # Pre-load all price snapshots in the date range

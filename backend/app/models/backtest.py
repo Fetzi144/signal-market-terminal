@@ -31,6 +31,15 @@ class BacktestRun(Base):
         back_populates="backtest_run", cascade="all, delete-orphan"
     )
 
+    @property
+    def replay_mode(self) -> str:
+        configs = self.detector_configs or {}
+        if isinstance(configs, dict):
+            replay_mode = configs.get("_replay_mode")
+            if isinstance(replay_mode, str) and replay_mode:
+                return replay_mode
+        return "detector_replay"
+
     __table_args__ = (
         Index("ix_backtest_run_status", "status"),
         Index("ix_backtest_run_created", "created_at"),

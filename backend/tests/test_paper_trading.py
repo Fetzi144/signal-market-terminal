@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
+from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
 from app.models.paper_trade import PaperTrade
@@ -281,7 +282,7 @@ async def test_attempt_open_trade_shadow_no_fill_when_visible_depth_is_too_small
     assert Decimal(shadow["filled_size_usd"]) == Decimal("0.00")
     assert Decimal(shadow["shadow_shares"]) == Decimal("0.0000")
 
-    count = await resolve_trades(session, outcome.id, outcome_won=True)
+    count = await resolve_trades(session, outcome.id, outcome_won=True, strategy_run_id=strategy_run.id)
     await session.commit()
 
     assert count == 1
@@ -328,7 +329,7 @@ async def test_attempt_open_trade_shadow_no_fill_without_orderbook_context(sessi
     assert shadow["fill_status"] == "no_fill"
     assert shadow["fill_reason"] == "no_snapshot"
 
-    count = await resolve_trades(session, outcome.id, outcome_won=True)
+    count = await resolve_trades(session, outcome.id, outcome_won=True, strategy_run_id=strategy_run.id)
     await session.commit()
 
     assert count == 1
@@ -388,11 +389,92 @@ async def test_attempt_open_trade_shadow_no_fill_with_stale_orderbook_context(se
     assert shadow["snapshot_side"] == "before"
     assert shadow["snapshot_age_seconds"] >= 600
 
-    count = await resolve_trades(session, outcome.id, outcome_won=True)
+    count = await resolve_trades(session, outcome.id, outcome_won=True, strategy_run_id=strategy_run.id)
     await session.commit()
 
     assert count == 1
     assert result.trade.shadow_pnl == Decimal("0.00")
+
+
+@pytest.mark.asyncio
+async def test_attempt_open_trade_skips_duplicate_signal_in_same_strategy_run(session):
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+    )
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=fired_at)
+    await session.commit()
+
+    first_result = await attempt_open_trade(
+        session=session,
+        signal_id=signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6500"),
+        market_price=Decimal("0.400000"),
+        market_question="Duplicate guard?",
+        fired_at=fired_at,
+        strategy_run_id=strategy_run.id,
+    )
+    await session.commit()
+
+    second_result = await attempt_open_trade(
+        session=session,
+        signal_id=signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6500"),
+        market_price=Decimal("0.400000"),
+        market_question="Duplicate guard?",
+        fired_at=fired_at,
+        strategy_run_id=strategy_run.id,
+    )
+
+    assert first_result.trade is not None
+    assert second_result.trade is None
+    assert second_result.reason_code == "already_recorded"
+    assert second_result.reason_label == "Already recorded in run"
+
+
+@pytest.mark.asyncio
+async def test_paper_trade_uniqueness_constraint_is_scoped_to_strategy_run(session):
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    signal = make_signal(session, market.id, outcome.id)
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=signal.fired_at)
+
+    _make_paper_trade(
+        session,
+        signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+    )
+    await session.flush()
+
+    _make_paper_trade(
+        session,
+        signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        id=uuid.uuid4(),
+        status="resolved",
+        resolved_at=datetime.now(timezone.utc),
+    )
+
+    with pytest.raises(IntegrityError):
+        await session.flush()
 
 
 @pytest.mark.asyncio
