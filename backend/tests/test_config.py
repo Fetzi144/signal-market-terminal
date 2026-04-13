@@ -40,7 +40,7 @@ class TestRetentionValidation:
 
 class TestThresholdValidation:
     def test_valid_thresholds(self):
-        s = _make(price_move_threshold_pct=10.0, alert_rank_threshold=0.5)
+        s = _make(price_move_threshold_pct=10.0, alert_rank_threshold=0.5, shadow_execution_min_fill_pct=0.2)
         assert s.price_move_threshold_pct == 10.0
 
     def test_zero_threshold_rejected(self):
@@ -72,6 +72,16 @@ class TestAlertRankThresholdBounds:
     def test_negative_rejected(self):
         with pytest.raises(ValidationError, match="alert_rank_threshold must be between 0.0 and 1.0"):
             _make(alert_rank_threshold=-0.1)
+
+
+class TestShadowExecutionBounds:
+    def test_shadow_execution_min_fill_pct_accepts_one(self):
+        s = _make(shadow_execution_min_fill_pct=1.0)
+        assert s.shadow_execution_min_fill_pct == 1.0
+
+    def test_shadow_execution_min_fill_pct_rejects_above_one(self):
+        with pytest.raises(ValidationError, match="shadow_execution_min_fill_pct must be > 0 and <= 1"):
+            _make(shadow_execution_min_fill_pct=1.1)
 
 
 class TestLimitValidation:
@@ -112,3 +122,6 @@ class TestDefaults:
         assert s.kalshi_enabled is True
         assert s.sse_max_connections == 50
         assert s.alert_webhook_secret == ""
+        assert s.shadow_execution_max_staleness_seconds == 180
+        assert s.shadow_execution_max_forward_seconds == 30
+        assert s.shadow_execution_min_fill_pct == 0.20

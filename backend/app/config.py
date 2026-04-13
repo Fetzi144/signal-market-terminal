@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     max_cluster_exposure_pct: float = 0.15  # 15% of bankroll per correlated cluster
     drawdown_circuit_breaker_pct: float = 0.15  # pause at -15% from peak
     paper_trading_enabled: bool = True
+    shadow_execution_max_staleness_seconds: int = 180
+    shadow_execution_max_forward_seconds: int = 30
+    shadow_execution_min_fill_pct: float = 0.20
     scheduler_enabled: bool = False
     default_strategy_name: str = "prove_the_edge_default"
     default_strategy_signal_type: str = "confluence"
@@ -150,11 +153,19 @@ class Settings(BaseSettings):
         "spread_change_threshold_ratio", "liquidity_vacuum_depth_ratio_threshold",
         "deadline_near_price_threshold_pct",
         "min_volume_24h", "connector_timeout_seconds",
+        "shadow_execution_min_fill_pct",
     )
     @classmethod
     def thresholds_must_be_positive(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("Threshold must be > 0")
+        return v
+
+    @field_validator("shadow_execution_min_fill_pct")
+    @classmethod
+    def shadow_execution_min_fill_pct_bounds(cls, v: float) -> float:
+        if v <= 0 or v > 1:
+            raise ValueError("shadow_execution_min_fill_pct must be > 0 and <= 1")
         return v
 
     @field_validator("ofi_threshold")
@@ -190,6 +201,8 @@ class Settings(BaseSettings):
         "market_pagination_cap",
         "orderbook_sample_size",
         "cleanup_interval_hours",
+        "shadow_execution_max_staleness_seconds",
+        "shadow_execution_max_forward_seconds",
         "default_strategy_min_observation_days",
         "default_strategy_preferred_observation_days",
         "strategy_review_lookback_days",
