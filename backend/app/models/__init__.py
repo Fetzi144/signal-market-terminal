@@ -10,6 +10,14 @@ from app.models.polymarket_metadata import (
     PolymarketMarketParamHistory,
     PolymarketMetaSyncRun,
 )
+from app.models.polymarket_raw import (
+    PolymarketBboEvent,
+    PolymarketBookDelta,
+    PolymarketBookSnapshot,
+    PolymarketOpenInterestHistory,
+    PolymarketRawCaptureRun,
+    PolymarketTradeTape,
+)
 from app.models.portfolio import Position, Trade
 from app.models.polymarket_stream import (
     PolymarketIngestIncident,
@@ -51,6 +59,12 @@ __all__ = [
     "PolymarketAssetDim",
     "PolymarketMarketParamHistory",
     "PolymarketMetaSyncRun",
+    "PolymarketRawCaptureRun",
+    "PolymarketBookSnapshot",
+    "PolymarketBookDelta",
+    "PolymarketBboEvent",
+    "PolymarketTradeTape",
+    "PolymarketOpenInterestHistory",
     "PushSubscription",
     "SchedulerLease",
     "WalletProfile",

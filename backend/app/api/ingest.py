@@ -22,6 +22,19 @@ from app.ingestion.polymarket_metadata import (
     lookup_polymarket_market_registry,
     trigger_manual_polymarket_meta_sync,
 )
+from app.ingestion.polymarket_raw_storage import (
+    fetch_polymarket_raw_storage_status,
+    list_polymarket_raw_capture_runs,
+    lookup_polymarket_bbo_events,
+    lookup_polymarket_book_deltas,
+    lookup_polymarket_book_snapshots,
+    lookup_polymarket_open_interest_history,
+    lookup_polymarket_trade_tape,
+    trigger_manual_polymarket_book_snapshot,
+    trigger_manual_polymarket_oi_poll,
+    trigger_manual_polymarket_raw_projector,
+    trigger_manual_polymarket_trade_backfill,
+)
 from app.ingestion.polymarket_stream import (
     ensure_watch_registry_bootstrapped,
     fetch_polymarket_stream_status,
@@ -99,6 +112,44 @@ class PolymarketMetaSyncStatusOut(BaseModel):
     recent_sync_runs: list[PolymarketMetaSyncRunOut]
 
 
+class PolymarketRawCaptureRunOut(BaseModel):
+    id: uuid.UUID
+    run_type: str
+    reason: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    status: str
+    scope_json: dict[str, Any] | list[Any] | str | None = None
+    cursor_json: dict[str, Any] | list[Any] | str | None = None
+    rows_inserted_json: dict[str, Any] | list[Any] | str | None = None
+    error_count: int
+    details_json: dict[str, Any] | list[Any] | str | None = None
+
+
+class PolymarketRawStorageStatusOut(BaseModel):
+    enabled: bool
+    book_snapshot_interval_seconds: int
+    trade_backfill_enabled: bool
+    trade_backfill_on_startup: bool
+    trade_backfill_interval_seconds: int
+    trade_backfill_lookback_hours: int
+    trade_backfill_page_size: int
+    oi_poll_enabled: bool
+    oi_poll_interval_seconds: int
+    retention_days: int
+    projector_last_run_status: str | None = None
+    projector_last_run_started_at: datetime | None = None
+    projector_last_run_completed_at: datetime | None = None
+    last_projected_raw_event_id: int
+    latest_relevant_raw_event_id: int
+    projector_lag: int
+    last_successful_book_snapshot_at: datetime | None = None
+    last_successful_trade_backfill_at: datetime | None = None
+    last_successful_oi_poll_at: datetime | None = None
+    rows_inserted_24h: dict[str, int]
+    recent_capture_runs: list[PolymarketRawCaptureRunOut]
+
+
 class PolymarketWatchAssetOut(BaseModel):
     id: uuid.UUID
     outcome_id: uuid.UUID
@@ -143,6 +194,13 @@ class PaginatedWatchAssetsOut(BaseModel):
     page_size: int
 
 
+class PaginatedRawCaptureRunsOut(BaseModel):
+    capture_runs: list[PolymarketRawCaptureRunOut]
+    total: int
+    page: int
+    page_size: int
+
+
 class PolymarketIngestStatusOut(BaseModel):
     connected: bool
     connection_started_at: datetime | None = None
@@ -167,6 +225,7 @@ class PolymarketIngestStatusOut(BaseModel):
     recent_incidents: list[PolymarketIncidentOut]
     recent_resync_runs: list[PolymarketResyncRunOut]
     metadata_sync: PolymarketMetaSyncStatusOut
+    raw_storage: PolymarketRawStorageStatusOut
 
 
 class PolymarketManualResyncRequest(BaseModel):
@@ -208,6 +267,36 @@ class PolymarketManualMetaSyncOut(BaseModel):
     details_json: dict[str, Any] | None = None
 
 
+class PolymarketManualRawProjectorRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    after_raw_event_id: int | None = Field(default=None, ge=0)
+    limit: int = Field(default=1000, ge=1, le=5000)
+
+
+class PolymarketManualRawProjectorOut(BaseModel):
+    run_count: int
+    last_run: PolymarketRawCaptureRunOut | None = None
+    runs: list[PolymarketRawCaptureRunOut]
+
+
+class PolymarketManualBookSnapshotRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    asset_ids: list[str] | None = None
+
+
+class PolymarketManualTradeBackfillRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    asset_ids: list[str] | None = None
+    condition_ids: list[str] | None = None
+    lookback_hours: int | None = Field(default=None, ge=1, le=720)
+
+
+class PolymarketManualOiPollRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    asset_ids: list[str] | None = None
+    condition_ids: list[str] | None = None
+
+
 class PolymarketWatchAssetUpsertRequest(BaseModel):
     outcome_id: uuid.UUID | None = None
     asset_id: str | None = None
@@ -240,6 +329,11 @@ class PolymarketParamHistoryQueryOut(BaseModel):
     rows: list[dict[str, Any]]
     limit: int
     changed_only: bool
+
+
+class PolymarketHistoryQueryOut(BaseModel):
+    rows: list[dict[str, Any]]
+    limit: int
 
 
 async def _fetch_watch_asset_row(
@@ -275,7 +369,9 @@ async def _fetch_watch_asset_row(
 
 @router.get("/status", response_model=PolymarketIngestStatusOut)
 async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
-    return await fetch_polymarket_stream_status(db)
+    status = await fetch_polymarket_stream_status(db)
+    status["raw_storage"] = await fetch_polymarket_raw_storage_status(db)
+    return status
 
 
 @router.get("/incidents", response_model=PaginatedIncidentsOut)
@@ -516,3 +612,199 @@ async def get_polymarket_param_history(
         limit=limit,
     )
     return PolymarketParamHistoryQueryOut(rows=rows, limit=limit, changed_only=changed_only)
+
+
+@router.get("/raw/status", response_model=PolymarketRawStorageStatusOut)
+async def get_polymarket_phase3_raw_storage_status(
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_polymarket_raw_storage_status(db)
+
+
+@router.get("/raw/runs", response_model=PaginatedRawCaptureRunsOut)
+async def get_polymarket_raw_capture_runs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    runs, total = await list_polymarket_raw_capture_runs(db, page=page, page_size=page_size)
+    return PaginatedRawCaptureRunsOut(capture_runs=runs, total=total, page=page, page_size=page_size)
+
+
+@router.post("/raw/project", response_model=PolymarketManualRawProjectorOut)
+async def run_polymarket_raw_projector(
+    body: PolymarketManualRawProjectorRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    result = await trigger_manual_polymarket_raw_projector(
+        session_factory,
+        reason=body.reason,
+        after_raw_event_id=body.after_raw_event_id,
+        limit=body.limit,
+    )
+    return PolymarketManualRawProjectorOut(**result)
+
+
+@router.post("/raw/book-snapshots/trigger", response_model=PolymarketRawCaptureRunOut)
+async def run_polymarket_manual_book_snapshot(
+    body: PolymarketManualBookSnapshotRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        result = await trigger_manual_polymarket_book_snapshot(
+            session_factory,
+            reason=body.reason,
+            asset_ids=body.asset_ids,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Polymarket book snapshot failed: {exc}") from exc
+    return PolymarketRawCaptureRunOut(**result)
+
+
+@router.post("/raw/trade-backfill/trigger", response_model=PolymarketRawCaptureRunOut)
+async def run_polymarket_trade_backfill(
+    body: PolymarketManualTradeBackfillRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        result = await trigger_manual_polymarket_trade_backfill(
+            session_factory,
+            reason=body.reason,
+            asset_ids=body.asset_ids,
+            condition_ids=body.condition_ids,
+            lookback_hours=body.lookback_hours,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Polymarket trade backfill failed: {exc}") from exc
+    return PolymarketRawCaptureRunOut(**result)
+
+
+@router.post("/raw/oi-poll/trigger", response_model=PolymarketRawCaptureRunOut)
+async def run_polymarket_oi_poll(
+    body: PolymarketManualOiPollRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        result = await trigger_manual_polymarket_oi_poll(
+            session_factory,
+            reason=body.reason,
+            asset_ids=body.asset_ids,
+            condition_ids=body.condition_ids,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Polymarket OI poll failed: {exc}") from exc
+    return PolymarketRawCaptureRunOut(**result)
+
+
+@router.get("/raw/book-snapshots", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_book_snapshots(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    after_id: int | None = Query(default=None, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_book_snapshots(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        source_kind=source_kind,
+        start=start,
+        end=end,
+        limit=limit,
+        after_id=after_id,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/raw/book-deltas", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_book_deltas(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    after_id: int | None = Query(default=None, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_book_deltas(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        start=start,
+        end=end,
+        limit=limit,
+        after_id=after_id,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/raw/bbo-events", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_bbo_event_rows(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    after_id: int | None = Query(default=None, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_bbo_events(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        start=start,
+        end=end,
+        limit=limit,
+        after_id=after_id,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/raw/trade-tape", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_trade_tape_rows(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    after_id: int | None = Query(default=None, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_trade_tape(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        source_kind=source_kind,
+        start=start,
+        end=end,
+        limit=limit,
+        after_id=after_id,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/raw/oi-history", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_open_interest_rows(
+    condition_id: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    after_id: int | None = Query(default=None, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_open_interest_history(
+        db,
+        condition_id=condition_id,
+        source_kind=source_kind,
+        start=start,
+        end=end,
+        limit=limit,
+        after_id=after_id,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)

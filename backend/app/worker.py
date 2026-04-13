@@ -7,6 +7,7 @@ import signal
 from app.db import async_session
 from app.config import settings
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
+from app.ingestion.polymarket_raw_storage import PolymarketRawStorageService
 from app.ingestion.polymarket_stream import PolymarketStreamService
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
@@ -24,6 +25,7 @@ async def _run_worker() -> None:
         not settings.scheduler_enabled
         and not settings.polymarket_stream_enabled
         and not settings.polymarket_meta_sync_enabled
+        and not settings.polymarket_raw_storage_enabled
     ):
         logger.warning("Worker started with all worker features disabled; exiting")
         return
@@ -35,6 +37,8 @@ async def _run_worker() -> None:
     stream_task: asyncio.Task | None = None
     meta_sync_service: PolymarketMetaSyncService | None = None
     meta_sync_task: asyncio.Task | None = None
+    raw_storage_service: PolymarketRawStorageService | None = None
+    raw_storage_task: asyncio.Task | None = None
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -57,7 +61,11 @@ async def _run_worker() -> None:
         meta_sync_service = PolymarketMetaSyncService(async_session)
         meta_sync_task = asyncio.create_task(meta_sync_service.run(stop_event))
 
-    if not scheduler_started and stream_task is None and meta_sync_task is None:
+    if settings.polymarket_raw_storage_enabled:
+        raw_storage_service = PolymarketRawStorageService(async_session)
+        raw_storage_task = asyncio.create_task(raw_storage_service.run(stop_event))
+
+    if not scheduler_started and stream_task is None and meta_sync_task is None and raw_storage_task is None:
         logger.warning("No worker responsibilities started; exiting")
         return
 
@@ -82,6 +90,14 @@ async def _run_worker() -> None:
                 pass
         if meta_sync_service is not None:
             await meta_sync_service.close()
+        if raw_storage_task is not None:
+            raw_storage_task.cancel()
+            try:
+                await raw_storage_task
+            except asyncio.CancelledError:
+                pass
+        if raw_storage_service is not None:
+            await raw_storage_service.close()
         if scheduler_started:
             await _maybe_await(stop_scheduler())
 

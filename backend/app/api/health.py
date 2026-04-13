@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import get_db
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
+from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
 from app.models.ingestion import IngestionRun
 from app.models.market import Market
 from app.models.signal import Signal
@@ -38,6 +39,18 @@ class PolymarketPhase2Status(BaseModel):
     freshness_seconds: int | None = None
 
 
+class PolymarketPhase3Status(BaseModel):
+    enabled: bool
+    projector_last_run_status: str | None = None
+    projector_lag: int
+    last_projected_raw_event_id: int
+    latest_relevant_raw_event_id: int
+    last_successful_book_snapshot_at: datetime | None = None
+    last_successful_trade_backfill_at: datetime | None = None
+    last_successful_oi_poll_at: datetime | None = None
+    rows_inserted_24h: dict[str, int]
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -48,6 +61,7 @@ class HealthOut(BaseModel):
     alert_threshold: float
     ingestion: list[IngestionStatus]
     polymarket_phase2: PolymarketPhase2Status
+    polymarket_phase3: PolymarketPhase3Status
 
 
 @router.get("/health", response_model=HealthOut)
@@ -90,6 +104,7 @@ async def health(db: AsyncSession = Depends(get_db)):
         ))
 
     polymarket_phase2 = await fetch_polymarket_meta_sync_status(db)
+    polymarket_phase3 = await fetch_polymarket_raw_storage_status(db)
 
     return HealthOut(
         status="ok",
@@ -114,6 +129,20 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "stale_registry_counts",
                 "registry_counts",
                 "freshness_seconds",
+            )
+        }),
+        polymarket_phase3=PolymarketPhase3Status(**{
+            key: polymarket_phase3[key]
+            for key in (
+                "enabled",
+                "projector_last_run_status",
+                "projector_lag",
+                "last_projected_raw_event_id",
+                "latest_relevant_raw_event_id",
+                "last_successful_book_snapshot_at",
+                "last_successful_trade_backfill_at",
+                "last_successful_oi_poll_at",
+                "rows_inserted_24h",
             )
         }),
     )

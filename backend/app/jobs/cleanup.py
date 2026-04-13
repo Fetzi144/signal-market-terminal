@@ -6,6 +6,14 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.polymarket_raw import (
+    PolymarketBboEvent,
+    PolymarketBookDelta,
+    PolymarketBookSnapshot,
+    PolymarketOpenInterestHistory,
+    PolymarketRawCaptureRun,
+    PolymarketTradeTape,
+)
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 
@@ -51,6 +59,41 @@ async def cleanup_old_data(session: AsyncSession) -> dict[str, int]:
     else:
         counts["signal_evaluations"] = 0
         counts["signals"] = 0
+
+    raw_cutoff = now - timedelta(days=settings.polymarket_raw_retention_days)
+
+    result = await session.execute(
+        delete(PolymarketBookSnapshot).where(PolymarketBookSnapshot.observed_at_local < raw_cutoff)
+    )
+    counts["polymarket_book_snapshots"] = result.rowcount
+
+    result = await session.execute(
+        delete(PolymarketBookDelta).where(PolymarketBookDelta.ingest_ts_db < raw_cutoff)
+    )
+    counts["polymarket_book_deltas"] = result.rowcount
+
+    result = await session.execute(
+        delete(PolymarketBboEvent).where(PolymarketBboEvent.ingest_ts_db < raw_cutoff)
+    )
+    counts["polymarket_bbo_events"] = result.rowcount
+
+    result = await session.execute(
+        delete(PolymarketTradeTape).where(PolymarketTradeTape.observed_at_local < raw_cutoff)
+    )
+    counts["polymarket_trade_tape"] = result.rowcount
+
+    result = await session.execute(
+        delete(PolymarketOpenInterestHistory).where(PolymarketOpenInterestHistory.observed_at_local < raw_cutoff)
+    )
+    counts["polymarket_open_interest_history"] = result.rowcount
+
+    result = await session.execute(
+        delete(PolymarketRawCaptureRun).where(
+            PolymarketRawCaptureRun.completed_at.is_not(None),
+            PolymarketRawCaptureRun.completed_at < raw_cutoff,
+        )
+    )
+    counts["polymarket_raw_capture_runs"] = result.rowcount
 
     await session.commit()
 

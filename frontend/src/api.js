@@ -134,6 +134,34 @@ export function triggerPolymarketMetadataSync(body = { reason: "manual" }) {
   });
 }
 
+export function triggerPolymarketRawProjector(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/raw/project`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function triggerPolymarketBookSnapshot(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/raw/book-snapshots/trigger`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function triggerPolymarketTradeBackfill(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/raw/trade-backfill/trigger`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function triggerPolymarketOiPoll(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/raw/oi-poll/trigger`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function getChartData(marketId, range = "24h") {
   return fetchJson(`${API_BASE}/markets/${marketId}/chart-data?range=${range}`);
 }

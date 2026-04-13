@@ -3,8 +3,12 @@ import {
   getHealth,
   getPolymarketIngestStatus,
   getPolymarketWatchAssets,
+  triggerPolymarketBookSnapshot,
   triggerPolymarketMetadataSync,
+  triggerPolymarketOiPoll,
+  triggerPolymarketRawProjector,
   triggerPolymarketResync,
+  triggerPolymarketTradeBackfill,
   updatePolymarketWatchAsset,
 } from "../api";
 import Health from "./Health";
@@ -13,8 +17,12 @@ vi.mock("../api", () => ({
   getHealth: vi.fn(),
   getPolymarketIngestStatus: vi.fn(),
   getPolymarketWatchAssets: vi.fn(),
+  triggerPolymarketBookSnapshot: vi.fn(),
   triggerPolymarketMetadataSync: vi.fn(),
+  triggerPolymarketOiPoll: vi.fn(),
+  triggerPolymarketRawProjector: vi.fn(),
   triggerPolymarketResync: vi.fn(),
+  triggerPolymarketTradeBackfill: vi.fn(),
   updatePolymarketWatchAsset: vi.fn(),
 }));
 
@@ -78,6 +86,35 @@ const ingestPayload = {
     freshness_seconds: 120,
     recent_sync_runs: [],
   },
+  raw_storage: {
+    enabled: true,
+    book_snapshot_interval_seconds: 300,
+    trade_backfill_enabled: true,
+    trade_backfill_on_startup: true,
+    trade_backfill_interval_seconds: 900,
+    trade_backfill_lookback_hours: 24,
+    trade_backfill_page_size: 200,
+    oi_poll_enabled: true,
+    oi_poll_interval_seconds: 900,
+    retention_days: 14,
+    projector_last_run_status: "completed",
+    projector_last_run_started_at: "2026-04-13T10:03:50Z",
+    projector_last_run_completed_at: "2026-04-13T10:03:55Z",
+    last_projected_raw_event_id: 91,
+    latest_relevant_raw_event_id: 91,
+    projector_lag: 0,
+    last_successful_book_snapshot_at: "2026-04-13T10:04:10Z",
+    last_successful_trade_backfill_at: "2026-04-13T10:04:20Z",
+    last_successful_oi_poll_at: "2026-04-13T10:04:30Z",
+    rows_inserted_24h: {
+      book_snapshots: 3,
+      book_deltas: 8,
+      bbo_events: 4,
+      trade_tape: 5,
+      open_interest_history: 2,
+    },
+    recent_capture_runs: [],
+  },
   recent_incidents: [
     {
       id: "incident-1",
@@ -136,6 +173,18 @@ beforeEach(() => {
   getHealth.mockResolvedValue(healthPayload);
   getPolymarketIngestStatus.mockResolvedValue(ingestPayload);
   getPolymarketWatchAssets.mockResolvedValue(watchPayload);
+  triggerPolymarketBookSnapshot.mockResolvedValue({
+    id: "run-book",
+    started_at: "2026-04-13T10:05:00Z",
+    completed_at: "2026-04-13T10:05:05Z",
+    status: "completed",
+    reason: "manual",
+    scope_json: {},
+    cursor_json: null,
+    rows_inserted_json: { book_snapshots: 1 },
+    error_count: 0,
+    details_json: {},
+  });
   triggerPolymarketMetadataSync.mockResolvedValue({
     id: "run-3",
     started_at: "2026-04-13T10:05:00Z",
@@ -152,6 +201,35 @@ beforeEach(() => {
     error_count: 0,
     details_json: {},
   });
+  triggerPolymarketOiPoll.mockResolvedValue({
+    id: "run-oi",
+    started_at: "2026-04-13T10:05:00Z",
+    completed_at: "2026-04-13T10:05:05Z",
+    status: "completed",
+    reason: "manual",
+    scope_json: {},
+    cursor_json: null,
+    rows_inserted_json: { open_interest_history: 1 },
+    error_count: 0,
+    details_json: {},
+  });
+  triggerPolymarketRawProjector.mockResolvedValue({
+    run_count: 1,
+    last_run: {
+      id: "run-projector",
+      run_type: "raw_projector",
+      reason: "manual",
+      started_at: "2026-04-13T10:05:00Z",
+      completed_at: "2026-04-13T10:05:05Z",
+      status: "completed",
+      scope_json: null,
+      cursor_json: { last_projected_raw_event_id: 91 },
+      rows_inserted_json: { book_snapshots: 1, book_deltas: 1, bbo_events: 1, trade_tape: 1 },
+      error_count: 0,
+      details_json: {},
+    },
+    runs: [],
+  });
   triggerPolymarketResync.mockResolvedValue({
     run_id: "run-2",
     asset_ids: ["token-1"],
@@ -161,6 +239,18 @@ beforeEach(() => {
     events_persisted: 1,
     reason: "manual",
     status: "completed",
+  });
+  triggerPolymarketTradeBackfill.mockResolvedValue({
+    id: "run-trades",
+    started_at: "2026-04-13T10:05:00Z",
+    completed_at: "2026-04-13T10:05:05Z",
+    status: "completed",
+    reason: "manual",
+    scope_json: {},
+    cursor_json: null,
+    rows_inserted_json: { trade_tape: 1 },
+    error_count: 0,
+    details_json: {},
   });
   updatePolymarketWatchAsset.mockResolvedValue({
     ...watchPayload.watch_assets[0],
@@ -176,6 +266,7 @@ describe("Health", () => {
     expect(await screen.findByText("Polymarket Stream")).toBeInTheDocument();
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("Phase 2 Metadata Registry")).toBeInTheDocument();
+    expect(screen.getByText("Phase 3 Raw Storage")).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 
@@ -187,6 +278,26 @@ describe("Health", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run Metadata Sync" }));
     await waitFor(() => {
       expect(triggerPolymarketMetadataSync).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Catch Up Projector" }));
+    await waitFor(() => {
+      expect(triggerPolymarketRawProjector).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Capture Books" }));
+    await waitFor(() => {
+      expect(triggerPolymarketBookSnapshot).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Backfill Trades" }));
+    await waitFor(() => {
+      expect(triggerPolymarketTradeBackfill).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Poll OI" }));
+    await waitFor(() => {
+      expect(triggerPolymarketOiPoll).toHaveBeenCalledWith({ reason: "manual" });
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));

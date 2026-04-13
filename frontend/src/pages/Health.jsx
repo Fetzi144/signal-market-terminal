@@ -3,8 +3,12 @@ import {
   getHealth,
   getPolymarketIngestStatus,
   getPolymarketWatchAssets,
+  triggerPolymarketBookSnapshot,
   triggerPolymarketMetadataSync,
+  triggerPolymarketOiPoll,
+  triggerPolymarketRawProjector,
   triggerPolymarketResync,
+  triggerPolymarketTradeBackfill,
   updatePolymarketWatchAsset,
 } from "../api";
 import PushNotificationToggle from "../components/PushNotificationToggle";
@@ -23,6 +27,10 @@ export default function Health() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [isResyncing, setIsResyncing] = useState(false);
   const [isMetadataSyncing, setIsMetadataSyncing] = useState(false);
+  const [isProjecting, setIsProjecting] = useState(false);
+  const [isSnapshotting, setIsSnapshotting] = useState(false);
+  const [isTradeBackfilling, setIsTradeBackfilling] = useState(false);
+  const [isOiPolling, setIsOiPolling] = useState(false);
   const [updatingWatchAssetId, setUpdatingWatchAssetId] = useState(null);
   const intervalRef = useRef(null);
 
@@ -95,6 +103,58 @@ export default function Health() {
     }
   };
 
+  const handleProjectorCatchup = async () => {
+    try {
+      setIsProjecting(true);
+      setActionError(null);
+      await triggerPolymarketRawProjector({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsProjecting(false);
+    }
+  };
+
+  const handleManualBookSnapshot = async () => {
+    try {
+      setIsSnapshotting(true);
+      setActionError(null);
+      await triggerPolymarketBookSnapshot({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsSnapshotting(false);
+    }
+  };
+
+  const handleTradeBackfill = async () => {
+    try {
+      setIsTradeBackfilling(true);
+      setActionError(null);
+      await triggerPolymarketTradeBackfill({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsTradeBackfilling(false);
+    }
+  };
+
+  const handleOiPoll = async () => {
+    try {
+      setIsOiPolling(true);
+      setActionError(null);
+      await triggerPolymarketOiPoll({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsOiPolling(false);
+    }
+  };
+
   if ((!health || !streamStatus) && !error) {
     return (
       <div>
@@ -120,6 +180,7 @@ export default function Health() {
   const recentRuns = streamStatus?.recent_resync_runs || [];
   const eventsIngested = streamStatus?.events_ingested || {};
   const metadataSync = streamStatus?.metadata_sync || null;
+  const rawStorage = streamStatus?.raw_storage || null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -268,6 +329,90 @@ export default function Health() {
               label="Stale E / M / A"
               value={`${metadataSync?.stale_registry_counts?.events ?? 0} / ${metadataSync?.stale_registry_counts?.markets ?? 0} / ${metadataSync?.stale_registry_counts?.assets ?? 0}`}
             />
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 3 Raw Storage</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {rawStorage?.enabled ? "Enabled" : "Disabled"} | Projector lag {rawStorage?.projector_lag ?? 0}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard label="Projector" value={rawStorage?.projector_last_run_status || "-"} />
+            <StatCard
+              label="Raw Watermark"
+              value={`${rawStorage?.last_projected_raw_event_id ?? 0} / ${rawStorage?.latest_relevant_raw_event_id ?? 0}`}
+            />
+            <StatCard label="Book Snapshots" value={formatShortDateTime(rawStorage?.last_successful_book_snapshot_at)} />
+            <StatCard label="Trade Backfill" value={formatShortDateTime(rawStorage?.last_successful_trade_backfill_at)} />
+            <StatCard label="OI Poll" value={formatShortDateTime(rawStorage?.last_successful_oi_poll_at)} />
+            <StatCard
+              label="Rows 24h"
+              value={`${rawStorage?.rows_inserted_24h?.book_snapshots ?? 0}/${rawStorage?.rows_inserted_24h?.book_deltas ?? 0}/${rawStorage?.rows_inserted_24h?.trade_tape ?? 0}`}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={handleProjectorCatchup}
+              disabled={isProjecting || !rawStorage?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isProjecting || !rawStorage?.enabled ? 0.65 : 1,
+                cursor: isProjecting ? "wait" : (!rawStorage?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isProjecting ? "Projecting..." : "Catch Up Projector"}
+            </button>
+            <button
+              onClick={handleManualBookSnapshot}
+              disabled={isSnapshotting || !rawStorage?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isSnapshotting || !rawStorage?.enabled ? 0.65 : 1,
+                cursor: isSnapshotting ? "wait" : (!rawStorage?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isSnapshotting ? "Capturing..." : "Capture Books"}
+            </button>
+            <button
+              onClick={handleTradeBackfill}
+              disabled={isTradeBackfilling || !rawStorage?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isTradeBackfilling || !rawStorage?.enabled ? 0.65 : 1,
+                cursor: isTradeBackfilling ? "wait" : (!rawStorage?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isTradeBackfilling ? "Backfilling..." : "Backfill Trades"}
+            </button>
+            <button
+              onClick={handleOiPoll}
+              disabled={isOiPolling || !rawStorage?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isOiPolling || !rawStorage?.enabled ? 0.65 : 1,
+                cursor: isOiPolling ? "wait" : (!rawStorage?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isOiPolling ? "Polling..." : "Poll OI"}
+            </button>
           </div>
         </div>
 

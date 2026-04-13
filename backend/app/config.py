@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # Polymarket
     polymarket_api_base: str = "https://clob.polymarket.com"
     polymarket_gamma_base: str = "https://gamma-api.polymarket.com"
+    polymarket_data_api_base: str = "https://data-api.polymarket.com"
     polymarket_stream_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
     # Kalshi
@@ -42,6 +43,16 @@ class Settings(BaseSettings):
     polymarket_meta_sync_interval_seconds: int = 900
     polymarket_meta_sync_include_closed: bool = False
     polymarket_meta_sync_page_size: int = 200
+    polymarket_raw_storage_enabled: bool = False
+    polymarket_book_snapshot_interval_seconds: int = 300
+    polymarket_trade_backfill_enabled: bool = False
+    polymarket_trade_backfill_on_startup: bool = True
+    polymarket_trade_backfill_interval_seconds: int = 900
+    polymarket_trade_backfill_lookback_hours: int = 24
+    polymarket_trade_backfill_page_size: int = 200
+    polymarket_oi_poll_enabled: bool = False
+    polymarket_oi_poll_interval_seconds: int = 900
+    polymarket_raw_retention_days: int = 14
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
@@ -167,6 +178,13 @@ class Settings(BaseSettings):
             raise ValueError("Retention must be >= 1 day")
         return v
 
+    @field_validator("polymarket_raw_retention_days")
+    @classmethod
+    def polymarket_raw_retention_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("polymarket_raw_retention_days must be >= 1 day")
+        return v
+
     @field_validator(
         "price_move_threshold_pct", "volume_spike_multiplier",
         "spread_change_threshold_ratio", "liquidity_vacuum_depth_ratio_threshold",
@@ -244,6 +262,9 @@ class Settings(BaseSettings):
         "polymarket_gap_suspect_after_seconds",
         "polymarket_malformed_burst_window_seconds",
         "polymarket_meta_sync_interval_seconds",
+        "polymarket_book_snapshot_interval_seconds",
+        "polymarket_trade_backfill_interval_seconds",
+        "polymarket_oi_poll_interval_seconds",
     )
     @classmethod
     def polymarket_intervals_must_be_positive(cls, v: int) -> int:
@@ -256,6 +277,20 @@ class Settings(BaseSettings):
     def polymarket_meta_sync_page_size_bounds(cls, v: int) -> int:
         if v < 1 or v > 1000:
             raise ValueError("polymarket_meta_sync_page_size must be between 1 and 1000")
+        return v
+
+    @field_validator("polymarket_trade_backfill_lookback_hours")
+    @classmethod
+    def polymarket_trade_backfill_lookback_hours_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("polymarket_trade_backfill_lookback_hours must be >= 1")
+        return v
+
+    @field_validator("polymarket_trade_backfill_page_size")
+    @classmethod
+    def polymarket_trade_backfill_page_size_bounds(cls, v: int) -> int:
+        if v < 1 or v > 500:
+            raise ValueError("polymarket_trade_backfill_page_size must be between 1 and 500")
         return v
 
     @field_validator("polymarket_stream_reconnect_max_seconds")

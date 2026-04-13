@@ -138,3 +138,79 @@ polymarket_meta_registry_stale_rows = Gauge(
     "Current stale Polymarket registry row count",
     ["kind"],
 )
+
+# Polymarket raw storage / Phase 3
+polymarket_raw_projector_runs = Counter(
+    "smt_polymarket_raw_projector_runs_total",
+    "Total Polymarket raw projector runs",
+    ["reason", "status"],
+)
+
+polymarket_raw_projector_failures = Counter(
+    "smt_polymarket_raw_projector_failures_total",
+    "Total failed Polymarket raw projector runs",
+)
+
+polymarket_raw_projected_rows = Counter(
+    "smt_polymarket_raw_projected_rows_total",
+    "Total projected Polymarket raw rows inserted",
+    ["table_name", "source_kind"],
+)
+
+polymarket_raw_projector_last_success_timestamp = Gauge(
+    "smt_polymarket_raw_projector_last_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket raw projector run",
+)
+
+polymarket_raw_projector_lag = Gauge(
+    "smt_polymarket_raw_projector_lag",
+    "Lag in raw Polymarket event ids between latest relevant raw event and last successful projector watermark",
+)
+
+polymarket_book_snapshot_runs = Counter(
+    "smt_polymarket_book_snapshot_runs_total",
+    "Total Polymarket book snapshot runs",
+    ["reason", "status"],
+)
+
+polymarket_book_snapshot_failures = Counter(
+    "smt_polymarket_book_snapshot_failures_total",
+    "Total failed Polymarket book snapshot runs",
+)
+
+polymarket_book_snapshot_last_success_timestamp = Gauge(
+    "smt_polymarket_book_snapshot_last_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket book snapshot run",
+)
+
+polymarket_trade_backfill_runs = Counter(
+    "smt_polymarket_trade_backfill_runs_total",
+    "Total Polymarket trade backfill runs",
+    ["reason", "status"],
+)
+
+polymarket_trade_backfill_failures = Counter(
+    "smt_polymarket_trade_backfill_failures_total",
+    "Total failed Polymarket trade backfill runs",
+)
+
+polymarket_trade_backfill_last_success_timestamp = Gauge(
+    "smt_polymarket_trade_backfill_last_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket trade backfill run",
+)
+
+polymarket_oi_poll_runs = Counter(
+    "smt_polymarket_oi_poll_runs_total",
+    "Total Polymarket open-interest polling runs",
+    ["reason", "status"],
+)
+
+polymarket_oi_poll_failures = Counter(
+    "smt_polymarket_oi_poll_failures_total",
+    "Total failed Polymarket open-interest polling runs",
+)
+
+polymarket_oi_poll_last_success_timestamp = Gauge(
+    "smt_polymarket_oi_poll_last_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket open-interest polling run",
+)
