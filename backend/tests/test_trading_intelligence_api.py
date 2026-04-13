@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.config import settings
 from app.jobs.scheduler import _resolve_paper_trades, _run_paper_trading
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
@@ -346,6 +347,33 @@ async def test_scheduler_only_auto_trades_default_strategy_signals(client, sessi
 
 
 @pytest.mark.asyncio
+async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
+    market = make_market(session, question="Skip reason market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        estimated_probability=Decimal("0.5100"),
+        probability_adjustment=Decimal("0.0100"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.010000"),
+        details={"direction": "up", "market_question": "Skip reason market", "outcome_name": "Yes"},
+    )
+    await session.commit()
+
+    await _run_paper_trading(session, [signal])
+    await session.refresh(signal)
+
+    metadata = signal.details["default_strategy"]
+    assert metadata["decision"] == "skipped"
+    assert metadata["reason_code"] == "ev_below_threshold"
+    assert metadata["reason_label"] == "EV below threshold"
+    assert metadata["trade_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(client, session):
     market = make_market(session, question="Scoped strategy market")
     outcome = make_outcome(session, market.id, name="Yes")
@@ -423,6 +451,81 @@ async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(clie
     curve = resp.json()
     assert len(curve) == 1
     assert curve[0]["pnl"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_respects_launch_boundary_and_skip_reasons(client, session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    launch_at = now - timedelta(hours=12)
+    monkeypatch.setattr(settings, "default_strategy_start_at", launch_at)
+
+    market = make_market(session, question="Launch boundary market")
+    outcome = make_outcome(session, market.id, name="Yes")
+
+    pre_launch_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(days=2),
+        dedupe_bucket=(now - timedelta(days=2)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.1500"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.150000"),
+        details={"direction": "up", "market_question": "Launch boundary market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        pre_launch_signal.id,
+        outcome.id,
+        market.id,
+        status="resolved",
+        pnl=Decimal("90.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now - timedelta(days=1),
+        opened_at=now - timedelta(days=2),
+        details={"market_question": "Launch boundary market", "ev_per_share": "0.150000"},
+    )
+
+    in_window_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(hours=2),
+        dedupe_bucket=(now - timedelta(hours=2)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.5100"),
+        probability_adjustment=Decimal("0.0100"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.010000"),
+        details={
+            "direction": "up",
+            "market_question": "Launch boundary market",
+            "outcome_name": "Yes",
+            "default_strategy": {
+                "decision": "skipped",
+                "reason_code": "ev_below_threshold",
+                "reason_label": "EV below threshold",
+            },
+        },
+    )
+    await session.commit()
+
+    resp = await client.get("/api/v1/paper-trading/strategy-health")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["observation"]["started_at"] == launch_at.isoformat()
+    assert data["observation"]["baseline_start_at"] == launch_at.isoformat()
+    assert data["observation"]["status"] == "live_waiting_for_trades"
+    assert data["trade_funnel"]["candidate_signals"] == 1
+    assert data["trade_funnel"]["pre_launch_candidate_signals"] == 1
+    assert data["trade_funnel"]["traded_signals"] == 0
+    assert data["trade_funnel"]["excluded_pre_launch_trades"] == 1
+    assert data["skip_reasons"][0]["reason_code"] == "ev_below_threshold"
+    assert data["skip_reasons"][0]["count"] == 1
+    assert data["headline"]["resolved_trades"] == 0
 
 
 @pytest.mark.asyncio

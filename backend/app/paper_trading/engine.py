@@ -4,6 +4,7 @@ This is the core simulation engine that tracks hypothetical P&L
 without real money. Every EV-positive signal triggers a paper trade
 using Kelly-recommended sizing, subject to risk management checks.
 """
+from dataclasses import dataclass
 import logging
 import math
 import uuid
@@ -22,6 +23,33 @@ from app.signals.risk import check_exposure
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
+
+
+@dataclass
+class TradeOpenResult:
+    trade: PaperTrade | None
+    decision: str
+    reason_code: str
+    reason_label: str
+    detail: str | None = None
+    diagnostics: dict | None = None
+
+
+def _risk_reason_code(reason: str) -> str:
+    if reason.startswith("Total exposure limit reached"):
+        return "risk_total_exposure"
+    if reason.startswith("Cluster exposure limit reached"):
+        return "risk_cluster_exposure"
+    return "risk_rejected"
+
+
+def _risk_reason_label(reason_code: str) -> str:
+    labels = {
+        "risk_total_exposure": "Total exposure limit reached",
+        "risk_cluster_exposure": "Cluster exposure limit reached",
+        "risk_rejected": "Risk rejected",
+    }
+    return labels.get(reason_code, reason_code.replace("_", " "))
 
 
 async def get_portfolio_state(session: AsyncSession) -> dict:
@@ -63,28 +91,86 @@ async def get_portfolio_state(session: AsyncSession) -> dict:
     }
 
 
-async def open_trade(
+async def attempt_open_trade(
     session: AsyncSession,
     signal_id: uuid.UUID,
     outcome_id: uuid.UUID | None,
     market_id: uuid.UUID,
-    estimated_probability: Decimal,
-    market_price: Decimal,
+    estimated_probability: Decimal | None,
+    market_price: Decimal | None,
     market_question: str = "",
-) -> PaperTrade | None:
+) -> TradeOpenResult:
     """Open a paper trade for an EV-positive signal.
 
-    Runs Kelly sizing and risk checks. Returns the created PaperTrade or None.
+    Runs Kelly sizing and risk checks.
+
+    Returns a structured result so callers can persist skip reasons.
     """
-    if not settings.paper_trading_enabled or outcome_id is None:
-        return None
+    if not settings.paper_trading_enabled:
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code="paper_trading_disabled",
+            reason_label="Paper trading disabled",
+        )
+
+    if outcome_id is None:
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code="missing_outcome_id",
+            reason_label="Missing outcome",
+        )
+
+    if estimated_probability is None:
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code="missing_probability",
+            reason_label="Missing probability",
+        )
+
+    if market_price is None:
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code="missing_market_price",
+            reason_label="Missing market price",
+        )
+
+    existing = await session.execute(
+        select(PaperTrade.id).where(
+            PaperTrade.signal_id == signal_id,
+            PaperTrade.status == "open",
+        )
+    )
+    existing_trade_id = existing.scalar_one_or_none()
+    if existing_trade_id is not None:
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code="already_open",
+            reason_label="Already open",
+            detail=f"Signal already has an open paper trade ({existing_trade_id})",
+        )
 
     bankroll = Decimal(str(settings.default_bankroll))
 
     # Compute EV
     ev_data = compute_ev_full(estimated_probability, market_price)
     if ev_data["ev_per_share"] < Decimal(str(settings.min_ev_threshold)):
-        return None
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code="ev_below_threshold",
+            reason_label="EV below threshold",
+            detail=f"Directional EV {ev_data['ev_per_share']} below threshold {settings.min_ev_threshold}",
+            diagnostics={
+                "ev_per_share": str(ev_data["ev_per_share"]),
+                "edge_pct": str(ev_data["edge_pct"]),
+                "direction": ev_data["direction"],
+            },
+        )
 
     # Kelly sizing
     sizing = kelly_size(
@@ -96,7 +182,19 @@ async def open_trade(
     )
 
     if sizing["recommended_size_usd"] <= ZERO:
-        return None
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code="size_zero",
+            reason_label="Recommended size is zero",
+            diagnostics={
+                "direction": sizing["direction"],
+                "kelly_full": str(sizing["kelly_full"]),
+                "kelly_used": str(sizing["kelly_used"]),
+                "recommended_size_usd": str(sizing["recommended_size_usd"]),
+                "entry_price": str(sizing["entry_price"]),
+            },
+        )
 
     # Risk check
     portfolio = await get_portfolio_state(session)
@@ -134,7 +232,21 @@ async def open_trade(
             "Paper trade rejected by risk check: %s (signal %s)",
             risk_result["reason"], signal_id,
         )
-        return None
+        reason_code = _risk_reason_code(risk_result["reason"])
+        return TradeOpenResult(
+            trade=None,
+            decision="skipped",
+            reason_code=reason_code,
+            reason_label=_risk_reason_label(reason_code),
+            detail=risk_result["reason"],
+            diagnostics={
+                "direction": sizing["direction"],
+                "recommended_size_usd": str(sizing["recommended_size_usd"]),
+                "approved_size_usd": str(risk_result["approved_size_usd"]),
+                "risk_reason": risk_result["reason"],
+                "drawdown_active": risk_result["drawdown_active"],
+            },
+        )
 
     approved_size = risk_result["approved_size_usd"]
     entry_price = sizing["entry_price"]
@@ -169,7 +281,44 @@ async def open_trade(
         "Paper trade opened: %s %s @ $%s, size $%s (%s shares), signal=%s",
         trade.direction, outcome_id, entry_price, approved_size, shares, signal_id,
     )
-    return trade
+    return TradeOpenResult(
+        trade=trade,
+        decision="opened",
+        reason_code="opened",
+        reason_label="Trade opened",
+        diagnostics={
+            "direction": trade.direction,
+            "ev_per_share": str(ev_data["ev_per_share"]),
+            "edge_pct": str(ev_data["edge_pct"]),
+            "kelly_full": str(sizing["kelly_full"]),
+            "kelly_used": str(sizing["kelly_used"]),
+            "recommended_size_usd": str(sizing["recommended_size_usd"]),
+            "approved_size_usd": str(approved_size),
+            "drawdown_active": risk_result["drawdown_active"],
+        },
+    )
+
+
+async def open_trade(
+    session: AsyncSession,
+    signal_id: uuid.UUID,
+    outcome_id: uuid.UUID | None,
+    market_id: uuid.UUID,
+    estimated_probability: Decimal | None,
+    market_price: Decimal | None,
+    market_question: str = "",
+) -> PaperTrade | None:
+    """Backward-compatible wrapper that returns only the created trade."""
+    result = await attempt_open_trade(
+        session=session,
+        signal_id=signal_id,
+        outcome_id=outcome_id,
+        market_id=market_id,
+        estimated_probability=estimated_probability,
+        market_price=market_price,
+        market_question=market_question,
+    )
+    return result.trade
 
 
 async def resolve_trades(

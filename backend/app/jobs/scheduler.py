@@ -1,4 +1,5 @@
 """Scheduled jobs: market discovery, snapshot capture, signal detection, evaluation."""
+from datetime import datetime, timezone
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -123,34 +124,68 @@ async def _run_confluence(session, candidates):
 
 async def _run_paper_trading(session, signals):
     """Auto-open paper trades for EV-positive signals."""
-    from app.default_strategy import matches_default_strategy
-    from app.paper_trading.engine import open_trade
-
-    if not settings.paper_trading_enabled:
-        return
+    from app.default_strategy import evaluate_default_strategy_signal, get_default_strategy_start_at
+    from app.paper_trading.engine import attempt_open_trade
 
     count = 0
+    candidate_count = 0
+    skip_counts: dict[str, int] = {}
 
     for signal in signals:
-        if not matches_default_strategy(signal):
+        evaluation = evaluate_default_strategy_signal(signal)
+        if not evaluation.signal_type_match or not evaluation.in_window:
             continue
 
+        candidate_count += 1
         market_question = (signal.details or {}).get("market_question", "")
-        trade = await open_trade(
-            session=session,
-            signal_id=signal.id,
-            outcome_id=signal.outcome_id,
-            market_id=signal.market_id,
-            estimated_probability=signal.estimated_probability,
-            market_price=signal.price_at_fire,
-            market_question=market_question,
-        )
-        if trade is not None:
-            count += 1
+        attempted_at = datetime.now(timezone.utc).isoformat()
 
-    if count > 0:
+        if evaluation.eligible:
+            result = await attempt_open_trade(
+                session=session,
+                signal_id=signal.id,
+                outcome_id=signal.outcome_id,
+                market_id=signal.market_id,
+                estimated_probability=signal.estimated_probability,
+                market_price=signal.price_at_fire,
+                market_question=market_question,
+            )
+        else:
+            result = None
+
+        details = dict(signal.details or {})
+        strategy_details = dict(details.get("default_strategy") or {})
+        strategy_details.update({
+            "strategy_name": settings.default_strategy_name,
+            "baseline_start_at": get_default_strategy_start_at().isoformat() if get_default_strategy_start_at() else None,
+            "evaluated_at": attempted_at,
+            "eligible": evaluation.eligible,
+            "decision": (result.decision if result is not None else "skipped"),
+            "reason_code": (result.reason_code if result is not None else evaluation.reason_code),
+            "reason_label": (result.reason_label if result is not None else evaluation.reason_label),
+            "detail": (result.detail if result is not None else None),
+            "trade_id": str(result.trade.id) if result is not None and result.trade is not None else None,
+        })
+        if result is not None and result.diagnostics:
+            strategy_details["diagnostics"] = result.diagnostics
+        details["default_strategy"] = strategy_details
+        signal.details = details
+
+        if result is not None and result.trade is not None:
+            count += 1
+        else:
+            reason_code = strategy_details.get("reason_code") or "unknown"
+            skip_counts[reason_code] = skip_counts.get(reason_code, 0) + 1
+
+    if candidate_count > 0:
         await session.commit()
-        logger.info("Paper trading: opened %d trades from %d signals", count, len(signals))
+        logger.info(
+            "Paper trading: opened %d trades from %d in-window default-strategy signal(s)",
+            count,
+            candidate_count,
+        )
+        if skip_counts:
+            logger.info("Paper trading skips by reason: %s", skip_counts)
 
 
 async def _broadcast_new_signals(session, signals):

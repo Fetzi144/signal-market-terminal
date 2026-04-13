@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
@@ -79,6 +81,7 @@ class Settings(BaseSettings):
     paper_trading_enabled: bool = True
     default_strategy_name: str = "prove_the_edge_default"
     default_strategy_signal_type: str = "confluence"
+    default_strategy_start_at: datetime | None = datetime(2026, 4, 13, tzinfo=timezone.utc)
     default_strategy_min_observation_days: int = 14
     default_strategy_preferred_observation_days: int = 30
     strategy_review_lookback_days: int = 30

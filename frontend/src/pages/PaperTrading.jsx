@@ -71,6 +71,12 @@ function verdictColor(verdict) {
 
 function observationMeta(status) {
   switch (status) {
+    case "live_waiting_for_trades":
+      return {
+        label: "Live, waiting for trades",
+        color: "var(--yellow)",
+        text: "The frozen baseline has launched, but no in-window paper trades have opened yet. Use the skip-reason panel to find the bottleneck.",
+      };
     case "preferred_window_reached":
       return {
         label: "Preferred window reached",
@@ -93,7 +99,7 @@ function observationMeta(status) {
       return {
         label: "Not started",
         color: "var(--text-dim)",
-        text: "No default-strategy track record yet. The first qualifying trade will start the clock.",
+        text: "The baseline launch boundary is not active yet, so the prove-the-edge window has not opened.",
       };
   }
 }
@@ -124,6 +130,7 @@ function buildStrategyBrief(health) {
   const headline = health?.headline || {};
   const benchmark = health?.benchmark || {};
   const funnel = health?.trade_funnel || {};
+  const topSkipReason = health?.skip_reasons?.[0];
   const detectorRows = health?.detector_review || [];
   const cutCount = detectorRows.filter((row) => row.verdict === "cut").length;
   const watchCount = detectorRows.filter((row) => row.verdict === "watch").length;
@@ -138,8 +145,13 @@ function buildStrategyBrief(health) {
 
   if (observation.status === "not_started") {
     badge = "Not started";
-    title = "No strategy track record yet";
-    action = "Wait for the first qualifying confluence trade before making any judgment.";
+    title = "The baseline window has not opened yet";
+    action = "Keep the contract unchanged and wait for the launch boundary to begin the prove-the-edge run.";
+  } else if (observation.status === "live_waiting_for_trades") {
+    tone = "watch";
+    badge = "Waiting for first trade";
+    title = "The baseline is live, but nothing is entering the book";
+    action = "Treat skip reasons as the top priority until the first in-window baseline trade opens.";
   } else if (
     Number(headline.resolved_trades || 0) > 0
     && Number(headline.cumulative_pnl || 0) > 0
@@ -171,9 +183,19 @@ function buildStrategyBrief(health) {
       : Number(funnel.qualified_signals || 0) > 0
         ? `${fmtWhole(funnel.qualified_signals)} qualified default-strategy signals exist, but none have turned into measured baseline trades yet.`
         : "No default-strategy trades exist yet, so the edge verdict is still provisional.",
+    observation?.baseline_start_at
+      ? `The frozen baseline window started at ${fmtDate(observation.baseline_start_at)}.`
+      : "No explicit baseline start is configured yet.",
     `${fmtWhole(headline.open_trades || 0)} live baseline trade(s) currently use ${fmtCurrency(openExposure)} of ${fmtCurrency(bankroll)} bankroll.`,
-    Number(funnel.excluded_legacy_trades || 0) > 0
-      ? `${fmtWhole(funnel.excluded_legacy_trades)} legacy paper trade(s) are excluded from the frozen baseline read.`
+    topSkipReason
+      ? `${fmtWhole(topSkipReason.count)} in-window signal(s) are currently blocked by "${topSkipReason.reason_label}".`
+      : Number(funnel.excluded_legacy_trades || 0) > 0
+        ? `${fmtWhole(funnel.excluded_legacy_trades)} legacy paper trade(s) are excluded from the frozen baseline read.`
+        : cutCount > 0
+          ? `${cutCount} detector${cutCount === 1 ? "" : "s"} ${cutCount === 1 ? "is" : "are"} already marked cut in the detector review loop.`
+          : `${watchCount} detector${watchCount === 1 ? "" : "s"} ${watchCount === 1 ? "is" : "are"} still on watch and none are cut yet.`,
+    Number(funnel.excluded_pre_launch_trades || 0) > 0
+      ? `${fmtWhole(funnel.excluded_pre_launch_trades)} pre-launch trade(s) sit outside the prove-the-edge window.`
       : cutCount > 0
         ? `${cutCount} detector${cutCount === 1 ? "" : "s"} ${cutCount === 1 ? "is" : "are"} already marked cut in the detector review loop.`
         : `${watchCount} detector${watchCount === 1 ? "" : "s"} ${watchCount === 1 ? "is" : "are"} still on watch and none are cut yet.`,
@@ -185,6 +207,9 @@ function buildStrategyBrief(health) {
   }
   if (Number(funnel.qualified_not_traded || 0) > 0) {
     priorities.push(`Review why ${fmtWhole(funnel.qualified_not_traded)} qualified signal(s) did not turn into baseline trades.`);
+  }
+  if (topSkipReason) {
+    priorities.push(`The biggest trade blocker right now is "${topSkipReason.reason_label}" across ${fmtWhole(topSkipReason.count)} in-window signal(s).`);
   }
   if (Number(headline.missing_resolutions || 0) > 0) {
     priorities.push(`Track the ${fmtWhole(headline.missing_resolutions)} traded signal(s) that are still waiting to resolve.`);
@@ -342,6 +367,16 @@ function ObservationBanner({ observation }) {
         </div>
       </div>
       <div style={{ fontSize: 13, color: "var(--text)" }}>{meta.text}</div>
+      {observation?.baseline_start_at && (
+        <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
+          Baseline window started {fmtDate(observation.baseline_start_at)}.
+        </div>
+      )}
+      {observation?.status === "live_waiting_for_trades" && (
+        <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
+          No baseline trade has opened yet. The observation clock is running, but evidence is still blocked at the funnel.
+        </div>
+      )}
       {observation?.status === "collecting_data" && (
         <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
           {observation.days_until_minimum_window} day(s) until the minimum review window.
@@ -448,7 +483,11 @@ function OperatorBrief({ health }) {
             <div style={{ width: `${progress}%`, height: "100%", borderRadius: 999, background: toneColor }} />
           </div>
           <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>
-            {observation?.status === "collecting_data"
+            {observation?.status === "not_started"
+              ? "The baseline start boundary is still pending."
+              : observation?.status === "live_waiting_for_trades"
+              ? "The baseline window is open, but the first trade still has not landed."
+              : observation?.status === "collecting_data"
               ? `${observation.days_until_minimum_window} day(s) remain before the first hard review.`
               : "The minimum review gate has been cleared."}
           </div>
@@ -517,6 +556,12 @@ function OperatorBrief({ health }) {
                 {fmtWhole(funnel?.excluded_legacy_trades)}
               </span>
             </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
+              <span style={{ fontSize: 12, color: "var(--text-dim)" }}>First trade</span>
+              <span style={{ fontSize: 13, fontWeight: 700, color: observation?.first_trade_at ? "var(--text)" : "var(--yellow)" }}>
+                {observation?.first_trade_at ? fmtDate(observation.first_trade_at) : "Waiting"}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -530,6 +575,7 @@ function StrategyContract({ health }) {
 
   const rules = [
     `Signal path: ${strategy.signal_type}`,
+    `Baseline start: ${strategy.baseline_start_at ? fmtDate(strategy.baseline_start_at) : "Unset"}`,
     `EV filter: ${fmtCents(strategy.ev_threshold)}`,
     `Kelly: ${(strategy.kelly_multiplier * 100).toFixed(0)}%`,
     `Bankroll: ${fmtCurrency(strategy.paper_bankroll_usd)}`,
@@ -590,7 +636,7 @@ function StrategyFunnel({ health }) {
     {
       label: "Candidate Path",
       value: funnel.candidate_signals,
-      sub: "Signals on the frozen confluence path, regardless of EV qualification.",
+      sub: "Signals on the frozen confluence path since the baseline start boundary.",
     },
     {
       label: "Qualified",
@@ -635,6 +681,53 @@ function StrategyFunnel({ health }) {
         sub="Older paper trades that stay outside the frozen default-strategy sample."
         color={funnel.excluded_legacy_trades > 0 ? "var(--yellow)" : "var(--text)"}
       />
+      <FunnelCard
+        label="Pre-Launch Signals"
+        value={funnel.pre_launch_candidate_signals}
+        sub="Historical confluence signals that were intentionally left out of the prove-the-edge window."
+        color={funnel.pre_launch_candidate_signals > 0 ? "var(--text-dim)" : "var(--green)"}
+      />
+    </div>
+  );
+}
+
+function SkipReasonsPanel({ rows }) {
+  if (!rows || rows.length === 0) {
+    return <EmptyState text="No in-window skip reasons yet. Once the scheduler evaluates baseline signals, reasons will appear here." />;
+  }
+
+  const total = rows.reduce((sum, row) => sum + Number(row.count || 0), 0);
+
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: "var(--bg)" }}>
+            <th style={{ textAlign: "left", padding: "10px 16px", color: "var(--text-dim)", fontWeight: 500 }}>Reason</th>
+            <th style={{ textAlign: "right", padding: "10px 16px", color: "var(--text-dim)", fontWeight: 500 }}>Count</th>
+            <th style={{ textAlign: "right", padding: "10px 16px", color: "var(--text-dim)", fontWeight: 500 }}>Share</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const share = total > 0 ? Number(row.count || 0) / total : 0;
+            return (
+              <tr key={row.reason_code} style={{ borderTop: "1px solid var(--border)" }}>
+                <td style={{ padding: "10px 16px" }}>{row.reason_label}</td>
+                <td style={{ textAlign: "right", padding: "10px 16px", fontFamily: "var(--mono)", fontWeight: 700 }}>
+                  {fmtWhole(row.count)}
+                </td>
+                <td style={{ textAlign: "right", padding: "10px 16px", fontFamily: "var(--mono)", color: "var(--text-dim)" }}>
+                  {fmtPercent(share)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", fontSize: 12, color: "var(--text-dim)" }}>
+        These counts cover in-window default-strategy path signals that did not become a paper trade.
+      </div>
     </div>
   );
 }
@@ -1005,7 +1098,7 @@ export default function PaperTrading() {
       {
         label: "Qualified Signals",
         value: fmtWhole(funnel?.qualified_signals),
-        sub: `${fmtWhole(funnel?.traded_signals)} traded from the frozen baseline`,
+        sub: `${fmtWhole(funnel?.traded_signals)} traded from the frozen baseline since launch`,
       },
       {
         label: "Avg CLV",
@@ -1094,6 +1187,10 @@ export default function PaperTrading() {
 
       <Section title="Strategy Funnel">
         {strategyHealth ? <StrategyFunnel health={strategyHealth} /> : <div className="skeleton" style={{ height: 180, borderRadius: 8 }} />}
+      </Section>
+
+      <Section title="Why Trades Were Skipped">
+        {strategyHealth ? <SkipReasonsPanel rows={strategyHealth.skip_reasons} /> : <div className="skeleton" style={{ height: 180, borderRadius: 8 }} />}
       </Section>
 
       <Section title="Detector Verdicts">

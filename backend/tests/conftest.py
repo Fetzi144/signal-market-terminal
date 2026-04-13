@@ -44,6 +44,13 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def reset_default_strategy_window(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "default_strategy_start_at", None)
+
+
 @pytest_asyncio.fixture
 async def engine():
     _patch_metadata_for_sqlite()

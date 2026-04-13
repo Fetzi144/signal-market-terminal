@@ -7,7 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.default_strategy import get_default_strategy_contract, matches_default_strategy
+from app.default_strategy import (
+    default_strategy_skip_label,
+    evaluate_default_strategy_signal,
+    get_default_strategy_contract,
+    get_default_strategy_start_at,
+)
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
 from app.signals.probability import brier_score
@@ -68,7 +73,11 @@ def _signal_sort_key(signal: Signal) -> datetime:
     return _ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _observation_status(days_tracked: float | None) -> str:
+def _observation_status(days_tracked: float | None, *, launched: bool, traded_signals: int) -> str:
+    if not launched:
+        return "not_started"
+    if traded_signals == 0:
+        return "live_waiting_for_trades"
     if days_tracked is None:
         return "not_started"
     if days_tracked < settings.default_strategy_min_observation_days:
@@ -222,17 +231,38 @@ def _dedupe_signals_by_trade_rows(
     return deduped
 
 
+def _default_strategy_metadata(signal: Signal) -> dict:
+    details = signal.details or {}
+    metadata = details.get("default_strategy")
+    return metadata if isinstance(metadata, dict) else {}
+
+
 async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     required_signal_type = settings.default_strategy_signal_type
+    launch_at = get_default_strategy_start_at()
 
     signal_query = select(Signal)
     if required_signal_type:
         signal_query = signal_query.where(Signal.signal_type == required_signal_type)
     signal_result = await session.execute(signal_query)
-    candidate_signals = signal_result.scalars().all()
-    candidate_signals.sort(key=_signal_sort_key)
+    all_candidate_signals = signal_result.scalars().all()
+    all_candidate_signals.sort(key=_signal_sort_key)
 
-    qualified_signals = [signal for signal in candidate_signals if matches_default_strategy(signal)]
+    if launch_at is not None:
+        pre_launch_candidate_signals = [
+            signal for signal in all_candidate_signals
+            if (_ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)) < launch_at
+        ]
+        candidate_signals = [
+            signal for signal in all_candidate_signals
+            if (_ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)) >= launch_at
+        ]
+    else:
+        pre_launch_candidate_signals = []
+        candidate_signals = all_candidate_signals
+
+    candidate_evaluations = [(signal, evaluate_default_strategy_signal(signal)) for signal in candidate_signals]
+    qualified_signals = [signal for signal, evaluation in candidate_evaluations if evaluation.eligible]
     qualified_signal_ids = {signal.id for signal in qualified_signals}
 
     trade_result = await session.execute(
@@ -260,13 +290,43 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     resolved_trade_signals = _dedupe_signals_by_trade_rows(resolved_trade_rows, resolved_only=True)
     resolved_trade_signal_ids = {signal.id for signal in resolved_trade_signals}
 
-    started_at = None
+    first_trade_at = None
     if strategy_trade_rows:
-        started_at = min(_ensure_utc(trade.opened_at) for trade, _signal in strategy_trade_rows)
+        first_trade_at = min(_ensure_utc(trade.opened_at) for trade, _signal in strategy_trade_rows)
+
+    started_at = launch_at or first_trade_at
 
     portfolio = _portfolio_from_trade_rows(strategy_trade_rows)
     metrics = _metrics_from_trade_rows(strategy_trade_rows)
     pnl_curve = _pnl_curve_from_trade_rows(strategy_trade_rows)
+
+    skip_reason_counts: dict[str, dict] = {}
+    for signal, evaluation in candidate_evaluations:
+        if signal.id in traded_signal_ids:
+            continue
+
+        metadata = _default_strategy_metadata(signal)
+        reason_code = metadata.get("reason_code") or evaluation.reason_code or "unclassified"
+        reason_label = metadata.get("reason_label") or evaluation.reason_label or default_strategy_skip_label(reason_code) or "Unclassified"
+        bucket = skip_reason_counts.setdefault(
+            reason_code,
+            {
+                "reason_code": reason_code,
+                "reason_label": reason_label,
+                "count": 0,
+            },
+        )
+        bucket["count"] += 1
+
+    excluded_pre_launch_trades = 0
+    if launch_at is not None:
+        excluded_pre_launch_trades = sum(
+            1
+            for trade, signal in all_trade_rows
+            if required_signal_type
+            and signal.signal_type == required_signal_type
+            and ((_ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)) < launch_at)
+        )
 
     funnel = {
         "candidate_signals": len(candidate_signals),
@@ -277,11 +337,14 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         "resolved_trades": metrics["total_trades"],
         "resolved_signals": len(resolved_trade_signal_ids),
         "unresolved_traded_signals": max(0, len(traded_signal_ids) - len(resolved_trade_signal_ids)),
+        "pre_launch_candidate_signals": len(pre_launch_candidate_signals),
+        "excluded_pre_launch_trades": excluded_pre_launch_trades,
         "excluded_legacy_trades": max(0, len(all_trade_rows) - len(strategy_trade_rows)),
     }
 
     return {
         "candidate_signals": candidate_signals,
+        "pre_launch_candidate_signals": pre_launch_candidate_signals,
         "qualified_signals": qualified_signals,
         "strategy_trade_rows": strategy_trade_rows,
         "resolved_trade_rows": resolved_trade_rows,
@@ -291,6 +354,9 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         "pnl_curve": pnl_curve,
         "funnel": funnel,
         "started_at": started_at,
+        "launch_at": launch_at,
+        "first_trade_at": first_trade_at,
+        "skip_reasons": sorted(skip_reason_counts.values(), key=lambda row: (-row["count"], row["reason_label"])),
     }
 
 
@@ -348,8 +414,12 @@ async def get_strategy_health(session: AsyncSession) -> dict:
     metrics = scope["metrics"]
     now = datetime.now(timezone.utc)
     review_cutoff = now - timedelta(days=settings.strategy_review_lookback_days)
+    launch_at = scope["launch_at"]
+    if launch_at is not None and launch_at > review_cutoff:
+        review_cutoff = launch_at
 
     started_at = scope["started_at"]
+    first_trade_at = scope["first_trade_at"]
     if started_at is not None:
         days_tracked = round((now - started_at).total_seconds() / 86400, 1)
     else:
@@ -397,6 +467,10 @@ async def get_strategy_health(session: AsyncSession) -> dict:
     trade_counts_by_type: dict[str, int] = {}
     trade_pnl_by_type: dict[str, Decimal] = {}
     for trade, signal in all_trade_rows:
+        if launch_at is not None:
+            fired_at = _ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)
+            if fired_at < launch_at:
+                continue
         trade_counts_by_type[signal.signal_type] = trade_counts_by_type.get(signal.signal_type, 0) + 1
         if trade.pnl is not None:
             trade_pnl_by_type[signal.signal_type] = trade_pnl_by_type.get(signal.signal_type, ZERO) + trade.pnl
@@ -463,16 +537,22 @@ async def get_strategy_health(session: AsyncSession) -> dict:
 
     detector_review.sort(key=lambda row: (row["total_profit_loss"] or 0, row["avg_clv"] or 0), reverse=True)
 
-    review_status = _observation_status(days_tracked)
+    review_status = _observation_status(
+        days_tracked,
+        launched=started_at is not None,
+        traded_signals=scope["funnel"]["traded_signals"],
+    )
     minimum_days = settings.default_strategy_min_observation_days
     remaining_days = 0
     if days_tracked is not None and days_tracked < minimum_days:
-        remaining_days = max(0, minimum_days - int(days_tracked))
+        remaining_days = max(0, math.ceil(minimum_days - days_tracked))
 
     return {
         "strategy": contract,
         "observation": {
             "started_at": started_at.isoformat() if started_at else None,
+            "baseline_start_at": launch_at.isoformat() if launch_at else None,
+            "first_trade_at": first_trade_at.isoformat() if first_trade_at else None,
             "days_tracked": days_tracked,
             "status": review_status,
             "minimum_days": settings.default_strategy_min_observation_days,
@@ -480,6 +560,7 @@ async def get_strategy_health(session: AsyncSession) -> dict:
             "days_until_minimum_window": remaining_days,
         },
         "trade_funnel": scope["funnel"],
+        "skip_reasons": scope["skip_reasons"],
         "headline": {
             "open_exposure": float(portfolio["open_exposure"]),
             "open_trades": len(portfolio["open_trades"]),
@@ -512,6 +593,7 @@ async def get_strategy_health(session: AsyncSession) -> dict:
             "Did the default strategy make money this week?",
             "Was average CLV positive for the traded path?",
             "How many qualified default-strategy signals actually turned into trades?",
+            "Which skip reasons are dominating the funnel right now?",
             "Which detectors earned a keep/watch/cut verdict?",
             "Did confluence beat the legacy rank-threshold benchmark on P&L and drawdown?",
         ],

@@ -8,6 +8,7 @@ import pytest_asyncio
 
 from app.models.paper_trade import PaperTrade
 from app.paper_trading.engine import (
+    attempt_open_trade,
     get_metrics,
     get_pnl_curve,
     get_portfolio_state,
@@ -93,6 +94,35 @@ async def test_open_trade_low_ev_rejected(session):
         market_price=Decimal("0.500000"),
     )
     assert trade is None
+
+
+@pytest.mark.asyncio
+async def test_attempt_open_trade_returns_skip_reason(session):
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        estimated_probability=Decimal("0.5100"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.010000"),
+    )
+    await session.commit()
+
+    result = await attempt_open_trade(
+        session=session,
+        signal_id=signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.5100"),
+        market_price=Decimal("0.500000"),
+    )
+
+    assert result.trade is None
+    assert result.decision == "skipped"
+    assert result.reason_code == "ev_below_threshold"
+    assert result.reason_label == "EV below threshold"
 
 
 @pytest.mark.asyncio
