@@ -90,3 +90,51 @@ polymarket_malformed_messages = Counter(
     "smt_polymarket_malformed_messages_total",
     "Total malformed Polymarket stream messages",
 )
+
+# Polymarket metadata sync / registry
+polymarket_meta_sync_runs = Counter(
+    "smt_polymarket_meta_sync_runs_total",
+    "Total Polymarket metadata sync runs",
+    ["reason", "status"],
+)
+
+polymarket_meta_sync_failures = Counter(
+    "smt_polymarket_meta_sync_failures_total",
+    "Total failed or partial Polymarket metadata sync runs",
+)
+
+polymarket_meta_events_upserted = Counter(
+    "smt_polymarket_meta_events_upserted_total",
+    "Total Polymarket event registry rows inserted or updated",
+)
+
+polymarket_meta_markets_upserted = Counter(
+    "smt_polymarket_meta_markets_upserted_total",
+    "Total Polymarket market registry rows inserted or updated",
+)
+
+polymarket_meta_assets_upserted = Counter(
+    "smt_polymarket_meta_assets_upserted_total",
+    "Total Polymarket asset registry rows inserted or updated",
+)
+
+polymarket_meta_param_rows_inserted = Counter(
+    "smt_polymarket_meta_param_rows_inserted_total",
+    "Total Polymarket parameter history rows inserted",
+)
+
+polymarket_meta_last_successful_sync_timestamp = Gauge(
+    "smt_polymarket_meta_last_successful_sync_timestamp",
+    "Unix timestamp of the most recent successful Polymarket metadata sync",
+)
+
+polymarket_meta_last_successful_sync_age_seconds = Gauge(
+    "smt_polymarket_meta_last_successful_sync_age_seconds",
+    "Age in seconds since the most recent successful Polymarket metadata sync",
+)
+
+polymarket_meta_registry_stale_rows = Gauge(
+    "smt_polymarket_meta_registry_stale_rows",
+    "Current stale Polymarket registry row count",
+    ["kind"],
+)

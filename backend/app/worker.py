@@ -6,6 +6,7 @@ import signal
 
 from app.db import async_session
 from app.config import settings
+from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
 from app.ingestion.polymarket_stream import PolymarketStreamService
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
@@ -19,7 +20,11 @@ async def _maybe_await(result):
 
 
 async def _run_worker() -> None:
-    if not settings.scheduler_enabled and not settings.polymarket_stream_enabled:
+    if (
+        not settings.scheduler_enabled
+        and not settings.polymarket_stream_enabled
+        and not settings.polymarket_meta_sync_enabled
+    ):
         logger.warning("Worker started with all worker features disabled; exiting")
         return
 
@@ -28,6 +33,8 @@ async def _run_worker() -> None:
     scheduler_started = False
     stream_service: PolymarketStreamService | None = None
     stream_task: asyncio.Task | None = None
+    meta_sync_service: PolymarketMetaSyncService | None = None
+    meta_sync_task: asyncio.Task | None = None
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -46,7 +53,11 @@ async def _run_worker() -> None:
         stream_service = PolymarketStreamService(async_session)
         stream_task = asyncio.create_task(stream_service.run(stop_event))
 
-    if not scheduler_started and stream_task is None:
+    if settings.polymarket_meta_sync_enabled:
+        meta_sync_service = PolymarketMetaSyncService(async_session)
+        meta_sync_task = asyncio.create_task(meta_sync_service.run(stop_event))
+
+    if not scheduler_started and stream_task is None and meta_sync_task is None:
         logger.warning("No worker responsibilities started; exiting")
         return
 
@@ -63,6 +74,14 @@ async def _run_worker() -> None:
                 pass
         if stream_service is not None:
             await stream_service.close()
+        if meta_sync_task is not None:
+            meta_sync_task.cancel()
+            try:
+                await meta_sync_task
+            except asyncio.CancelledError:
+                pass
+        if meta_sync_service is not None:
+            await meta_sync_service.close()
         if scheduler_started:
             await _maybe_await(stop_scheduler())
 

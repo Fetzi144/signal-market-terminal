@@ -7,17 +7,31 @@ import json
 import logging
 import uuid
 from collections import deque
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Callable
 
 import httpx
 import websockets
-from dateutil.parser import isoparse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.ingestion.polymarket_common import (
+    EventMetadata,
+    REST_RESYNC_CHANNEL,
+    RESYNC_PROVENANCE,
+    STATUS_VENUE,
+    STREAM_CHANNEL,
+    STREAM_PROVENANCE,
+    extract_event_metadata,
+    unique_preserving_order,
+    utcnow,
+)
+from app.ingestion.polymarket_metadata import (
+    apply_stream_event_to_registry,
+    fetch_polymarket_meta_sync_status,
+    seed_registry_from_book_snapshot,
+)
 from app.ingestion.polymarket_normalization import ensure_normalized_event
 from app.metrics import (
     polymarket_gap_suspicions,
@@ -42,136 +56,7 @@ from app.models.polymarket_stream import (
 
 logger = logging.getLogger(__name__)
 
-STREAM_CHANNEL = "market"
-REST_RESYNC_CHANNEL = "rest_orderbook"
-STREAM_PROVENANCE = "stream"
-RESYNC_PROVENANCE = "rest_resync"
-STATUS_VENUE = "polymarket"
 UNSET = object()
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def parse_polymarket_timestamp(value: Any) -> datetime | None:
-    if value in (None, ""):
-        return None
-
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-
-    if isinstance(value, (int, float)):
-        timestamp = float(value)
-        if timestamp > 10_000_000_000:
-            timestamp /= 1000.0
-        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
-
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return None
-        if stripped.isdigit():
-            timestamp = int(stripped)
-            if len(stripped) > 10:
-                timestamp = timestamp / 1000.0
-            return datetime.fromtimestamp(timestamp, tz=timezone.utc)
-        try:
-            parsed = isoparse(stripped)
-        except (TypeError, ValueError):
-            return None
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
-
-    return None
-
-
-def _unique_preserving_order(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for value in values:
-        if value and value not in seen:
-            seen.add(value)
-            ordered.append(value)
-    return ordered
-
-
-def extract_asset_ids(payload: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-
-    for key in ("asset_id", "assetId", "token_id", "tokenId"):
-        value = payload.get(key)
-        if value is not None:
-            values.append(str(value))
-
-    for key in ("asset_ids", "assets_ids", "token_ids", "tokenIds"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            values.extend(str(item) for item in value if item is not None)
-
-    price_changes = payload.get("price_changes")
-    if isinstance(price_changes, list):
-        for change in price_changes:
-            if not isinstance(change, dict):
-                continue
-            for key in ("asset_id", "assetId", "token_id", "tokenId"):
-                value = change.get(key)
-                if value is not None:
-                    values.append(str(value))
-
-    event_message = payload.get("event_message")
-    if isinstance(event_message, dict):
-        values.extend(extract_asset_ids(event_message))
-
-    return _unique_preserving_order(values)
-
-
-@dataclass(slots=True)
-class EventMetadata:
-    message_type: str
-    market_id: str | None
-    asset_id: str | None
-    asset_ids: list[str] | None
-    event_time: datetime | None
-    source_message_id: str | None
-    source_hash: str | None
-    source_sequence: str | None
-    source_cursor: str | None
-
-
-def extract_event_metadata(payload: dict[str, Any]) -> EventMetadata:
-    asset_ids = extract_asset_ids(payload)
-    asset_id = asset_ids[0] if len(asset_ids) == 1 else None
-
-    message_type = str(payload.get("event_type") or payload.get("type") or "unknown")
-    market_id = payload.get("market") or payload.get("condition_id")
-    event_time = parse_polymarket_timestamp(payload.get("timestamp"))
-
-    source_message_id = payload.get("id")
-    if source_message_id is None:
-        event_message = payload.get("event_message")
-        if isinstance(event_message, dict):
-            source_message_id = event_message.get("id")
-
-    source_hash = payload.get("hash")
-    if source_hash is None:
-        price_changes = payload.get("price_changes")
-        if isinstance(price_changes, list) and len(price_changes) == 1 and isinstance(price_changes[0], dict):
-            source_hash = price_changes[0].get("hash")
-
-    source_sequence = payload.get("sequence_id") or payload.get("seq") or payload.get("offset")
-    source_cursor = payload.get("cursor")
-
-    return EventMetadata(
-        message_type=message_type,
-        market_id=str(market_id) if market_id is not None else None,
-        asset_id=asset_id,
-        asset_ids=asset_ids or None,
-        event_time=event_time,
-        source_message_id=str(source_message_id) if source_message_id is not None else None,
-        source_hash=str(source_hash) if source_hash is not None else None,
-        source_sequence=str(source_sequence) if source_sequence is not None else None,
-        source_cursor=str(source_cursor) if source_cursor is not None else None,
-    )
 
 
 def build_subscription_diff(current: set[str], desired: set[str]) -> tuple[list[str], list[str]]:
@@ -603,6 +488,7 @@ async def fetch_polymarket_stream_status(session: AsyncSession) -> dict[str, Any
     await ensure_watch_registry_bootstrapped(session, commit=True)
     status = await session.get(PolymarketStreamStatus, STATUS_VENUE)
     watched_count = await _count_watched_assets(session)
+    metadata_sync = await fetch_polymarket_meta_sync_status(session)
 
     last_event_result = await session.execute(
         select(func.max(PolymarketMarketEvent.received_at_local)).where(
@@ -661,6 +547,7 @@ async def fetch_polymarket_stream_status(session: AsyncSession) -> dict[str, Any
         "updated_at": status.updated_at if status else None,
         "recent_incidents": recent_incidents,
         "recent_resync_runs": recent_resync_runs,
+        "metadata_sync": metadata_sync,
     }
 
 
@@ -718,7 +605,7 @@ class PolymarketResyncService:
         reason: str,
         connection_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
-        requested_asset_ids = _unique_preserving_order([str(asset_id) for asset_id in asset_ids if asset_id])
+        requested_asset_ids = unique_preserving_order([str(asset_id) for asset_id in asset_ids if asset_id])
         started_at = utcnow()
         run_id = uuid.uuid4()
 
@@ -820,7 +707,7 @@ class PolymarketResyncService:
             for asset_id in succeeded_asset_ids:
                 payload = payload_by_asset_id[asset_id]
                 metadata = extract_event_metadata(payload)
-                await persist_market_event(
+                event = await persist_market_event(
                     session,
                     provenance=RESYNC_PROVENANCE,
                     channel=REST_RESYNC_CHANNEL,
@@ -839,6 +726,13 @@ class PolymarketResyncService:
                     source_cursor=metadata.source_cursor,
                     resync_reason=reason,
                     resync_run_id=run.id,
+                )
+                await seed_registry_from_book_snapshot(
+                    session,
+                    payload=payload,
+                    observed_at_local=started_at,
+                    sync_run_id=None,
+                    raw_event_id=event.id,
                 )
                 events_persisted += 1
 
@@ -1045,6 +939,15 @@ class PolymarketStreamService:
             )
             await upsert_stream_status(session, last_message_received_at=received_at_local)
             await session.commit()
+        if event.message_type in {"new_market", "tick_size_change", "market_resolved"}:
+            try:
+                await apply_stream_event_to_registry(self._session_factory, raw_event_id=event.id)
+            except Exception:
+                logger.warning(
+                    "Polymarket registry update failed for raw stream event %s",
+                    event.id,
+                    exc_info=True,
+                )
         return event
 
     async def reconcile_subscriptions(self, websocket: Any, subscribed_asset_ids: set[str]) -> set[str]:
@@ -1296,7 +1199,7 @@ async def trigger_manual_polymarket_resync(
     asset_ids: list[str] | None,
     reason: str,
 ) -> dict[str, Any]:
-    resolved_asset_ids = _unique_preserving_order(asset_ids or [])
+    resolved_asset_ids = unique_preserving_order(asset_ids or [])
     if not resolved_asset_ids:
         async with session_factory() as session:
             resolved_asset_ids = await list_watched_polymarket_assets(session)

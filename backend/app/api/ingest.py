@@ -13,6 +13,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db import get_db, get_session_factory
+from app.ingestion.polymarket_metadata import (
+    fetch_polymarket_meta_sync_status,
+    list_polymarket_meta_sync_runs,
+    lookup_polymarket_asset_registry,
+    lookup_polymarket_event_registry,
+    lookup_polymarket_market_param_history,
+    lookup_polymarket_market_registry,
+    trigger_manual_polymarket_meta_sync,
+)
 from app.ingestion.polymarket_stream import (
     ensure_watch_registry_bootstrapped,
     fetch_polymarket_stream_status,
@@ -54,6 +63,42 @@ class PolymarketResyncRunOut(BaseModel):
     details_json: dict[str, Any] | None = None
 
 
+class PolymarketMetaSyncRunOut(BaseModel):
+    id: uuid.UUID
+    started_at: datetime
+    completed_at: datetime | None = None
+    status: str
+    reason: str
+    include_closed: bool
+    events_seen: int
+    markets_seen: int
+    assets_upserted: int
+    events_upserted: int
+    markets_upserted: int
+    param_rows_inserted: int
+    error_count: int
+    details_json: dict[str, Any] | None = None
+
+
+class PolymarketMetaSyncStatusOut(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    include_closed: bool
+    page_size: int
+    last_successful_sync_at: datetime | None = None
+    last_run_status: str | None = None
+    last_run_started_at: datetime | None = None
+    last_run_completed_at: datetime | None = None
+    last_run_id: uuid.UUID | None = None
+    recent_param_changes_24h: int
+    stale_registry_counts: dict[str, int]
+    registry_counts: dict[str, int]
+    stale_after_seconds: int
+    freshness_seconds: int | None = None
+    recent_sync_runs: list[PolymarketMetaSyncRunOut]
+
+
 class PolymarketWatchAssetOut(BaseModel):
     id: uuid.UUID
     outcome_id: uuid.UUID
@@ -79,6 +124,13 @@ class PaginatedIncidentsOut(BaseModel):
 
 class PaginatedResyncRunsOut(BaseModel):
     resync_runs: list[PolymarketResyncRunOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class PaginatedMetaSyncRunsOut(BaseModel):
+    sync_runs: list[PolymarketMetaSyncRunOut]
     total: int
     page: int
     page_size: int
@@ -114,6 +166,7 @@ class PolymarketIngestStatusOut(BaseModel):
     updated_at: datetime | None = None
     recent_incidents: list[PolymarketIncidentOut]
     recent_resync_runs: list[PolymarketResyncRunOut]
+    metadata_sync: PolymarketMetaSyncStatusOut
 
 
 class PolymarketManualResyncRequest(BaseModel):
@@ -130,6 +183,29 @@ class PolymarketManualResyncOut(BaseModel):
     events_persisted: int
     reason: str
     status: str
+
+
+class PolymarketManualMetaSyncRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    include_closed: bool | None = None
+    asset_ids: list[str] | None = None
+
+
+class PolymarketManualMetaSyncOut(BaseModel):
+    id: uuid.UUID
+    started_at: datetime
+    completed_at: datetime | None = None
+    status: str
+    reason: str
+    include_closed: bool
+    events_seen: int
+    markets_seen: int
+    assets_upserted: int
+    events_upserted: int
+    markets_upserted: int
+    param_rows_inserted: int
+    error_count: int
+    details_json: dict[str, Any] | None = None
 
 
 class PolymarketWatchAssetUpsertRequest(BaseModel):
@@ -153,6 +229,17 @@ class PolymarketWatchAssetMutationOut(BaseModel):
     updated_count: int
     bootstrap_created_count: int = 0
     bootstrap_updated_count: int = 0
+
+
+class PolymarketRegistryQueryOut(BaseModel):
+    rows: list[dict[str, Any]]
+    limit: int
+
+
+class PolymarketParamHistoryQueryOut(BaseModel):
+    rows: list[dict[str, Any]]
+    limit: int
+    changed_only: bool
 
 
 async def _fetch_watch_asset_row(
@@ -209,6 +296,23 @@ async def get_polymarket_resync_runs(
 ):
     runs, total = await list_polymarket_resync_runs(db, page=page, page_size=page_size)
     return PaginatedResyncRunsOut(resync_runs=runs, total=total, page=page, page_size=page_size)
+
+
+@router.get("/meta-sync/status", response_model=PolymarketMetaSyncStatusOut)
+async def get_polymarket_meta_sync_status(
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_polymarket_meta_sync_status(db)
+
+
+@router.get("/meta-sync/runs", response_model=PaginatedMetaSyncRunsOut)
+async def get_polymarket_meta_sync_runs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    runs, total = await list_polymarket_meta_sync_runs(db, page=page, page_size=page_size)
+    return PaginatedMetaSyncRunsOut(sync_runs=runs, total=total, page=page, page_size=page_size)
 
 
 @router.get("/watch-assets", response_model=PaginatedWatchAssetsOut)
@@ -321,3 +425,94 @@ async def resync_polymarket_market_data(
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Polymarket resync failed: {exc}") from exc
     return PolymarketManualResyncOut(**result)
+
+
+@router.post("/meta-sync", response_model=PolymarketManualMetaSyncOut)
+async def sync_polymarket_metadata(
+    body: PolymarketManualMetaSyncRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        result = await trigger_manual_polymarket_meta_sync(
+            session_factory,
+            reason=body.reason,
+            include_closed=body.include_closed,
+            asset_ids=body.asset_ids,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Polymarket metadata sync failed: {exc}") from exc
+    return PolymarketManualMetaSyncOut(**result)
+
+
+@router.get("/registry/events", response_model=PolymarketRegistryQueryOut)
+async def get_polymarket_event_registry(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    event_slug: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_event_registry(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        event_slug=event_slug,
+        limit=limit,
+    )
+    return PolymarketRegistryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/registry/markets", response_model=PolymarketRegistryQueryOut)
+async def get_polymarket_market_registry(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    event_slug: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_market_registry(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        event_slug=event_slug,
+        limit=limit,
+    )
+    return PolymarketRegistryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/registry/assets", response_model=PolymarketRegistryQueryOut)
+async def get_polymarket_asset_registry(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    event_slug: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_asset_registry(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        event_slug=event_slug,
+        limit=limit,
+    )
+    return PolymarketRegistryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/registry/param-history", response_model=PolymarketParamHistoryQueryOut)
+async def get_polymarket_param_history(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    event_slug: str | None = Query(default=None),
+    changed_only: bool = Query(default=False),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_market_param_history(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        event_slug=event_slug,
+        changed_only=changed_only,
+        limit=limit,
+    )
+    return PolymarketParamHistoryQueryOut(rows=rows, limit=limit, changed_only=changed_only)

@@ -92,6 +92,15 @@ export function getPolymarketResyncRuns({ page = 1, pageSize = 20 } = {}) {
   return fetchJson(`${API_BASE}/ingest/polymarket/resync-runs?${params}`);
 }
 
+export function getPolymarketMetaSyncStatus() {
+  return fetchJson(`${API_BASE}/ingest/polymarket/meta-sync/status`);
+}
+
+export function getPolymarketMetaSyncRuns({ page = 1, pageSize = 20 } = {}) {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  return fetchJson(`${API_BASE}/ingest/polymarket/meta-sync/runs?${params}`);
+}
+
 export function getPolymarketWatchAssets({ page = 1, pageSize = 20 } = {}) {
   const params = new URLSearchParams({ page, page_size: pageSize });
   return fetchJson(`${API_BASE}/ingest/polymarket/watch-assets?${params}`);
@@ -113,6 +122,13 @@ export function updatePolymarketWatchAsset(id, body) {
 
 export function triggerPolymarketResync(body = { reason: "manual" }) {
   return requestJson(`${API_BASE}/ingest/polymarket/resync`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function triggerPolymarketMetadataSync(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/meta-sync`, {
     method: "POST",
     body: JSON.stringify(body),
   });

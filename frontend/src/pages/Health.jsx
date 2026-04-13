@@ -3,6 +3,7 @@ import {
   getHealth,
   getPolymarketIngestStatus,
   getPolymarketWatchAssets,
+  triggerPolymarketMetadataSync,
   triggerPolymarketResync,
   updatePolymarketWatchAsset,
 } from "../api";
@@ -21,6 +22,7 @@ export default function Health() {
   const [actionError, setActionError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [isResyncing, setIsResyncing] = useState(false);
+  const [isMetadataSyncing, setIsMetadataSyncing] = useState(false);
   const [updatingWatchAssetId, setUpdatingWatchAssetId] = useState(null);
   const intervalRef = useRef(null);
 
@@ -58,6 +60,19 @@ export default function Health() {
       setActionError(e.message);
     } finally {
       setIsResyncing(false);
+    }
+  };
+
+  const handleManualMetadataSync = async () => {
+    try {
+      setIsMetadataSyncing(true);
+      setActionError(null);
+      await triggerPolymarketMetadataSync({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsMetadataSyncing(false);
     }
   };
 
@@ -104,6 +119,7 @@ export default function Health() {
   const recentIncidents = streamStatus?.recent_incidents || [];
   const recentRuns = streamStatus?.recent_resync_runs || [];
   const eventsIngested = streamStatus?.events_ingested || {};
+  const metadataSync = streamStatus?.metadata_sync || null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -176,6 +192,17 @@ export default function Health() {
             >
               {isResyncing ? "Resyncing..." : "Run Resync"}
             </button>
+            <button
+              onClick={handleManualMetadataSync}
+              disabled={isMetadataSyncing || !metadataSync?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isMetadataSyncing || !metadataSync?.enabled ? 0.65 : 1,
+                cursor: isMetadataSyncing ? "wait" : (!metadataSync?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isMetadataSyncing ? "Syncing..." : "Run Metadata Sync"}
+            </button>
           </div>
         </div>
 
@@ -207,6 +234,41 @@ export default function Health() {
             label="Events 1 / 5 / 15m"
             value={`${eventsIngested["1m"] ?? 0} / ${eventsIngested["5m"] ?? 0} / ${eventsIngested["15m"] ?? 0}`}
           />
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 2 Metadata Registry</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {metadataSync?.enabled ? "Enabled" : "Disabled"} | Last success {formatShortDateTime(metadataSync?.last_successful_sync_at)}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <StatCard label="Last Run" value={metadataSync?.last_run_status || "-"} />
+            <StatCard label="Param Changes (24h)" value={metadataSync?.recent_param_changes_24h ?? 0} />
+            <StatCard
+              label="Registry Rows"
+              value={`${metadataSync?.registry_counts?.events ?? 0} / ${metadataSync?.registry_counts?.markets ?? 0} / ${metadataSync?.registry_counts?.assets ?? 0}`}
+            />
+            <StatCard
+              label="Stale E / M / A"
+              value={`${metadataSync?.stale_registry_counts?.events ?? 0} / ${metadataSync?.stale_registry_counts?.markets ?? 0} / ${metadataSync?.stale_registry_counts?.assets ?? 0}`}
+            />
+          </div>
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>

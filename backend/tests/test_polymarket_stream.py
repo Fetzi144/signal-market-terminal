@@ -243,6 +243,7 @@ async def test_reconciliation_uses_watch_registry_and_unchanged_set_does_not_chu
     assert subscribed == {"token-a"}
     assert len(websocket.sent) == 1
     assert json.loads(websocket.sent[0])["operation"] == "subscribe"
+    assert json.loads(websocket.sent[0])["custom_feature_enabled"] is True
 
     websocket.sent.clear()
     subscribed = await service.reconcile_subscriptions(websocket, subscribed)
@@ -320,6 +321,7 @@ async def test_worker_loop_records_reconnect_and_gap_incidents(engine, monkeypat
         )
         assert status is not None
         assert status.reconnect_count >= 1
+        assert json.loads(ws_one.sent[0])["custom_feature_enabled"] is True
         assert any(reason == "startup" for _assets, reason, _connection_id in resync_stub.calls)
         assert any(reason == "reconnect" for _assets, reason, _connection_id in resync_stub.calls)
 

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
+from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
 from app.models.ingestion import IngestionRun
 from app.models.market import Market
 from app.models.signal import Signal
@@ -23,6 +24,20 @@ class IngestionStatus(BaseModel):
     markets_processed: int | None
 
 
+class PolymarketPhase2Status(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    include_closed: bool
+    page_size: int
+    last_successful_sync_at: datetime | None = None
+    last_run_status: str | None = None
+    recent_param_changes_24h: int
+    stale_registry_counts: dict[str, int]
+    registry_counts: dict[str, int]
+    freshness_seconds: int | None = None
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -32,6 +47,7 @@ class HealthOut(BaseModel):
     recent_alerts_24h: int
     alert_threshold: float
     ingestion: list[IngestionStatus]
+    polymarket_phase2: PolymarketPhase2Status
 
 
 @router.get("/health", response_model=HealthOut)
@@ -73,6 +89,8 @@ async def health(db: AsyncSession = Depends(get_db)):
             markets_processed=run.markets_processed if run else None,
         ))
 
+    polymarket_phase2 = await fetch_polymarket_meta_sync_status(db)
+
     return HealthOut(
         status="ok",
         now=now,
@@ -82,4 +100,20 @@ async def health(db: AsyncSession = Depends(get_db)):
         recent_alerts_24h=recent_alerts,
         alert_threshold=settings.alert_rank_threshold,
         ingestion=ingestion_statuses,
+        polymarket_phase2=PolymarketPhase2Status(**{
+            key: polymarket_phase2[key]
+            for key in (
+                "enabled",
+                "on_startup",
+                "interval_seconds",
+                "include_closed",
+                "page_size",
+                "last_successful_sync_at",
+                "last_run_status",
+                "recent_param_changes_24h",
+                "stale_registry_counts",
+                "registry_counts",
+                "freshness_seconds",
+            )
+        }),
     )

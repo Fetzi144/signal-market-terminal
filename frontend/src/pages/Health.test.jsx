@@ -3,6 +3,7 @@ import {
   getHealth,
   getPolymarketIngestStatus,
   getPolymarketWatchAssets,
+  triggerPolymarketMetadataSync,
   triggerPolymarketResync,
   updatePolymarketWatchAsset,
 } from "../api";
@@ -12,6 +13,7 @@ vi.mock("../api", () => ({
   getHealth: vi.fn(),
   getPolymarketIngestStatus: vi.fn(),
   getPolymarketWatchAssets: vi.fn(),
+  triggerPolymarketMetadataSync: vi.fn(),
   triggerPolymarketResync: vi.fn(),
   updatePolymarketWatchAsset: vi.fn(),
 }));
@@ -58,6 +60,24 @@ const ingestPayload = {
   last_error: null,
   last_error_at: null,
   updated_at: "2026-04-13T10:04:00Z",
+  metadata_sync: {
+    enabled: true,
+    on_startup: true,
+    interval_seconds: 900,
+    include_closed: false,
+    page_size: 200,
+    last_successful_sync_at: "2026-04-13T10:01:00Z",
+    last_run_status: "completed",
+    last_run_started_at: "2026-04-13T10:00:40Z",
+    last_run_completed_at: "2026-04-13T10:01:00Z",
+    last_run_id: "22222222-2222-2222-2222-222222222222",
+    recent_param_changes_24h: 4,
+    stale_registry_counts: { events: 1, markets: 0, assets: 2 },
+    registry_counts: { events: 3, markets: 8, assets: 16 },
+    stale_after_seconds: 1800,
+    freshness_seconds: 120,
+    recent_sync_runs: [],
+  },
   recent_incidents: [
     {
       id: "incident-1",
@@ -116,6 +136,22 @@ beforeEach(() => {
   getHealth.mockResolvedValue(healthPayload);
   getPolymarketIngestStatus.mockResolvedValue(ingestPayload);
   getPolymarketWatchAssets.mockResolvedValue(watchPayload);
+  triggerPolymarketMetadataSync.mockResolvedValue({
+    id: "run-3",
+    started_at: "2026-04-13T10:05:00Z",
+    completed_at: "2026-04-13T10:05:05Z",
+    status: "completed",
+    reason: "manual",
+    include_closed: false,
+    events_seen: 1,
+    markets_seen: 1,
+    assets_upserted: 2,
+    events_upserted: 1,
+    markets_upserted: 1,
+    param_rows_inserted: 2,
+    error_count: 0,
+    details_json: {},
+  });
   triggerPolymarketResync.mockResolvedValue({
     run_id: "run-2",
     asset_ids: ["token-1"],
@@ -139,12 +175,18 @@ describe("Health", () => {
 
     expect(await screen.findByText("Polymarket Stream")).toBeInTheDocument();
     expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.getByText("Phase 2 Metadata Registry")).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Run Resync" }));
     await waitFor(() => {
       expect(triggerPolymarketResync).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Run Metadata Sync" }));
+    await waitFor(() => {
+      expect(triggerPolymarketMetadataSync).toHaveBeenCalledWith({ reason: "manual" });
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));

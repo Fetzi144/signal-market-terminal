@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     polymarket_malformed_burst_window_seconds: int = 30
     polymarket_normalization_enabled: bool = True
     polymarket_watch_bootstrap_from_active_universe: bool = True
+    polymarket_meta_sync_enabled: bool = False
+    polymarket_meta_sync_on_startup: bool = True
+    polymarket_meta_sync_interval_seconds: int = 900
+    polymarket_meta_sync_include_closed: bool = False
+    polymarket_meta_sync_page_size: int = 200
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
@@ -238,11 +243,19 @@ class Settings(BaseSettings):
         "polymarket_watch_reconcile_interval_seconds",
         "polymarket_gap_suspect_after_seconds",
         "polymarket_malformed_burst_window_seconds",
+        "polymarket_meta_sync_interval_seconds",
     )
     @classmethod
     def polymarket_intervals_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Polymarket interval must be >= 1 second")
+        return v
+
+    @field_validator("polymarket_meta_sync_page_size")
+    @classmethod
+    def polymarket_meta_sync_page_size_bounds(cls, v: int) -> int:
+        if v < 1 or v > 1000:
+            raise ValueError("polymarket_meta_sync_page_size must be between 1 and 1000")
         return v
 
     @field_validator("polymarket_stream_reconnect_max_seconds")

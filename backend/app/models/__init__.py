@@ -3,6 +3,13 @@ from app.models.execution_decision import ExecutionDecision
 from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
 from app.models.paper_trade import PaperTrade
+from app.models.polymarket_metadata import (
+    PolymarketAssetDim,
+    PolymarketEventDim,
+    PolymarketMarketDim,
+    PolymarketMarketParamHistory,
+    PolymarketMetaSyncRun,
+)
 from app.models.portfolio import Position, Trade
 from app.models.polymarket_stream import (
     PolymarketIngestIncident,
@@ -39,6 +46,11 @@ __all__ = [
     "PolymarketResyncRun",
     "PolymarketWatchAsset",
     "PolymarketNormalizedEvent",
+    "PolymarketEventDim",
+    "PolymarketMarketDim",
+    "PolymarketAssetDim",
+    "PolymarketMarketParamHistory",
+    "PolymarketMetaSyncRun",
     "PushSubscription",
     "SchedulerLease",
     "WalletProfile",
