@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
+from app.ingestion.polymarket_book_reconstruction import fetch_polymarket_book_recon_status
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
 from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
 from app.models.ingestion import IngestionRun
@@ -51,6 +52,24 @@ class PolymarketPhase3Status(BaseModel):
     rows_inserted_24h: dict[str, int]
 
 
+class PolymarketPhase4Status(BaseModel):
+    enabled: bool
+    on_startup: bool
+    auto_resync_enabled: bool
+    stale_after_seconds: int
+    resync_cooldown_seconds: int
+    max_watched_assets: int
+    bbo_tolerance: float
+    watched_asset_count: int
+    live_book_count: int
+    drifted_asset_count: int
+    resyncing_asset_count: int
+    degraded_asset_count: int
+    last_successful_resync_at: datetime | None = None
+    recent_incident_count: int
+    status_counts: dict[str, int]
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -62,6 +81,7 @@ class HealthOut(BaseModel):
     ingestion: list[IngestionStatus]
     polymarket_phase2: PolymarketPhase2Status
     polymarket_phase3: PolymarketPhase3Status
+    polymarket_phase4: PolymarketPhase4Status
 
 
 @router.get("/health", response_model=HealthOut)
@@ -105,6 +125,7 @@ async def health(db: AsyncSession = Depends(get_db)):
 
     polymarket_phase2 = await fetch_polymarket_meta_sync_status(db)
     polymarket_phase3 = await fetch_polymarket_raw_storage_status(db)
+    polymarket_phase4 = await fetch_polymarket_book_recon_status(db)
 
     return HealthOut(
         status="ok",
@@ -143,6 +164,26 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "last_successful_trade_backfill_at",
                 "last_successful_oi_poll_at",
                 "rows_inserted_24h",
+            )
+        }),
+        polymarket_phase4=PolymarketPhase4Status(**{
+            key: polymarket_phase4[key]
+            for key in (
+                "enabled",
+                "on_startup",
+                "auto_resync_enabled",
+                "stale_after_seconds",
+                "resync_cooldown_seconds",
+                "max_watched_assets",
+                "bbo_tolerance",
+                "watched_asset_count",
+                "live_book_count",
+                "drifted_asset_count",
+                "resyncing_asset_count",
+                "degraded_asset_count",
+                "last_successful_resync_at",
+                "recent_incident_count",
+                "status_counts",
             )
         }),
     )

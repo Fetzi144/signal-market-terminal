@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     polymarket_oi_poll_enabled: bool = False
     polymarket_oi_poll_interval_seconds: int = 900
     polymarket_raw_retention_days: int = 14
+    polymarket_book_recon_enabled: bool = False
+    polymarket_book_recon_on_startup: bool = True
+    polymarket_book_recon_auto_resync_enabled: bool = True
+    polymarket_book_recon_stale_after_seconds: int = 900
+    polymarket_book_recon_resync_cooldown_seconds: int = 60
+    polymarket_book_recon_max_watched_assets: int = 500
+    polymarket_book_recon_bbo_tolerance: float = 0.0
+    polymarket_book_recon_bootstrap_lookback_hours: int = 48
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
@@ -249,6 +257,8 @@ class Settings(BaseSettings):
         "strategy_review_lookback_days",
         "strategy_review_recent_mistakes_limit",
         "polymarket_malformed_burst_threshold",
+        "polymarket_book_recon_max_watched_assets",
+        "polymarket_book_recon_bootstrap_lookback_hours",
     )
     @classmethod
     def limits_must_be_positive(cls, v: int) -> int:
@@ -265,6 +275,8 @@ class Settings(BaseSettings):
         "polymarket_book_snapshot_interval_seconds",
         "polymarket_trade_backfill_interval_seconds",
         "polymarket_oi_poll_interval_seconds",
+        "polymarket_book_recon_stale_after_seconds",
+        "polymarket_book_recon_resync_cooldown_seconds",
     )
     @classmethod
     def polymarket_intervals_must_be_positive(cls, v: int) -> int:
@@ -291,6 +303,13 @@ class Settings(BaseSettings):
     def polymarket_trade_backfill_page_size_bounds(cls, v: int) -> int:
         if v < 1 or v > 500:
             raise ValueError("polymarket_trade_backfill_page_size must be between 1 and 500")
+        return v
+
+    @field_validator("polymarket_book_recon_bbo_tolerance")
+    @classmethod
+    def polymarket_book_recon_bbo_tolerance_bounds(cls, v: float) -> float:
+        if v < 0 or v >= 1:
+            raise ValueError("polymarket_book_recon_bbo_tolerance must be between 0 and 1")
         return v
 
     @field_validator("polymarket_stream_reconnect_max_seconds")

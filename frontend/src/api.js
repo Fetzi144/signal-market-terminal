@@ -162,6 +162,13 @@ export function triggerPolymarketOiPoll(body = { reason: "manual" }) {
   });
 }
 
+export function triggerPolymarketBookReconResync(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/reconstruction/resync`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function getChartData(marketId, range = "24h") {
   return fetchJson(`${API_BASE}/markets/${marketId}/chart-data?range=${range}`);
 }

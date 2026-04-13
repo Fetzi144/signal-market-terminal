@@ -4,6 +4,7 @@ import {
   getPolymarketIngestStatus,
   getPolymarketWatchAssets,
   triggerPolymarketBookSnapshot,
+  triggerPolymarketBookReconResync,
   triggerPolymarketMetadataSync,
   triggerPolymarketOiPoll,
   triggerPolymarketRawProjector,
@@ -18,6 +19,7 @@ vi.mock("../api", () => ({
   getPolymarketIngestStatus: vi.fn(),
   getPolymarketWatchAssets: vi.fn(),
   triggerPolymarketBookSnapshot: vi.fn(),
+  triggerPolymarketBookReconResync: vi.fn(),
   triggerPolymarketMetadataSync: vi.fn(),
   triggerPolymarketOiPoll: vi.fn(),
   triggerPolymarketRawProjector: vi.fn(),
@@ -114,6 +116,24 @@ const ingestPayload = {
       open_interest_history: 2,
     },
     recent_capture_runs: [],
+  },
+  book_reconstruction: {
+    enabled: true,
+    on_startup: true,
+    auto_resync_enabled: true,
+    stale_after_seconds: 900,
+    resync_cooldown_seconds: 60,
+    max_watched_assets: 500,
+    bbo_tolerance: 0,
+    watched_asset_count: 2,
+    live_book_count: 2,
+    drifted_asset_count: 1,
+    resyncing_asset_count: 0,
+    degraded_asset_count: 1,
+    last_successful_resync_at: "2026-04-13T10:04:40Z",
+    recent_incident_count: 2,
+    status_counts: { live: 2, drifted: 1 },
+    recent_incidents: [],
   },
   recent_incidents: [
     {
@@ -257,6 +277,17 @@ beforeEach(() => {
     watch_enabled: false,
     watch_reason: "manual_operator_disable",
   });
+  triggerPolymarketBookReconResync.mockResolvedValue({
+    asset_ids: ["token-1"],
+    reason: "manual",
+    status: "completed",
+    run_id: "run-book-recon",
+    requested_asset_count: 1,
+    succeeded_asset_count: 1,
+    failed_asset_count: 0,
+    events_persisted: 1,
+    reconstruction: { live_count: 1, degraded_count: 0, asset_count: 1, results: [] },
+  });
 });
 
 describe("Health", () => {
@@ -267,6 +298,7 @@ describe("Health", () => {
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.getByText("Phase 2 Metadata Registry")).toBeInTheDocument();
     expect(screen.getByText("Phase 3 Raw Storage")).toBeInTheDocument();
+    expect(screen.getByText("Phase 4 Book Reconstruction")).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 
@@ -298,6 +330,11 @@ describe("Health", () => {
     fireEvent.click(screen.getByRole("button", { name: "Poll OI" }));
     await waitFor(() => {
       expect(triggerPolymarketOiPoll).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Repair Books" }));
+    await waitFor(() => {
+      expect(triggerPolymarketBookReconResync).toHaveBeenCalledWith({ reason: "manual" });
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));

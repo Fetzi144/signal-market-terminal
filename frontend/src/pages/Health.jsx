@@ -5,6 +5,7 @@ import {
   getPolymarketWatchAssets,
   triggerPolymarketBookSnapshot,
   triggerPolymarketMetadataSync,
+  triggerPolymarketBookReconResync,
   triggerPolymarketOiPoll,
   triggerPolymarketRawProjector,
   triggerPolymarketResync,
@@ -31,6 +32,7 @@ export default function Health() {
   const [isSnapshotting, setIsSnapshotting] = useState(false);
   const [isTradeBackfilling, setIsTradeBackfilling] = useState(false);
   const [isOiPolling, setIsOiPolling] = useState(false);
+  const [isReconResyncing, setIsReconResyncing] = useState(false);
   const [updatingWatchAssetId, setUpdatingWatchAssetId] = useState(null);
   const intervalRef = useRef(null);
 
@@ -155,6 +157,19 @@ export default function Health() {
     }
   };
 
+  const handleBookReconResync = async () => {
+    try {
+      setIsReconResyncing(true);
+      setActionError(null);
+      await triggerPolymarketBookReconResync({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsReconResyncing(false);
+    }
+  };
+
   if ((!health || !streamStatus) && !error) {
     return (
       <div>
@@ -181,6 +196,7 @@ export default function Health() {
   const eventsIngested = streamStatus?.events_ingested || {};
   const metadataSync = streamStatus?.metadata_sync || null;
   const rawStorage = streamStatus?.raw_storage || null;
+  const bookReconstruction = streamStatus?.book_reconstruction || health?.polymarket_phase4 || null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -412,6 +428,54 @@ export default function Health() {
               }}
             >
               {isOiPolling ? "Polling..." : "Poll OI"}
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 4 Book Reconstruction</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {bookReconstruction?.enabled ? "Enabled" : "Disabled"} | Last repair {formatShortDateTime(bookReconstruction?.last_successful_resync_at)}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard
+              label="Live / Watched"
+              value={`${bookReconstruction?.live_book_count ?? 0} / ${bookReconstruction?.watched_asset_count ?? 0}`}
+            />
+            <StatCard label="Drifted" value={bookReconstruction?.drifted_asset_count ?? 0} />
+            <StatCard label="Resyncing" value={bookReconstruction?.resyncing_asset_count ?? 0} />
+            <StatCard label="Degraded" value={bookReconstruction?.degraded_asset_count ?? 0} />
+            <StatCard label="Incidents (24h)" value={bookReconstruction?.recent_incident_count ?? 0} />
+            <StatCard label="Stale After" value={bookReconstruction?.stale_after_seconds != null ? `${bookReconstruction.stale_after_seconds}s` : "-"} />
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={handleBookReconResync}
+              disabled={isReconResyncing || !bookReconstruction?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isReconResyncing || !bookReconstruction?.enabled ? 0.65 : 1,
+                cursor: isReconResyncing ? "wait" : (!bookReconstruction?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isReconResyncing ? "Repairing..." : "Repair Books"}
             </button>
           </div>
         </div>

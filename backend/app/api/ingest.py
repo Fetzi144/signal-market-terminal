@@ -13,6 +13,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db import get_db, get_session_factory
+from app.ingestion.polymarket_book_reconstruction import (
+    fetch_polymarket_book_recon_status,
+    get_polymarket_reconstructed_top_of_book,
+    list_polymarket_book_recon_incidents,
+    lookup_polymarket_book_recon_state,
+    trigger_manual_polymarket_book_recon_catchup,
+    trigger_manual_polymarket_book_recon_resync,
+)
 from app.ingestion.polymarket_metadata import (
     fetch_polymarket_meta_sync_status,
     list_polymarket_meta_sync_runs,
@@ -150,6 +158,81 @@ class PolymarketRawStorageStatusOut(BaseModel):
     recent_capture_runs: list[PolymarketRawCaptureRunOut]
 
 
+class PolymarketBookReconIncidentOut(BaseModel):
+    id: uuid.UUID
+    market_dim_id: int | None = None
+    asset_dim_id: int | None = None
+    condition_id: str
+    asset_id: str
+    incident_type: str
+    severity: str
+    raw_event_id: int | None = None
+    snapshot_id: int | None = None
+    capture_run_id: uuid.UUID | None = None
+    exchange_ts: datetime | None = None
+    observed_at_local: datetime
+    expected_best_bid: float | None = None
+    observed_best_bid: float | None = None
+    expected_best_ask: float | None = None
+    observed_best_ask: float | None = None
+    expected_hash: str | None = None
+    observed_hash: str | None = None
+    details_json: dict[str, Any] | list[Any] | str | None = None
+    created_at: datetime
+
+
+class PolymarketBookReconStateOut(BaseModel):
+    id: int
+    market_dim_id: int | None = None
+    asset_dim_id: int | None = None
+    condition_id: str
+    asset_id: str
+    status: str
+    last_snapshot_id: int | None = None
+    last_snapshot_source_kind: str | None = None
+    last_snapshot_hash: str | None = None
+    last_snapshot_exchange_ts: datetime | None = None
+    last_applied_raw_event_id: int | None = None
+    last_applied_delta_raw_event_id: int | None = None
+    last_applied_delta_index: int | None = None
+    last_bbo_raw_event_id: int | None = None
+    last_trade_raw_event_id: int | None = None
+    best_bid: float | None = None
+    best_ask: float | None = None
+    spread: float | None = None
+    depth_levels_bid: int | None = None
+    depth_levels_ask: int | None = None
+    expected_tick_size: float | None = None
+    last_exchange_ts: datetime | None = None
+    last_received_at_local: datetime | None = None
+    last_reconciled_at: datetime | None = None
+    last_resynced_at: datetime | None = None
+    drift_count: int
+    resync_count: int
+    details_json: dict[str, Any] | list[Any] | str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PolymarketBookReconStatusOut(BaseModel):
+    enabled: bool
+    on_startup: bool
+    auto_resync_enabled: bool
+    stale_after_seconds: int
+    resync_cooldown_seconds: int
+    max_watched_assets: int
+    bbo_tolerance: float
+    watched_asset_count: int
+    live_book_count: int
+    drifted_asset_count: int
+    resyncing_asset_count: int
+    degraded_asset_count: int
+    last_successful_resync_at: datetime | None = None
+    recent_incident_count: int
+    status_counts: dict[str, int]
+    recent_incidents: list[PolymarketBookReconIncidentOut]
+
+
 class PolymarketWatchAssetOut(BaseModel):
     id: uuid.UUID
     outcome_id: uuid.UUID
@@ -226,6 +309,7 @@ class PolymarketIngestStatusOut(BaseModel):
     recent_resync_runs: list[PolymarketResyncRunOut]
     metadata_sync: PolymarketMetaSyncStatusOut
     raw_storage: PolymarketRawStorageStatusOut
+    book_reconstruction: PolymarketBookReconStatusOut
 
 
 class PolymarketManualResyncRequest(BaseModel):
@@ -297,6 +381,16 @@ class PolymarketManualOiPollRequest(BaseModel):
     condition_ids: list[str] | None = None
 
 
+class PolymarketManualBookReconResyncRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    asset_ids: list[str] | None = None
+
+
+class PolymarketManualBookReconCatchupRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    asset_ids: list[str] | None = None
+
+
 class PolymarketWatchAssetUpsertRequest(BaseModel):
     outcome_id: uuid.UUID | None = None
     asset_id: str | None = None
@@ -336,6 +430,32 @@ class PolymarketHistoryQueryOut(BaseModel):
     limit: int
 
 
+class PolymarketBookReconStateQueryOut(BaseModel):
+    rows: list[PolymarketBookReconStateOut]
+    limit: int
+
+
+class PolymarketBookReconIncidentQueryOut(BaseModel):
+    rows: list[PolymarketBookReconIncidentOut]
+    limit: int
+
+
+class PolymarketBookReconActionOut(BaseModel):
+    asset_ids: list[str]
+    reason: str
+    status: str | None = None
+    run_id: uuid.UUID | None = None
+    requested_asset_count: int | None = None
+    succeeded_asset_count: int | None = None
+    failed_asset_count: int | None = None
+    events_persisted: int | None = None
+    asset_count: int | None = None
+    live_count: int | None = None
+    degraded_count: int | None = None
+    results: list[dict[str, Any]] | None = None
+    reconstruction: dict[str, Any] | None = None
+
+
 async def _fetch_watch_asset_row(
     session: AsyncSession,
     watch_asset_id: uuid.UUID,
@@ -371,6 +491,7 @@ async def _fetch_watch_asset_row(
 async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
     status = await fetch_polymarket_stream_status(db)
     status["raw_storage"] = await fetch_polymarket_raw_storage_status(db)
+    status["book_reconstruction"] = await fetch_polymarket_book_recon_status(db)
     return status
 
 
@@ -612,6 +733,97 @@ async def get_polymarket_param_history(
         limit=limit,
     )
     return PolymarketParamHistoryQueryOut(rows=rows, limit=limit, changed_only=changed_only)
+
+
+@router.get("/reconstruction/status", response_model=PolymarketBookReconStatusOut)
+async def get_polymarket_book_reconstruction_status(
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_polymarket_book_recon_status(db)
+
+
+@router.get("/reconstruction/state", response_model=PolymarketBookReconStateQueryOut)
+async def get_polymarket_book_reconstruction_state_rows(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_book_recon_state(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        status=status,
+        limit=limit,
+    )
+    return PolymarketBookReconStateQueryOut(rows=[PolymarketBookReconStateOut(**row) for row in rows], limit=limit)
+
+
+@router.get("/reconstruction/incidents", response_model=PolymarketBookReconIncidentQueryOut)
+async def get_polymarket_book_reconstruction_incidents(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    incident_type: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_polymarket_book_recon_incidents(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        status=status,
+        incident_type=incident_type,
+        limit=limit,
+    )
+    return PolymarketBookReconIncidentQueryOut(
+        rows=[PolymarketBookReconIncidentOut(**row) for row in rows],
+        limit=limit,
+    )
+
+
+@router.get("/reconstruction/top-of-book")
+async def get_polymarket_book_reconstruction_top_of_book(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    if not asset_id and not condition_id:
+        raise HTTPException(status_code=400, detail="asset_id or condition_id is required")
+    row = await get_polymarket_reconstructed_top_of_book(db, asset_id=asset_id, condition_id=condition_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Reconstructed book not found")
+    return row
+
+
+@router.post("/reconstruction/resync", response_model=PolymarketBookReconActionOut)
+async def run_polymarket_book_reconstruction_resync(
+    body: PolymarketManualBookReconResyncRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        result = await trigger_manual_polymarket_book_recon_resync(
+            session_factory,
+            asset_ids=body.asset_ids,
+            reason=body.reason,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Polymarket reconstruction resync failed: {exc}") from exc
+    return PolymarketBookReconActionOut(**result)
+
+
+@router.post("/reconstruction/catch-up", response_model=PolymarketBookReconActionOut)
+async def run_polymarket_book_reconstruction_catch_up(
+    body: PolymarketManualBookReconCatchupRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    result = await trigger_manual_polymarket_book_recon_catchup(
+        session_factory,
+        asset_ids=body.asset_ids,
+        reason=body.reason,
+    )
+    return PolymarketBookReconActionOut(**result, reason=body.reason, status="completed")
 
 
 @router.get("/raw/status", response_model=PolymarketRawStorageStatusOut)

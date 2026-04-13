@@ -214,3 +214,44 @@ polymarket_oi_poll_last_success_timestamp = Gauge(
     "smt_polymarket_oi_poll_last_success_timestamp",
     "Unix timestamp of the most recent successful Polymarket open-interest polling run",
 )
+
+# Polymarket book reconstruction / Phase 4
+polymarket_book_recon_live_books = Gauge(
+    "smt_polymarket_book_recon_live_books",
+    "Current number of watched Polymarket assets with live reconstructed books",
+)
+
+polymarket_book_recon_drift_incidents = Counter(
+    "smt_polymarket_book_recon_drift_incidents_total",
+    "Total Polymarket reconstruction drift or sanity incidents",
+    ["incident_type"],
+)
+
+polymarket_book_recon_auto_resync_runs = Counter(
+    "smt_polymarket_book_recon_auto_resync_runs_total",
+    "Total automatic Polymarket reconstruction resync runs",
+    ["status"],
+)
+
+polymarket_book_recon_manual_resync_runs = Counter(
+    "smt_polymarket_book_recon_manual_resync_runs_total",
+    "Total manual Polymarket reconstruction resync runs",
+    ["status"],
+)
+
+polymarket_book_recon_rows_applied = Counter(
+    "smt_polymarket_book_recon_rows_applied_total",
+    "Total rows or seed boundaries applied by Polymarket reconstruction",
+    ["kind"],
+)
+
+polymarket_book_recon_last_successful_resync_timestamp = Gauge(
+    "smt_polymarket_book_recon_last_successful_resync_timestamp",
+    "Unix timestamp of the most recent successful Polymarket reconstruction resync",
+)
+
+polymarket_book_recon_assets_degraded = Gauge(
+    "smt_polymarket_book_recon_assets_degraded",
+    "Current Polymarket reconstructed assets in degraded states",
+    ["status"],
+)

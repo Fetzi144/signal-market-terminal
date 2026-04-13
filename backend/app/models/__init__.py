@@ -18,6 +18,10 @@ from app.models.polymarket_raw import (
     PolymarketRawCaptureRun,
     PolymarketTradeTape,
 )
+from app.models.polymarket_reconstruction import (
+    PolymarketBookReconIncident,
+    PolymarketBookReconState,
+)
 from app.models.portfolio import Position, Trade
 from app.models.polymarket_stream import (
     PolymarketIngestIncident,
@@ -65,6 +69,8 @@ __all__ = [
     "PolymarketBboEvent",
     "PolymarketTradeTape",
     "PolymarketOpenInterestHistory",
+    "PolymarketBookReconState",
+    "PolymarketBookReconIncident",
     "PushSubscription",
     "SchedulerLease",
     "WalletProfile",

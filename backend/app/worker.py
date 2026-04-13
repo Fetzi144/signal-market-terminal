@@ -6,6 +6,7 @@ import signal
 
 from app.db import async_session
 from app.config import settings
+from app.ingestion.polymarket_book_reconstruction import PolymarketBookReconstructionService
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
 from app.ingestion.polymarket_raw_storage import PolymarketRawStorageService
 from app.ingestion.polymarket_stream import PolymarketStreamService
@@ -26,6 +27,7 @@ async def _run_worker() -> None:
         and not settings.polymarket_stream_enabled
         and not settings.polymarket_meta_sync_enabled
         and not settings.polymarket_raw_storage_enabled
+        and not settings.polymarket_book_recon_enabled
     ):
         logger.warning("Worker started with all worker features disabled; exiting")
         return
@@ -39,6 +41,8 @@ async def _run_worker() -> None:
     meta_sync_task: asyncio.Task | None = None
     raw_storage_service: PolymarketRawStorageService | None = None
     raw_storage_task: asyncio.Task | None = None
+    book_recon_service: PolymarketBookReconstructionService | None = None
+    book_recon_task: asyncio.Task | None = None
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -65,7 +69,17 @@ async def _run_worker() -> None:
         raw_storage_service = PolymarketRawStorageService(async_session)
         raw_storage_task = asyncio.create_task(raw_storage_service.run(stop_event))
 
-    if not scheduler_started and stream_task is None and meta_sync_task is None and raw_storage_task is None:
+    if settings.polymarket_book_recon_enabled:
+        book_recon_service = PolymarketBookReconstructionService(async_session)
+        book_recon_task = asyncio.create_task(book_recon_service.run(stop_event))
+
+    if (
+        not scheduler_started
+        and stream_task is None
+        and meta_sync_task is None
+        and raw_storage_task is None
+        and book_recon_task is None
+    ):
         logger.warning("No worker responsibilities started; exiting")
         return
 
@@ -98,6 +112,14 @@ async def _run_worker() -> None:
                 pass
         if raw_storage_service is not None:
             await raw_storage_service.close()
+        if book_recon_task is not None:
+            book_recon_task.cancel()
+            try:
+                await book_recon_task
+            except asyncio.CancelledError:
+                pass
+        if book_recon_service is not None:
+            await book_recon_service.close()
         if scheduler_started:
             await _maybe_await(stop_scheduler())
 
