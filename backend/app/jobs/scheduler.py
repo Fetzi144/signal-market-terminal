@@ -124,15 +124,30 @@ async def _run_confluence(session, candidates):
 
 async def _run_paper_trading(session, signals):
     """Auto-open paper trades for EV-positive signals."""
-    from app.default_strategy import evaluate_default_strategy_signal, get_default_strategy_start_at
+    from app.default_strategy import evaluate_default_strategy_signal
     from app.paper_trading.engine import attempt_open_trade
+    from app.strategy_runs.service import ensure_active_default_strategy_run
 
     count = 0
     candidate_count = 0
     skip_counts: dict[str, int] = {}
+    bootstrap_candidates = []
+    for signal in signals:
+        if signal.fired_at is None:
+            continue
+        if signal.fired_at.tzinfo is None:
+            bootstrap_candidates.append(signal.fired_at.replace(tzinfo=timezone.utc))
+        else:
+            bootstrap_candidates.append(signal.fired_at.astimezone(timezone.utc))
+    bootstrap_started_at = min(bootstrap_candidates, default=None)
+    strategy_run = await ensure_active_default_strategy_run(
+        session,
+        bootstrap_started_at=bootstrap_started_at,
+    )
+    baseline_start_at = strategy_run.started_at.isoformat() if strategy_run.started_at else None
 
     for signal in signals:
-        evaluation = evaluate_default_strategy_signal(signal)
+        evaluation = evaluate_default_strategy_signal(signal, started_at=strategy_run.started_at)
         if not evaluation.signal_type_match or not evaluation.in_window:
             continue
 
@@ -149,6 +164,8 @@ async def _run_paper_trading(session, signals):
                 estimated_probability=signal.estimated_probability,
                 market_price=signal.price_at_fire,
                 market_question=market_question,
+                fired_at=signal.fired_at,
+                strategy_run_id=strategy_run.id,
             )
         else:
             result = None
@@ -157,7 +174,8 @@ async def _run_paper_trading(session, signals):
         strategy_details = dict(details.get("default_strategy") or {})
         strategy_details.update({
             "strategy_name": settings.default_strategy_name,
-            "baseline_start_at": get_default_strategy_start_at().isoformat() if get_default_strategy_start_at() else None,
+            "strategy_run_id": str(strategy_run.id),
+            "baseline_start_at": baseline_start_at,
             "evaluated_at": attempted_at,
             "eligible": evaluation.eligible,
             "decision": (result.decision if result is not None else "skipped"),
@@ -401,6 +419,9 @@ async def _run_whale_scan():
 
 
 def start_scheduler():
+    if scheduler.running:
+        logger.info("Scheduler already running; skipping duplicate start")
+        return
     scheduler.add_job(
         _run_market_discovery,
         "interval",
@@ -464,4 +485,5 @@ def start_scheduler():
 
 
 def stop_scheduler():
-    scheduler.shutdown(wait=False)
+    if scheduler.running:
+        scheduler.shutdown(wait=False)

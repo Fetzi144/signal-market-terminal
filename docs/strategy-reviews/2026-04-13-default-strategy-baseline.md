@@ -1,31 +1,62 @@
 # Default Strategy Review
 
 **Date:** 2026-04-13  
-**Strategy:** `prove_the_edge_default`
+**Strategy:** `prove_the_edge_default`  
+**Run ID:** `018da68b-fc81-4025-8409-06289ebe25f4`  
+**Run Status:** `active`  
 
-## Frozen Contract
+## Run Metadata
 
-- Signal path: `confluence`
-- EV filter: `abs(expected_value) >= $0.03/share`
-- Kelly sizing: quarter-Kelly
-- Paper bankroll: `$10,000`
-- Risk guardrails: current single-position, total-exposure, cluster-exposure, and drawdown limits
+- Run start: 2026-04-13T00:00:00+00:00
+- Immutable launch boundary: 2026-04-13T00:00:00+00:00
+- Days tracked: 0.0
+- Observation status: `live_waiting_for_trades`
 
-## Weekly Questions
+## Current Health Snapshot
 
-1. Did the default strategy make money this week?
-2. Was average CLV positive for the traded path?
-3. Did confluence beat the legacy rank-threshold benchmark on 1-share P&L and drawdown?
-4. Which detectors earned a `keep`, `watch`, or `cut` verdict?
-5. Were there any missing resolutions, broken paper-trade lifecycles, or suspicious data gaps?
+- Open exposure: $0.00
+- Resolved trades: 0
+- Cumulative paper P&L: $0.00
+- Shadow cumulative P&L: $0.00
+- Average CLV: -
+- Profit factor: 0.0
+- Shadow profit factor: 0.0
+- Win rate: 0.0%
+- Brier score: -
+- Max drawdown: $0.00
 
-## Data Sources
+## Trade Funnel
 
-- `/api/v1/paper-trading/strategy-health`
-- `/api/v1/paper-trading/portfolio`
-- `/api/v1/paper-trading/metrics`
-- `/api/v1/paper-trading/pnl-curve`
+- Candidate signals: 1196
+- Qualified signals: 870
+- Traded signals: 0
+- Resolved signals: 0
+- Qualified not traded: 870
+- Legacy trades excluded: 8
 
-## Notes
+## Skip Reasons
 
-This artifact exists so every review cycle starts from the same contract and the same checklist. If the strategy contract changes, create a new baseline artifact rather than silently editing this one.
+- Total exposure limit reached: 870
+- EV below threshold: 326
+
+## Detector Verdicts
+
+- No detector verdicts yet.
+
+## Locked Comparison
+
+| Mode | Resolved Signals | Win Rate | Avg CLV | 1-Share P&L | Max Drawdown | Paper P&L | Brier |
+|------|------------------|----------|---------|-------------|--------------|-----------|-------|
+| Default Strategy | 0 | 0.0% | - | 0.0c | 0.0c | $0.00 | - |
+| Legacy | 0 | 0.0% | - | 0.0c | 0.0c | $0.00 | - |
+
+## Execution Realism Caveat
+
+- Liquidity-constrained trades: 0
+- Trades missing orderbook context: 0
+- Shadow execution uses a conservative half-spread penalty and near-touch depth checks. It is a realism overlay, not a full market-impact model.
+
+## Empty State
+
+No active-run paper trades have resolved yet. Keep the baseline frozen, watch the skip-reason funnel, and do not change the contract until the run produces measured trades.
+

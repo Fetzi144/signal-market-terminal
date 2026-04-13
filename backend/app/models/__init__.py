@@ -6,6 +6,7 @@ from app.models.portfolio import Position, Trade
 from app.models.push_subscription import PushSubscription
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
+from app.models.strategy_run import StrategyRun
 from app.models.whale import WalletActivity, WalletProfile
 
 __all__ = [
@@ -15,6 +16,7 @@ __all__ = [
     "OrderbookSnapshot",
     "Signal",
     "SignalEvaluation",
+    "StrategyRun",
     "IngestionRun",
     "BacktestRun",
     "BacktestSignal",

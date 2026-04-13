@@ -612,6 +612,132 @@ function StrategyContract({ health }) {
   );
 }
 
+function StrategyRunPanel({ health }) {
+  const strategyRun = health?.strategy_run;
+  if (!strategyRun) return <EmptyState text="No active strategy run has been seeded yet." />;
+
+  const rows = [
+    ["Run ID", strategyRun.id],
+    ["Strategy", strategyRun.strategy_name],
+    ["Status", strategyRun.status?.toUpperCase?.() || "-"],
+    ["Started", fmtDate(strategyRun.started_at)],
+    ["Created", fmtDate(strategyRun.created_at)],
+    ["Ended", fmtDate(strategyRun.ended_at)],
+  ];
+
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <tbody>
+          {rows.map(([label, value]) => (
+            <tr key={label} style={{ borderTop: "1px solid var(--border)" }}>
+              <td style={{ padding: "10px 16px", color: "var(--text-dim)", width: 160 }}>{label}</td>
+              <td style={{ padding: "10px 16px", fontFamily: label === "Run ID" ? "var(--mono)" : "inherit" }}>{value || "-"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div style={{ padding: "12px 16px", borderTop: "1px solid var(--border)", fontSize: 12, color: "var(--text-dim)" }}>
+        This run ID is the immutable anchor for the prove-the-edge window. Scoped metrics, paper trades, and review artifacts should all point back to it.
+      </div>
+    </div>
+  );
+}
+
+function ExecutionRealismPanel({ health, metrics }) {
+  const realism = health?.execution_realism;
+  if (!realism && !metrics) {
+    return <EmptyState text="Execution-realism metrics are unavailable." />;
+  }
+
+  const source = realism || metrics;
+  const cards = [
+    {
+      label: "Shadow P&L",
+      value: fmtCurrency(source?.shadow_cumulative_pnl),
+      color: pnlColor(source?.shadow_cumulative_pnl),
+      sub: "Conservative P&L using half-spread penalties on entry.",
+    },
+    {
+      label: "Shadow Profit Factor",
+      value: source?.shadow_profit_factor == null ? "-" : Number(source.shadow_profit_factor).toFixed(2),
+      sub: "Shadow wins divided by shadow losses.",
+    },
+    {
+      label: "Liquidity Constrained",
+      value: fmtWhole(source?.liquidity_constrained_trades),
+      color: Number(source?.liquidity_constrained_trades || 0) > 0 ? "var(--yellow)" : "var(--green)",
+      sub: "Trades where recommended size exceeded near-touch depth.",
+    },
+    {
+      label: "Orderbook Gaps",
+      value: fmtWhole(source?.trades_missing_orderbook_context),
+      color: Number(source?.trades_missing_orderbook_context || 0) > 0 ? "var(--yellow)" : "var(--green)",
+      sub: "Trades missing usable orderbook context for shadow fills.",
+    },
+  ];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+      {cards.map((card) => (
+        <SummaryCard
+          key={card.label}
+          label={card.label}
+          value={card.value}
+          color={card.color}
+          sub={card.sub}
+        />
+      ))}
+    </div>
+  );
+}
+
+function RunIntegrityPanel({ health }) {
+  const integrity = health?.run_integrity;
+  if (!integrity) {
+    return <EmptyState text="Run integrity data is unavailable." />;
+  }
+
+  const items = [
+    {
+      label: "Pre-run signals",
+      value: fmtWhole(integrity.pre_launch_candidate_signals),
+      note: "Historical candidate signals excluded because they predate the active run start.",
+    },
+    {
+      label: "Pre-run trades",
+      value: fmtWhole(integrity.excluded_pre_launch_trades),
+      note: "Historical paper trades excluded because they opened before the run boundary.",
+    },
+    {
+      label: "Legacy trades",
+      value: fmtWhole(integrity.excluded_legacy_trades),
+      note: "Paper trades that do not carry the active strategy_run_id and therefore stay outside this sample.",
+    },
+    {
+      label: "Orderbook coverage gaps",
+      value: fmtWhole(integrity.trades_missing_orderbook_context),
+      note: "Resolved trades without enough orderbook data to compute a shadow execution path.",
+    },
+  ];
+
+  return (
+    <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 8, padding: 18 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+        {items.map((item) => (
+          <div key={item.label} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 14, background: "var(--bg)" }}>
+            <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+              {item.label}
+            </div>
+            <div style={{ fontSize: 24, fontFamily: "var(--mono)", fontWeight: 700, marginBottom: 6 }}>{item.value}</div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>{item.note}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function FunnelCard({ label, value, sub, color }) {
   return (
     <div style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
@@ -1072,6 +1198,8 @@ export default function PaperTrading() {
 
   const headline = strategyHealth?.headline;
   const funnel = strategyHealth?.trade_funnel;
+  const strategyRun = strategyHealth?.strategy_run;
+  const executionRealism = strategyHealth?.execution_realism;
   const brief = useMemo(
     () => (strategyHealth ? buildStrategyBrief(strategyHealth) : null),
     [strategyHealth]
@@ -1089,6 +1217,11 @@ export default function PaperTrading() {
         label: "Observation Window",
         value: strategyHealth.observation?.days_tracked == null ? "0.0d" : `${Number(strategyHealth.observation.days_tracked).toFixed(1)}d`,
         sub: `Minimum ${strategyHealth.observation?.minimum_days || 0}d, preferred ${strategyHealth.observation?.preferred_days || 0}d`,
+      },
+      {
+        label: "Active Run",
+        value: strategyRun?.id ? `${String(strategyRun.id).slice(0, 8)}...` : "-",
+        sub: strategyRun?.started_at ? `Immutable start ${fmtDate(strategyRun.started_at)}` : "No active run seeded yet",
       },
       {
         label: "Open Exposure",
@@ -1112,6 +1245,12 @@ export default function PaperTrading() {
         sub: `${fmtWhole(headline?.resolved_signals)} resolved traded signals`,
       },
       {
+        label: "Shadow P&L",
+        value: fmtCurrency(executionRealism?.shadow_cumulative_pnl),
+        color: pnlColor(executionRealism?.shadow_cumulative_pnl),
+        sub: "Conservative execution realism line from shadow fills",
+      },
+      {
         label: "Qualified Not Traded",
         value: fmtWhole(funnel?.qualified_not_traded),
         color: Number(funnel?.qualified_not_traded || 0) > 0 ? "var(--yellow)" : "var(--green)",
@@ -1123,8 +1262,14 @@ export default function PaperTrading() {
         color: Number(funnel?.excluded_legacy_trades || 0) > 0 ? "var(--yellow)" : "var(--green)",
         sub: "Historical paper trades kept outside the frozen strategy read",
       },
+      {
+        label: "Orderbook Gaps",
+        value: fmtWhole(executionRealism?.trades_missing_orderbook_context),
+        color: Number(executionRealism?.trades_missing_orderbook_context || 0) > 0 ? "var(--yellow)" : "var(--green)",
+        sub: "Resolved trades missing shadow execution context",
+      },
     ];
-  }, [brief, funnel, headline, strategyHealth]);
+  }, [brief, executionRealism, funnel, headline, strategyHealth, strategyRun]);
 
   return (
     <div>
@@ -1185,8 +1330,16 @@ export default function PaperTrading() {
         {strategyHealth ? <BenchmarkComparison health={strategyHealth} /> : <div className="skeleton" style={{ height: 220, borderRadius: 8 }} />}
       </Section>
 
+      <Section title="Active Strategy Run">
+        {strategyHealth ? <StrategyRunPanel health={strategyHealth} /> : <div className="skeleton" style={{ height: 180, borderRadius: 8 }} />}
+      </Section>
+
       <Section title="Strategy Funnel">
         {strategyHealth ? <StrategyFunnel health={strategyHealth} /> : <div className="skeleton" style={{ height: 180, borderRadius: 8 }} />}
+      </Section>
+
+      <Section title="Run Integrity">
+        {strategyHealth ? <RunIntegrityPanel health={strategyHealth} /> : <div className="skeleton" style={{ height: 180, borderRadius: 8 }} />}
       </Section>
 
       <Section title="Why Trades Were Skipped">
@@ -1240,6 +1393,16 @@ export default function PaperTrading() {
           <EmptyState text="Unable to load execution metrics right now." />
         ) : (
           <div className="skeleton" style={{ height: 100, borderRadius: 8 }} />
+        )}
+      </Section>
+
+      <Section title="Execution Realism">
+        {strategyHealth || metrics ? (
+          <ExecutionRealismPanel health={strategyHealth} metrics={metrics} />
+        ) : dashboardError ? (
+          <EmptyState text="Unable to load execution-realism metrics right now." />
+        ) : (
+          <div className="skeleton" style={{ height: 120, borderRadius: 8 }} />
         )}
       </Section>
 

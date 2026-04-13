@@ -49,6 +49,7 @@ def reset_default_strategy_window(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "default_strategy_start_at", None)
+    monkeypatch.setattr(settings, "scheduler_enabled", False)
 
 
 @pytest_asyncio.fixture

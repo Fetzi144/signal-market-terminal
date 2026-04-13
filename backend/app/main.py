@@ -36,10 +36,12 @@ limiter = Limiter(key_func=get_remote_address, default_limits=[settings.api_rate
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting Signal Market Terminal")
-    start_scheduler()
+    if settings.scheduler_enabled:
+        start_scheduler()
     yield
     logger.info("Shutting down Signal Market Terminal")
-    stop_scheduler()
+    if settings.scheduler_enabled:
+        stop_scheduler()
 
 
 app = FastAPI(

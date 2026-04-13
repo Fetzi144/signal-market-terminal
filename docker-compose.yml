@@ -23,6 +23,7 @@ services:
       - ./backend/.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://smt:smt@db:5432/smt
+      - SCHEDULER_ENABLED=false
     depends_on:
       db:
         condition: service_healthy
@@ -30,6 +31,21 @@ services:
       - ./backend:/app
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://smt:smt@db:5432/smt
+      - SCHEDULER_ENABLED=true
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "alembic upgrade head && python -m app.worker"
 
   frontend:
     build: ./frontend
@@ -39,6 +55,7 @@ services:
       - VITE_API_TARGET=http://backend:8000
     depends_on:
       - backend
+      - worker
     volumes:
       - ./frontend:/app
       - /app/node_modules

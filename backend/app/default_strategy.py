@@ -34,13 +34,17 @@ def _ensure_utc(value: datetime | None) -> datetime | None:
 
 
 def get_default_strategy_start_at() -> datetime | None:
-    """Return the launch boundary for the default strategy window."""
+    """Return the bootstrap launch boundary for the default strategy window."""
     return _ensure_utc(settings.default_strategy_start_at)
 
 
-def in_default_strategy_window(fired_at: datetime | None) -> bool:
+def in_default_strategy_window(
+    fired_at: datetime | None,
+    *,
+    started_at: datetime | None = None,
+) -> bool:
     """Return True when the timestamp is inside the validation window."""
-    started_at = get_default_strategy_start_at()
+    started_at = _ensure_utc(started_at) if started_at is not None else get_default_strategy_start_at()
     if started_at is None:
         return True
     current = _ensure_utc(fired_at)
@@ -53,19 +57,24 @@ def default_strategy_skip_label(reason_code: str | None) -> str | None:
     return SKIP_REASON_LABELS.get(reason_code, reason_code.replace("_", " "))
 
 
-def evaluate_default_strategy_signal(signal) -> DefaultStrategyEvaluation:
+def evaluate_default_strategy_signal(
+    signal,
+    *,
+    started_at: datetime | None = None,
+) -> DefaultStrategyEvaluation:
     """Evaluate a signal against the frozen default-strategy contract."""
     required_signal_type = settings.default_strategy_signal_type
     min_ev = Decimal(str(settings.min_ev_threshold))
+    in_window = in_default_strategy_window(signal.fired_at, started_at=started_at)
 
     if required_signal_type and signal.signal_type != required_signal_type:
         return DefaultStrategyEvaluation(
             signal_type_match=False,
-            in_window=in_default_strategy_window(signal.fired_at),
+            in_window=in_window,
             eligible=False,
         )
 
-    if not in_default_strategy_window(signal.fired_at):
+    if not in_window:
         return DefaultStrategyEvaluation(
             signal_type_match=True,
             in_window=False,
@@ -126,9 +135,9 @@ def evaluate_default_strategy_signal(signal) -> DefaultStrategyEvaluation:
     )
 
 
-def get_default_strategy_contract() -> dict:
+def get_default_strategy_contract(*, started_at: datetime | None = None) -> dict:
     """Return the auditable contract for the default strategy."""
-    started_at = get_default_strategy_start_at()
+    started_at = _ensure_utc(started_at) if started_at is not None else get_default_strategy_start_at()
     return {
         "name": settings.default_strategy_name,
         "display_name": "Default Strategy",

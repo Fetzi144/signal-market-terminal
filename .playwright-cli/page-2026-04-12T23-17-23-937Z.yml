@@ -1,0 +1,54 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Signal Market Terminal" [ref=e5] [cursor=pointer]:
+      - /url: /
+      - heading "Signal Market Terminal" [level=1] [ref=e6]
+    - navigation [ref=e7]:
+      - link "Feed" [ref=e8] [cursor=pointer]:
+        - /url: /
+      - link "Performance" [ref=e9] [cursor=pointer]:
+        - /url: /performance
+      - link "Strategy Health" [ref=e10] [cursor=pointer]:
+        - /url: /paper-trading
+      - link "Portfolio" [ref=e11] [cursor=pointer]:
+        - /url: /portfolio
+      - link "Markets" [ref=e12] [cursor=pointer]:
+        - /url: /markets
+      - link "Analytics" [ref=e13] [cursor=pointer]:
+        - /url: /analytics
+      - link "Backtest" [ref=e14] [cursor=pointer]:
+        - /url: /backtests
+      - link "Alerts" [ref=e15] [cursor=pointer]:
+        - /url: /alerts
+      - link "Health" [ref=e16] [cursor=pointer]:
+        - /url: /health
+      - button "🔕" [ref=e17] [cursor=pointer]
+      - button "☀" [ref=e18] [cursor=pointer]
+  - generic [ref=e19]:
+    - generic [ref=e20]:
+      - generic [ref=e21]:
+        - generic [ref=e22]: Strategy Console
+        - heading "Default Strategy Health" [level=2] [ref=e23]
+        - generic [ref=e24]: Paper trading is the source of truth for the prove-the-edge phase. This page should tell you whether the frozen baseline is making money, whether the evidence is trustworthy, and what to review next.
+      - generic [ref=e25]:
+        - generic [ref=e26]: Waiting for first sync
+        - button "Refreshing..." [disabled] [ref=e27]
+    - heading "Default vs Legacy Benchmark" [level=2] [ref=e31]
+    - heading "Detector Verdicts" [level=2] [ref=e35]
+    - heading "Recent Mistakes" [level=2] [ref=e39]
+    - heading "Weekly Review Questions" [level=2] [ref=e43]
+    - heading "Default Strategy Contract" [level=2] [ref=e47]
+    - heading "Cumulative P&L" [level=2] [ref=e51]
+    - heading "Execution Metrics" [level=2] [ref=e55]
+    - heading "Open Trades" [level=2] [ref=e59]
+    - generic [ref=e62]:
+      - heading "Trade History" [level=2] [ref=e63]
+      - generic [ref=e64]:
+        - combobox [ref=e65]:
+          - option "All statuses" [selected]
+          - option "Open"
+          - option "Resolved"
+        - combobox [ref=e66]:
+          - option "All directions" [selected]
+          - option "BUY YES"
+          - option "BUY NO"

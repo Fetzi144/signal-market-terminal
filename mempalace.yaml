@@ -1,0 +1,12 @@
+wing: signal_market_terminal
+rooms:
+- name: backend
+  description: Files from backend/
+- name: documentation
+  description: Files from docs/
+- name: frontend
+  description: Files from frontend/
+- name: testing
+  description: Files from tests/
+- name: general
+  description: Files that don't fit other rooms

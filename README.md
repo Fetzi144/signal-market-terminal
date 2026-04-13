@@ -17,7 +17,7 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
                              |
               +-----------v-----------+
               |       Backend         |
-              |  (FastAPI + APScheduler)|
+              | (FastAPI API service) |
               |                       |
               |  Ingestion  -> DB     |
               |  Detection  -> Signals|
@@ -27,6 +27,11 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
               |  Analytics  -> Stats  |
               |  Metrics    -> Prom   |
               |  Cleanup    -> Retain |
+              +-----------+-----------+
+                          |
+              +-----------v-----------+
+              |  Scheduler Worker     |
+              |    (APScheduler)      |
               +-----------+-----------+
                           |
               +-----------v-----------+
@@ -52,6 +57,7 @@ This is **not** an auto-trading bot. It is a monitoring, research, and decision-
 cd "Signal Market Terminal"
 docker-compose up --build
 
+# The API runs in `backend`; APScheduler jobs run in `worker`
 # Wait ~2 minutes for market discovery + first snapshots
 # Open http://localhost:5173
 ```
@@ -73,7 +79,13 @@ cd backend
 cp .env.example .env
 pip install -r requirements.txt
 alembic upgrade head
+set SCHEDULER_ENABLED=false
 uvicorn app.main:app --reload
+
+# Scheduler worker (separate terminal)
+cd backend
+set SCHEDULER_ENABLED=true
+python -m app.worker
 
 # Frontend (separate terminal)
 cd frontend
@@ -94,6 +106,8 @@ The repo now carries one explicit validation path for the "prove the edge" phase
 - **Sizing:** quarter-Kelly on a `$10,000` paper bankroll
 - **Risk guardrails:** `5%` max single position, `30%` max total exposure, `15%` max cluster exposure, drawdown circuit breaker at `-15%`
 - **Primary source of truth:** paper-trading portfolio, P&L curve, strategy-health review, and detector verdicts
+- **Immutable run anchor:** the active `strategy_run` record, not a mutable env var
+- **Execution realism overlay:** conservative shadow-entry pricing with liquidity flags from stored orderbook snapshots
 
 See [docs/default-strategy.md](<C:/Code/Signal Market Terminal/docs/default-strategy.md>) for the full contract.
 
@@ -190,6 +204,8 @@ Key settings:
 | Signal Detection | 2 min + 10s | Run all 5 detectors, persist + broadcast via SSE |
 | Evaluation | 5 min | Evaluate unresolved signals at 15m/1h/4h/24h |
 | Cleanup | 6 hours | Delete old snapshots (30d), orderbooks (14d), signals (90d) |
+
+In dev and prod, APScheduler now runs in the dedicated `worker` service. The web/API process should keep `SCHEDULER_ENABLED=false`.
 
 ## Tech Stack
 

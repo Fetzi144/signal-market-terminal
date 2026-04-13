@@ -28,14 +28,17 @@ paper_limiter = Limiter(key_func=get_remote_address)
 class PaperTradeOut(BaseModel):
     id: uuid.UUID
     signal_id: uuid.UUID
+    strategy_run_id: uuid.UUID | None = None
     outcome_id: uuid.UUID
     market_id: uuid.UUID
     direction: str
     entry_price: Decimal
+    shadow_entry_price: Decimal | None = None
     size_usd: Decimal
     shares: Decimal
     exit_price: Decimal | None = None
     pnl: Decimal | None = None
+    shadow_pnl: Decimal | None = None
     status: str
     opened_at: datetime
     resolved_at: datetime | None = None
@@ -59,12 +62,16 @@ class MetricsOut(BaseModel):
     losses: int
     win_rate: float
     cumulative_pnl: float
+    shadow_cumulative_pnl: float = 0.0
     avg_pnl: float
     max_drawdown: float
     sharpe_ratio: float
     profit_factor: float | None
+    shadow_profit_factor: float | None = None
     best_trade: float
     worst_trade: float
+    liquidity_constrained_trades: int = 0
+    trades_missing_orderbook_context: int = 0
 
 
 class TradeHistoryOut(BaseModel):
@@ -78,6 +85,7 @@ class PnlPointOut(BaseModel):
     timestamp: str
     pnl: float
     trade_pnl: float
+    shadow_trade_pnl: float | None = None
     direction: str
     trade_id: str
 
@@ -99,14 +107,17 @@ async def get_portfolio(
             PaperTradeOut(
                 id=t.id,
                 signal_id=t.signal_id,
+                strategy_run_id=t.strategy_run_id,
                 outcome_id=t.outcome_id,
                 market_id=t.market_id,
                 direction=t.direction,
                 entry_price=t.entry_price,
+                shadow_entry_price=t.shadow_entry_price,
                 size_usd=t.size_usd,
                 shares=t.shares,
                 exit_price=t.exit_price,
                 pnl=t.pnl,
+                shadow_pnl=t.shadow_pnl,
                 status=t.status,
                 opened_at=t.opened_at,
                 resolved_at=t.resolved_at,
@@ -149,14 +160,17 @@ async def get_history(
                 PaperTradeOut(
                     id=t.id,
                     signal_id=t.signal_id,
+                    strategy_run_id=t.strategy_run_id,
                     outcome_id=t.outcome_id,
                     market_id=t.market_id,
                     direction=t.direction,
                     entry_price=t.entry_price,
+                    shadow_entry_price=t.shadow_entry_price,
                     size_usd=t.size_usd,
                     shares=t.shares,
                     exit_price=t.exit_price,
                     pnl=t.pnl,
+                    shadow_pnl=t.shadow_pnl,
                     status=t.status,
                     opened_at=t.opened_at,
                     resolved_at=t.resolved_at,
@@ -192,14 +206,17 @@ async def get_history(
             PaperTradeOut(
                 id=t.id,
                 signal_id=t.signal_id,
+                strategy_run_id=t.strategy_run_id,
                 outcome_id=t.outcome_id,
                 market_id=t.market_id,
                 direction=t.direction,
                 entry_price=t.entry_price,
+                shadow_entry_price=t.shadow_entry_price,
                 size_usd=t.size_usd,
                 shares=t.shares,
                 exit_price=t.exit_price,
                 pnl=t.pnl,
+                shadow_pnl=t.shadow_pnl,
                 status=t.status,
                 opened_at=t.opened_at,
                 resolved_at=t.resolved_at,

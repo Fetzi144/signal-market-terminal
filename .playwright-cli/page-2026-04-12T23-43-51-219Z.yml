@@ -1,0 +1,110 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Signal Market Terminal" [ref=e5] [cursor=pointer]:
+      - /url: /
+      - heading "Signal Market Terminal" [level=1] [ref=e6]
+    - navigation [ref=e7]:
+      - link "Feed" [ref=e8] [cursor=pointer]:
+        - /url: /
+      - link "Performance" [ref=e9] [cursor=pointer]:
+        - /url: /performance
+      - link "Strategy Health" [ref=e10] [cursor=pointer]:
+        - /url: /paper-trading
+      - link "Portfolio" [ref=e11] [cursor=pointer]:
+        - /url: /portfolio
+      - link "Markets" [ref=e12] [cursor=pointer]:
+        - /url: /markets
+      - link "Analytics" [ref=e13] [cursor=pointer]:
+        - /url: /analytics
+      - link "Backtest" [ref=e14] [cursor=pointer]:
+        - /url: /backtests
+      - link "Alerts" [ref=e15] [cursor=pointer]:
+        - /url: /alerts
+      - link "Health" [ref=e16] [cursor=pointer]:
+        - /url: /health
+      - button "☀" [ref=e17] [cursor=pointer]
+  - generic [ref=e19]:
+    - button "Close wizard" [ref=e20] [cursor=pointer]: ×
+    - generic [ref=e26]:
+      - heading "What is Signal Market Terminal?" [level=3] [ref=e27]
+      - paragraph [ref=e28]:
+        - text: SMT scans
+        - strong [ref=e29]: Polymarket
+        - text: and
+        - strong [ref=e30]: Kalshi
+        - text: prediction markets in real time, detecting trading signals like price moves, volume spikes, and liquidity shifts.
+      - generic [ref=e31]:
+        - generic [ref=e32]: Rank Formula
+        - generic [ref=e33]: rank = signal_score x confidence x recency_weight
+        - paragraph [ref=e34]: Recency decays linearly from 1.0 (just fired) to 0.3 (24h old).
+      - generic [ref=e35]:
+        - generic [ref=e36]: Platform Badges
+        - generic [ref=e37]:
+          - generic [ref=e38]:
+            - generic [ref=e39]: PM
+            - generic [ref=e40]: Polymarket
+          - generic [ref=e41]:
+            - generic [ref=e42]: KA
+            - generic [ref=e43]: Kalshi
+      - generic [ref=e44]:
+        - generic [ref=e45]: Timeframe Colors
+        - generic [ref=e46]:
+          - generic [ref=e47]: 5m
+          - generic [ref=e48]: 15m
+          - generic [ref=e49]: 30m
+          - generic [ref=e50]: 1h
+          - generic [ref=e51]: 4h
+          - generic [ref=e52]: 24h
+      - generic [ref=e53]:
+        - generic [ref=e54]: Signal Types
+        - generic [ref=e55]:
+          - generic [ref=e56]:
+            - strong [ref=e57]: Price Move
+            - generic [ref=e58]: — Significant price change on an outcome within a timeframe
+          - generic [ref=e59]:
+            - strong [ref=e60]: Volume Spike
+            - generic [ref=e61]: — Trading volume surges above normal levels
+          - generic [ref=e62]:
+            - strong [ref=e63]: Spread Change
+            - generic [ref=e64]: — Bid-ask spread widens or narrows sharply
+          - generic [ref=e65]:
+            - strong [ref=e66]: Liquidity Vacuum
+            - generic [ref=e67]: — One side of the order book thins out
+          - generic [ref=e68]:
+            - strong [ref=e69]: Deadline Near
+            - generic [ref=e70]: — Market resolution date is approaching with active trading
+          - generic [ref=e71]:
+            - strong [ref=e72]: Confluence
+            - generic [ref=e73]: — Multiple timeframes confirm the same directional move
+    - generic [ref=e74]:
+      - button "Skip" [ref=e75] [cursor=pointer]
+      - button "Next" [ref=e76] [cursor=pointer]
+  - generic [ref=e77]:
+    - generic [ref=e78]:
+      - generic [ref=e79]:
+        - generic [ref=e80]: Strategy Console
+        - heading "Default Strategy Health" [level=2] [ref=e81]
+        - generic [ref=e82]: Paper trading is the source of truth for the prove-the-edge phase. This page should tell you whether the frozen baseline is making money, whether the evidence is trustworthy, and what to review next.
+      - generic [ref=e83]:
+        - generic [ref=e84]: Waiting for first sync
+        - button "Refreshing..." [disabled] [ref=e85]
+    - heading "Default vs Legacy Benchmark" [level=2] [ref=e89]
+    - heading "Strategy Funnel" [level=2] [ref=e93]
+    - heading "Detector Verdicts" [level=2] [ref=e97]
+    - heading "Recent Mistakes" [level=2] [ref=e101]
+    - heading "Weekly Review Questions" [level=2] [ref=e105]
+    - heading "Default Strategy Contract" [level=2] [ref=e109]
+    - heading "Cumulative P&L" [level=2] [ref=e113]
+    - heading "Execution Metrics" [level=2] [ref=e117]
+    - heading "Open Trades" [level=2] [ref=e121]
+    - generic [ref=e124]:
+      - heading "Trade History" [level=2] [ref=e125]
+      - generic [ref=e126]:
+        - combobox [ref=e127]:
+          - option "All statuses" [selected]
+          - option "Open"
+          - option "Resolved"
+        - combobox [ref=e128]:
+          - option "All directions" [selected]
+          - option "BUY YES"
+          - option "BUY NO"

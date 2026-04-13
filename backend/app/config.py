@@ -79,6 +79,7 @@ class Settings(BaseSettings):
     max_cluster_exposure_pct: float = 0.15  # 15% of bankroll per correlated cluster
     drawdown_circuit_breaker_pct: float = 0.15  # pause at -15% from peak
     paper_trading_enabled: bool = True
+    scheduler_enabled: bool = False
     default_strategy_name: str = "prove_the_edge_default"
     default_strategy_signal_type: str = "confluence"
     default_strategy_start_at: datetime | None = datetime(2026, 4, 13, tzinfo=timezone.utc)

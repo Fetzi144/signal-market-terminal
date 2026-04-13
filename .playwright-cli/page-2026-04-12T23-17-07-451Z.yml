@@ -1,0 +1,409 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - link "Signal Market Terminal" [ref=e5] [cursor=pointer]:
+      - /url: /
+      - heading "Signal Market Terminal" [level=1] [ref=e6]
+    - navigation [ref=e7]:
+      - link "Feed" [ref=e8] [cursor=pointer]:
+        - /url: /
+      - link "Performance" [ref=e9] [cursor=pointer]:
+        - /url: /performance
+      - link "Strategy Health" [ref=e10] [cursor=pointer]:
+        - /url: /paper-trading
+      - link "Portfolio" [ref=e11] [cursor=pointer]:
+        - /url: /portfolio
+      - link "Markets" [ref=e12] [cursor=pointer]:
+        - /url: /markets
+      - link "Analytics" [ref=e13] [cursor=pointer]:
+        - /url: /analytics
+      - link "Backtest" [ref=e14] [cursor=pointer]:
+        - /url: /backtests
+      - link "Alerts" [ref=e15] [cursor=pointer]:
+        - /url: /alerts
+      - link "Health" [ref=e16] [cursor=pointer]:
+        - /url: /health
+      - button "🔕" [ref=e126] [cursor=pointer]
+      - button "☀" [ref=e17] [cursor=pointer]
+  - generic [ref=e77]:
+    - generic [ref=e78]:
+      - generic [ref=e79]:
+        - generic [ref=e80]: Strategy Console
+        - heading "Default Strategy Health" [level=2] [ref=e81]
+        - generic [ref=e82]: Paper trading is the source of truth for the prove-the-edge phase. This page should tell you whether the frozen baseline is making money, whether the evidence is trustworthy, and what to review next.
+      - generic [ref=e83]:
+        - generic [ref=e84]: Last sync 13/04/2026, 01:17:04
+        - button "Refresh now" [ref=e221] [cursor=pointer]
+    - generic [ref=e222]:
+      - generic [ref=e223]:
+        - generic [ref=e224]:
+          - generic [ref=e225]: Collecting evidence
+          - generic [ref=e226]: Keep the baseline frozen
+          - generic [ref=e227]: Let the default strategy run unchanged until the observation window fills in.
+        - generic [ref=e228]:
+          - generic [ref=e229]: Validation Window
+          - generic [ref=e230]:
+            - generic [ref=e231]: 0.3d
+            - generic [ref=e232]: min 14d
+          - generic [ref=e235]: 14 day(s) remain before the first hard review.
+      - generic [ref=e236]:
+        - generic [ref=e237]:
+          - generic [ref=e238]: Why This Call
+          - generic [ref=e239]:
+            - generic [ref=e240]: No resolved paper trades yet, so the edge verdict is still provisional.
+            - generic [ref=e241]: 8 live trades currently use US$3,000.00 of US$10,000.00 bankroll.
+            - generic [ref=e242]: 2 detector are already marked cut in the legacy review loop.
+        - generic [ref=e243]:
+          - generic [ref=e244]: Priority Queue
+          - generic [ref=e245]:
+            - generic [ref=e246]: Do not re-tune the baseline for another 14 day(s).
+            - generic [ref=e247]: Track the 20,908 unresolved default-strategy signals so CLV and P&L can settle cleanly.
+            - generic [ref=e248]: Open exposure is already 30% of bankroll, so avoid layering in discretionary trades that muddy the read.
+            - generic [ref=e249]: The legacy benchmark has no resolved sample yet, so benchmark deltas are not decision-grade.
+        - generic [ref=e250]:
+          - generic [ref=e251]: Fast Read
+          - generic [ref=e252]:
+            - generic [ref=e253]:
+              - generic [ref=e254]: Open exposure
+              - generic [ref=e255]: 30%
+            - generic [ref=e256]:
+              - generic [ref=e257]: Resolved trades
+              - generic [ref=e258]: "0"
+            - generic [ref=e259]:
+              - generic [ref=e260]: Detector cuts
+              - generic [ref=e261]: "2"
+            - generic [ref=e262]:
+              - generic [ref=e263]: Missing resolutions
+              - generic [ref=e264]: 20,908
+    - generic [ref=e265]:
+      - generic [ref=e266]:
+        - generic [ref=e267]: Collecting data
+        - generic [ref=e268]: 0.3 days tracked
+      - generic [ref=e269]: The baseline strategy is live, but the observation window is still too short for hard calls.
+      - generic [ref=e270]: 14 day(s) until the minimum review window.
+    - generic [ref=e271]:
+      - generic [ref=e272]:
+        - generic [ref=e273]: Cumulative P&L
+        - generic [ref=e274]: US$0.00
+        - generic [ref=e275]: No resolved paper trades yet
+      - generic [ref=e276]:
+        - generic [ref=e277]: Observation Window
+        - generic [ref=e278]: 0.3d
+        - generic [ref=e279]: Minimum 14d, preferred 30d
+      - generic [ref=e280]:
+        - generic [ref=e281]: Open Exposure
+        - generic [ref=e282]: US$3,000.00
+        - generic [ref=e283]: 30% of bankroll across 8 live trades
+      - generic [ref=e284]:
+        - generic [ref=e285]: Resolved Evidence
+        - generic [ref=e286]: "0"
+        - generic [ref=e287]: 0 resolved default-strategy signals
+      - generic [ref=e288]:
+        - generic [ref=e289]: Avg CLV
+        - generic [ref=e290]: "-"
+        - generic [ref=e291]: Wait for settled signals
+      - generic [ref=e292]:
+        - generic [ref=e293]: Detector Cuts
+        - generic [ref=e294]: "2"
+        - generic [ref=e295]: 1 watch verdicts in the loop
+      - generic [ref=e296]:
+        - generic [ref=e297]: Missing Resolutions
+        - generic [ref=e298]: 20,908
+        - generic [ref=e299]: Default-strategy signals still waiting to settle
+    - generic [ref=e87]:
+      - heading "Default vs Legacy Benchmark" [level=2] [ref=e89]
+      - generic [ref=e300]:
+        - table [ref=e301]:
+          - rowgroup [ref=e302]:
+            - row "Metric Default Strategy Legacy Benchmark" [ref=e303]:
+              - columnheader "Metric" [ref=e304]
+              - columnheader "Default Strategy" [ref=e305]
+              - columnheader "Legacy Benchmark" [ref=e306]
+          - rowgroup [ref=e307]:
+            - row "Resolved Signals 0 0" [ref=e308]:
+              - cell "Resolved Signals" [ref=e309]
+              - cell "0" [ref=e310]
+              - cell "0" [ref=e311]
+            - row "Win Rate 0.0% 0.0%" [ref=e312]:
+              - cell "Win Rate" [ref=e313]
+              - cell "0.0%" [ref=e314]
+              - cell "0.0%" [ref=e315]
+            - row "Avg CLV - -" [ref=e316]:
+              - cell "Avg CLV" [ref=e317]
+              - cell "-" [ref=e318]
+              - cell "-" [ref=e319]
+            - row "1-Share P&L 0.0c 0.0c" [ref=e320]:
+              - cell "1-Share P&L" [ref=e321]
+              - cell "0.0c" [ref=e322]
+              - cell "0.0c" [ref=e323]
+            - row "1-Share Max Drawdown 0.0c 0.0c" [ref=e324]:
+              - cell "1-Share Max Drawdown" [ref=e325]
+              - cell "0.0c" [ref=e326]
+              - cell "0.0c" [ref=e327]
+        - generic [ref=e328]: No resolved baseline or benchmark signals yet. Start using this comparison after the first settlements land.
+    - generic [ref=e91]:
+      - heading "Detector Verdicts" [level=2] [ref=e93]
+      - table [ref=e330]:
+        - rowgroup [ref=e331]:
+          - row "Detector Resolved Paper Trades Avg CLV 1-Share P&L Trade P&L Brier Verdict" [ref=e332]:
+            - columnheader "Detector" [ref=e333]
+            - columnheader "Resolved" [ref=e334]
+            - columnheader "Paper Trades" [ref=e335]
+            - columnheader "Avg CLV" [ref=e336]
+            - columnheader "1-Share P&L" [ref=e337]
+            - columnheader "Trade P&L" [ref=e338]
+            - columnheader "Brier" [ref=e339]
+            - columnheader "Verdict" [ref=e340]
+        - rowgroup [ref=e341]:
+          - row "order flow imbalance Need more resolved samples before making a keep/cut call. 1 0 0.0c 1.0c US$0.00 - watch" [ref=e342]:
+            - cell "order flow imbalance Need more resolved samples before making a keep/cut call." [ref=e343]:
+              - generic [ref=e344]: order flow imbalance
+              - generic [ref=e345]: Need more resolved samples before making a keep/cut call.
+            - cell "1" [ref=e346]
+            - cell "0" [ref=e347]
+            - cell "0.0c" [ref=e348]
+            - cell "1.0c" [ref=e349]
+            - cell "US$0.00" [ref=e350]
+            - cell "-" [ref=e351]
+            - cell "watch" [ref=e352]
+          - row "price move Negative CLV and negative hypothetical P&L over the review window. 57 8 -31.2c -1365.5c US$0.00 - cut" [ref=e353]:
+            - cell "price move Negative CLV and negative hypothetical P&L over the review window." [ref=e354]:
+              - generic [ref=e355]: price move
+              - generic [ref=e356]: Negative CLV and negative hypothetical P&L over the review window.
+            - cell "57" [ref=e357]
+            - cell "8" [ref=e358]
+            - cell "-31.2c" [ref=e359]
+            - cell "-1365.5c" [ref=e360]
+            - cell "US$0.00" [ref=e361]
+            - cell "-" [ref=e362]
+            - cell "cut" [ref=e363]
+          - row "deadline near Negative CLV and negative hypothetical P&L over the review window. 47 0 -56.9c -2687.0c US$0.00 - cut" [ref=e364]:
+            - cell "deadline near Negative CLV and negative hypothetical P&L over the review window." [ref=e365]:
+              - generic [ref=e366]: deadline near
+              - generic [ref=e367]: Negative CLV and negative hypothetical P&L over the review window.
+            - cell "47" [ref=e368]
+            - cell "0" [ref=e369]
+            - cell "-56.9c" [ref=e370]
+            - cell "-2687.0c" [ref=e371]
+            - cell "US$0.00" [ref=e372]
+            - cell "-" [ref=e373]
+            - cell "cut" [ref=e374]
+    - generic [ref=e95]:
+      - heading "Recent Mistakes" [level=2] [ref=e97]
+      - generic [ref=e375]: No resolved losing trades yet. Recent mistakes will show up here once the baseline takes losses.
+    - generic [ref=e99]:
+      - heading "Weekly Review Questions" [level=2] [ref=e101]
+      - list [ref=e376]:
+        - listitem [ref=e377]: Did the default strategy make money this week?
+        - listitem [ref=e378]: Was average CLV positive for the traded path?
+        - listitem [ref=e379]: Which detectors earned a keep/watch/cut verdict?
+        - listitem [ref=e380]: Did confluence beat the legacy rank-threshold benchmark on P&L and drawdown?
+    - generic [ref=e103]:
+      - heading "Default Strategy Contract" [level=2] [ref=e105]
+      - generic [ref=e381]:
+        - generic [ref=e382]: Default Strategy
+        - generic [ref=e383]: Measure whether confluence-led, EV-ranked signals produce durable paper-trading edge.
+        - generic [ref=e384]:
+          - generic [ref=e385]: "Signal path: confluence"
+          - generic [ref=e386]: "EV filter: 3.0c"
+          - generic [ref=e387]: "Kelly: 25%"
+          - generic [ref=e388]: "Bankroll: US$10,000.00"
+          - generic [ref=e389]: "Max single: 5%"
+          - generic [ref=e390]: "Max total: 30%"
+        - generic [ref=e391]: "Observation window: minimum 14 days, preferred 30 days. Legacy benchmark rank threshold at least 0.55."
+    - generic [ref=e107]:
+      - heading "Cumulative P&L" [level=2] [ref=e109]
+      - generic [ref=e392]: No resolved paper trades yet. The P&L curve will appear once trades settle.
+    - generic [ref=e111]:
+      - heading "Execution Metrics" [level=2] [ref=e113]
+      - generic [ref=e393]: No resolved paper trades yet. Execution metrics will appear once trades settle.
+    - generic [ref=e115]:
+      - heading "Open Trades" [level=2] [ref=e117]
+      - table [ref=e395]:
+        - rowgroup [ref=e396]:
+          - row "Market Direction Size Entry Exit EV / Share P&L Opened" [ref=e397]:
+            - columnheader "Market" [ref=e398]
+            - columnheader "Direction" [ref=e399]
+            - columnheader "Size" [ref=e400]
+            - columnheader "Entry" [ref=e401]
+            - columnheader "Exit" [ref=e402]
+            - columnheader "EV / Share" [ref=e403]
+            - columnheader "P&L" [ref=e404]
+            - columnheader "Opened" [ref=e405]
+        - rowgroup [ref=e406]:
+          - 'row "The Masters: Will Sepp Straka finish top 10? BUY YES US$475.76 US$0.23 - 76.0c - 12/04/2026, 17:50:04" [ref=e407]':
+            - 'cell "The Masters: Will Sepp Straka finish top 10?" [ref=e408]'
+            - cell "BUY YES" [ref=e409]
+            - cell "US$475.76" [ref=e410]
+            - cell "US$0.23" [ref=e411]
+            - cell "-" [ref=e412]
+            - cell "76.0c" [ref=e413]
+            - cell "-" [ref=e414]
+            - cell "12/04/2026, 17:50:04" [ref=e415]
+          - row "Will Rory McIlroy beat Scottie Scheffler in the The Masters? BUY NO US$413.73 US$0.75 - 4.2c - 12/04/2026, 17:50:04" [ref=e416]:
+            - cell "Will Rory McIlroy beat Scottie Scheffler in the The Masters?" [ref=e417]
+            - cell "BUY NO" [ref=e418]
+            - cell "US$413.73" [ref=e419]
+            - cell "US$0.75" [ref=e420]
+            - cell "-" [ref=e421]
+            - cell "4.2c" [ref=e422]
+            - cell "-" [ref=e423]
+            - cell "12/04/2026, 17:50:04" [ref=e424]
+          - row "Bitcoin price on Apr 12, 2026? BUY YES US$500.00 US$0.83 - 16.5c - 12/04/2026, 17:50:04" [ref=e425]:
+            - cell "Bitcoin price on Apr 12, 2026?" [ref=e426]
+            - cell "BUY YES" [ref=e427]
+            - cell "US$500.00" [ref=e428]
+            - cell "US$0.83" [ref=e429]
+            - cell "-" [ref=e430]
+            - cell "16.5c" [ref=e431]
+            - cell "-" [ref=e432]
+            - cell "12/04/2026, 17:50:04" [ref=e433]
+          - 'row "Masters Tournament: Will Ludvig Aberg finish top 10? BUY YES US$105.31 US$0.20 - 3.4c - 12/04/2026, 17:50:04" [ref=e434]':
+            - 'cell "Masters Tournament: Will Ludvig Aberg finish top 10?" [ref=e435]'
+            - cell "BUY YES" [ref=e436]
+            - cell "US$105.31" [ref=e437]
+            - cell "US$0.20" [ref=e438]
+            - cell "-" [ref=e439]
+            - cell "3.4c" [ref=e440]
+            - cell "-" [ref=e441]
+            - cell "12/04/2026, 17:50:04" [ref=e442]
+          - row "Chelsea vs Manchester City Winner? BUY YES US$500.00 US$0.54 - 17.5c - 12/04/2026, 17:50:04" [ref=e443]:
+            - cell "Chelsea vs Manchester City Winner?" [ref=e444]
+            - cell "BUY YES" [ref=e445]
+            - cell "US$500.00" [ref=e446]
+            - cell "US$0.54" [ref=e447]
+            - cell "-" [ref=e448]
+            - cell "17.5c" [ref=e449]
+            - cell "-" [ref=e450]
+            - cell "12/04/2026, 17:50:04" [ref=e451]
+          - row "Will the lowest round score of the tournament be under 64.5? BUY YES US$500.00 US$0.25 - 18.8c - 12/04/2026, 17:50:04" [ref=e452]:
+            - cell "Will the lowest round score of the tournament be under 64.5?" [ref=e453]
+            - cell "BUY YES" [ref=e454]
+            - cell "US$500.00" [ref=e455]
+            - cell "US$0.25" [ref=e456]
+            - cell "-" [ref=e457]
+            - cell "18.8c" [ref=e458]
+            - cell "-" [ref=e459]
+            - cell "12/04/2026, 17:50:04" [ref=e460]
+          - row "Will the **high temp in Miami** be 79-80° on Apr 12, 2026? BUY YES US$107.31 US$0.15 - 3.7c - 12/04/2026, 17:50:04" [ref=e461]:
+            - cell "Will the **high temp in Miami** be 79-80° on Apr 12, 2026?" [ref=e462]
+            - cell "BUY YES" [ref=e463]
+            - cell "US$107.31" [ref=e464]
+            - cell "US$0.15" [ref=e465]
+            - cell "-" [ref=e466]
+            - cell "3.7c" [ref=e467]
+            - cell "-" [ref=e468]
+            - cell "12/04/2026, 17:50:04" [ref=e469]
+          - row "Bitcoin price on Apr 12, 2026? BUY YES US$397.89 US$0.29 - 11.3c - 12/04/2026, 17:50:04" [ref=e470]:
+            - cell "Bitcoin price on Apr 12, 2026?" [ref=e471]
+            - cell "BUY YES" [ref=e472]
+            - cell "US$397.89" [ref=e473]
+            - cell "US$0.29" [ref=e474]
+            - cell "-" [ref=e475]
+            - cell "11.3c" [ref=e476]
+            - cell "-" [ref=e477]
+            - cell "12/04/2026, 17:50:04" [ref=e478]
+    - generic [ref=e119]:
+      - generic [ref=e120]:
+        - heading "Trade History" [level=2] [ref=e121]
+        - generic [ref=e122]:
+          - combobox [ref=e123]:
+            - option "All statuses" [selected]
+            - option "Open"
+            - option "Resolved"
+          - combobox [ref=e124]:
+            - option "All directions" [selected]
+            - option "BUY YES"
+            - option "BUY NO"
+      - table [ref=e128]:
+        - rowgroup [ref=e129]:
+          - row "Market Direction Status Size Entry Exit EV / Share P&L Opened" [ref=e130]:
+            - columnheader "Market" [ref=e131]
+            - columnheader "Direction" [ref=e132]
+            - columnheader "Status" [ref=e133]
+            - columnheader "Size" [ref=e134]
+            - columnheader "Entry" [ref=e135]
+            - columnheader "Exit" [ref=e136]
+            - columnheader "EV / Share" [ref=e137]
+            - columnheader "P&L" [ref=e138]
+            - columnheader "Opened" [ref=e139]
+        - rowgroup [ref=e140]:
+          - 'row "The Masters: Will Sepp Straka finish top 10? BUY YES open US$475.76 US$0.23 - 76.0c - 12/04/2026, 17:50:04" [ref=e141]':
+            - 'cell "The Masters: Will Sepp Straka finish top 10?" [ref=e142]'
+            - cell "BUY YES" [ref=e143]
+            - cell "open" [ref=e144]
+            - cell "US$475.76" [ref=e145]
+            - cell "US$0.23" [ref=e146]
+            - cell "-" [ref=e147]
+            - cell "76.0c" [ref=e148]
+            - cell "-" [ref=e149]
+            - cell "12/04/2026, 17:50:04" [ref=e150]
+          - row "Will Rory McIlroy beat Scottie Scheffler in the The Masters? BUY NO open US$413.73 US$0.75 - 4.2c - 12/04/2026, 17:50:04" [ref=e151]:
+            - cell "Will Rory McIlroy beat Scottie Scheffler in the The Masters?" [ref=e152]
+            - cell "BUY NO" [ref=e153]
+            - cell "open" [ref=e154]
+            - cell "US$413.73" [ref=e155]
+            - cell "US$0.75" [ref=e156]
+            - cell "-" [ref=e157]
+            - cell "4.2c" [ref=e158]
+            - cell "-" [ref=e159]
+            - cell "12/04/2026, 17:50:04" [ref=e160]
+          - row "Bitcoin price on Apr 12, 2026? BUY YES open US$500.00 US$0.83 - 16.5c - 12/04/2026, 17:50:04" [ref=e161]:
+            - cell "Bitcoin price on Apr 12, 2026?" [ref=e162]
+            - cell "BUY YES" [ref=e163]
+            - cell "open" [ref=e164]
+            - cell "US$500.00" [ref=e165]
+            - cell "US$0.83" [ref=e166]
+            - cell "-" [ref=e167]
+            - cell "16.5c" [ref=e168]
+            - cell "-" [ref=e169]
+            - cell "12/04/2026, 17:50:04" [ref=e170]
+          - 'row "Masters Tournament: Will Ludvig Aberg finish top 10? BUY YES open US$105.31 US$0.20 - 3.4c - 12/04/2026, 17:50:04" [ref=e171]':
+            - 'cell "Masters Tournament: Will Ludvig Aberg finish top 10?" [ref=e172]'
+            - cell "BUY YES" [ref=e173]
+            - cell "open" [ref=e174]
+            - cell "US$105.31" [ref=e175]
+            - cell "US$0.20" [ref=e176]
+            - cell "-" [ref=e177]
+            - cell "3.4c" [ref=e178]
+            - cell "-" [ref=e179]
+            - cell "12/04/2026, 17:50:04" [ref=e180]
+          - row "Chelsea vs Manchester City Winner? BUY YES open US$500.00 US$0.54 - 17.5c - 12/04/2026, 17:50:04" [ref=e181]:
+            - cell "Chelsea vs Manchester City Winner?" [ref=e182]
+            - cell "BUY YES" [ref=e183]
+            - cell "open" [ref=e184]
+            - cell "US$500.00" [ref=e185]
+            - cell "US$0.54" [ref=e186]
+            - cell "-" [ref=e187]
+            - cell "17.5c" [ref=e188]
+            - cell "-" [ref=e189]
+            - cell "12/04/2026, 17:50:04" [ref=e190]
+          - row "Will the lowest round score of the tournament be under 64.5? BUY YES open US$500.00 US$0.25 - 18.8c - 12/04/2026, 17:50:04" [ref=e191]:
+            - cell "Will the lowest round score of the tournament be under 64.5?" [ref=e192]
+            - cell "BUY YES" [ref=e193]
+            - cell "open" [ref=e194]
+            - cell "US$500.00" [ref=e195]
+            - cell "US$0.25" [ref=e196]
+            - cell "-" [ref=e197]
+            - cell "18.8c" [ref=e198]
+            - cell "-" [ref=e199]
+            - cell "12/04/2026, 17:50:04" [ref=e200]
+          - row "Will the **high temp in Miami** be 79-80° on Apr 12, 2026? BUY YES open US$107.31 US$0.15 - 3.7c - 12/04/2026, 17:50:04" [ref=e201]:
+            - cell "Will the **high temp in Miami** be 79-80° on Apr 12, 2026?" [ref=e202]
+            - cell "BUY YES" [ref=e203]
+            - cell "open" [ref=e204]
+            - cell "US$107.31" [ref=e205]
+            - cell "US$0.15" [ref=e206]
+            - cell "-" [ref=e207]
+            - cell "3.7c" [ref=e208]
+            - cell "-" [ref=e209]
+            - cell "12/04/2026, 17:50:04" [ref=e210]
+          - row "Bitcoin price on Apr 12, 2026? BUY YES open US$397.89 US$0.29 - 11.3c - 12/04/2026, 17:50:04" [ref=e211]:
+            - cell "Bitcoin price on Apr 12, 2026?" [ref=e212]
+            - cell "BUY YES" [ref=e213]
+            - cell "open" [ref=e214]
+            - cell "US$397.89" [ref=e215]
+            - cell "US$0.29" [ref=e216]
+            - cell "-" [ref=e217]
+            - cell "11.3c" [ref=e218]
+            - cell "-" [ref=e219]
+            - cell "12/04/2026, 17:50:04" [ref=e220]

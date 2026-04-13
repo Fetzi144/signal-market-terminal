@@ -10,6 +10,7 @@ from app.config import settings
 from app.jobs.scheduler import _resolve_paper_trades, _run_paper_trading
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
+from app.strategy_runs.service import ensure_active_default_strategy_run
 from tests.conftest import make_market, make_outcome, make_signal
 
 
@@ -378,6 +379,7 @@ async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(clie
     market = make_market(session, question="Scoped strategy market")
     outcome = make_outcome(session, market.id, name="Yes")
     now = datetime.now(timezone.utc)
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=now - timedelta(days=1))
 
     confluence_signal = make_signal(
         session,
@@ -406,12 +408,19 @@ async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(clie
         confluence_signal.id,
         outcome.id,
         market.id,
+        strategy_run_id=strategy_run.id,
         status="resolved",
         pnl=Decimal("100.00"),
+        shadow_pnl=Decimal("90.00"),
+        shadow_entry_price=Decimal("0.520000"),
         exit_price=Decimal("1.000000"),
         resolved_at=now,
         opened_at=now - timedelta(hours=3),
-        details={"market_question": "Scoped strategy market", "ev_per_share": "0.170000"},
+        details={
+            "market_question": "Scoped strategy market",
+            "ev_per_share": "0.170000",
+            "shadow_execution": {"liquidity_constrained": False, "missing_orderbook_context": False},
+        },
     )
     _make_paper_trade(
         session,
@@ -445,6 +454,7 @@ async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(clie
     metrics = resp.json()
     assert metrics["total_trades"] == 1
     assert metrics["cumulative_pnl"] == 100.0
+    assert metrics["shadow_cumulative_pnl"] == 90.0
 
     resp = await client.get("/api/v1/paper-trading/pnl-curve?scope=default_strategy")
     assert resp.status_code == 200
@@ -534,6 +544,7 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
     outcome = make_outcome(session, market.id, name="Yes")
     now = datetime.now(timezone.utc)
     opened_at = now - timedelta(days=3)
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=opened_at)
 
     confluence_signal = make_signal(
         session,
@@ -602,12 +613,19 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
         confluence_signal.id,
         outcome.id,
         market.id,
+        strategy_run_id=strategy_run.id,
         status="resolved",
         pnl=Decimal("125.00"),
+        shadow_pnl=Decimal("100.00"),
+        shadow_entry_price=Decimal("0.520000"),
         exit_price=Decimal("1.000000"),
         resolved_at=now - timedelta(days=1),
         opened_at=opened_at,
-        details={"market_question": "Strategy health market", "ev_per_share": "0.120000"},
+        details={
+            "market_question": "Strategy health market",
+            "ev_per_share": "0.120000",
+            "shadow_execution": {"liquidity_constrained": False, "missing_orderbook_context": False},
+        },
     )
     legacy_signal = make_signal(
         session,
@@ -646,6 +664,7 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
     data = resp.json()
 
     assert data["strategy"]["signal_type"] == "confluence"
+    assert data["strategy_run"]["id"] == str(strategy_run.id)
     assert data["observation"]["started_at"] == opened_at.isoformat()
     assert data["trade_funnel"]["candidate_signals"] == 3
     assert data["trade_funnel"]["qualified_signals"] == 2
@@ -655,6 +674,7 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
     assert data["trade_funnel"]["resolved_signals"] == 1
     assert data["trade_funnel"]["excluded_legacy_trades"] == 1
     assert data["headline"]["cumulative_pnl"] == 125.0
+    assert data["execution_realism"]["shadow_cumulative_pnl"] == 100.0
     assert data["headline"]["resolved_trades"] == 1
     assert data["headline"]["resolved_signals"] == 1
     assert data["headline"]["avg_clv"] == pytest.approx(0.05)

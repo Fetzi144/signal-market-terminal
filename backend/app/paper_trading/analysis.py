@@ -10,12 +10,11 @@ from app.config import settings
 from app.default_strategy import (
     default_strategy_skip_label,
     evaluate_default_strategy_signal,
-    get_default_strategy_contract,
-    get_default_strategy_start_at,
 )
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
 from app.signals.probability import brier_score
+from app.strategy_runs.service import ensure_active_default_strategy_run, serialize_strategy_run
 
 ZERO = Decimal("0")
 
@@ -136,17 +135,24 @@ def _metrics_from_trade_rows(trade_rows: list[tuple[PaperTrade, Signal]]) -> dic
             "losses": 0,
             "win_rate": 0.0,
             "cumulative_pnl": 0.0,
+            "shadow_cumulative_pnl": 0.0,
             "avg_pnl": 0.0,
             "max_drawdown": 0.0,
             "sharpe_ratio": 0.0,
             "profit_factor": 0.0,
+            "shadow_profit_factor": 0.0,
             "best_trade": 0.0,
             "worst_trade": 0.0,
+            "liquidity_constrained_trades": 0,
+            "trades_missing_orderbook_context": 0,
         }
 
     pnls = [float(trade.pnl) for trade, _signal in resolved_rows if trade.pnl is not None]
+    shadow_pnls = [float(trade.shadow_pnl) for trade, _signal in resolved_rows if trade.shadow_pnl is not None]
     wins = [pnl for pnl in pnls if pnl > 0]
     losses = [pnl for pnl in pnls if pnl <= 0]
+    shadow_wins = [pnl for pnl in shadow_pnls if pnl > 0]
+    shadow_losses = [pnl for pnl in shadow_pnls if pnl <= 0]
 
     cumulative = []
     running = 0.0
@@ -174,6 +180,27 @@ def _metrics_from_trade_rows(trade_rows: list[tuple[PaperTrade, Signal]]) -> dic
     total_wins = sum(wins) if wins else 0.0
     total_losses = abs(sum(losses)) if losses else 0.0
     profit_factor = (total_wins / total_losses) if total_losses > 0 else float("inf") if total_wins > 0 else 0.0
+    shadow_total_wins = sum(shadow_wins) if shadow_wins else 0.0
+    shadow_total_losses = abs(sum(shadow_losses)) if shadow_losses else 0.0
+    shadow_profit_factor = (
+        shadow_total_wins / shadow_total_losses
+        if shadow_total_losses > 0
+        else float("inf") if shadow_total_wins > 0 else 0.0
+    )
+    liquidity_constrained_trades = sum(
+        1
+        for trade, _signal in resolved_rows
+        if isinstance(trade.details, dict)
+        and isinstance(trade.details.get("shadow_execution"), dict)
+        and trade.details["shadow_execution"].get("liquidity_constrained") is True
+    )
+    trades_missing_orderbook_context = sum(
+        1
+        for trade, _signal in resolved_rows
+        if isinstance(trade.details, dict)
+        and isinstance(trade.details.get("shadow_execution"), dict)
+        and trade.details["shadow_execution"].get("missing_orderbook_context") is True
+    )
 
     return {
         "total_trades": len(pnls),
@@ -181,12 +208,16 @@ def _metrics_from_trade_rows(trade_rows: list[tuple[PaperTrade, Signal]]) -> dic
         "losses": len(losses),
         "win_rate": round(len(wins) / len(pnls), 4) if pnls else 0.0,
         "cumulative_pnl": round(sum(pnls), 2),
+        "shadow_cumulative_pnl": round(sum(shadow_pnls), 2) if shadow_pnls else 0.0,
         "avg_pnl": round(mean_pnl, 2),
         "max_drawdown": round(max_drawdown, 2),
         "sharpe_ratio": round(sharpe, 4),
         "profit_factor": round(profit_factor, 4) if profit_factor != float("inf") else None,
+        "shadow_profit_factor": round(shadow_profit_factor, 4) if shadow_profit_factor != float("inf") else None,
         "best_trade": round(max(pnls), 2) if pnls else 0.0,
         "worst_trade": round(min(pnls), 2) if pnls else 0.0,
+        "liquidity_constrained_trades": liquidity_constrained_trades,
+        "trades_missing_orderbook_context": trades_missing_orderbook_context,
     }
 
 
@@ -204,6 +235,7 @@ def _pnl_curve_from_trade_rows(trade_rows: list[tuple[PaperTrade, Signal]]) -> l
             "timestamp": _ensure_utc(trade.resolved_at).isoformat(),
             "pnl": float(running),
             "trade_pnl": float(trade.pnl),
+            "shadow_trade_pnl": float(trade.shadow_pnl) if trade.shadow_pnl is not None else None,
             "direction": trade.direction,
             "trade_id": str(trade.id),
         })
@@ -239,7 +271,8 @@ def _default_strategy_metadata(signal: Signal) -> dict:
 
 async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     required_signal_type = settings.default_strategy_signal_type
-    launch_at = get_default_strategy_start_at()
+    strategy_run = await ensure_active_default_strategy_run(session)
+    launch_at = _ensure_utc(strategy_run.started_at)
 
     signal_query = select(Signal)
     if required_signal_type:
@@ -261,7 +294,10 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         pre_launch_candidate_signals = []
         candidate_signals = all_candidate_signals
 
-    candidate_evaluations = [(signal, evaluate_default_strategy_signal(signal)) for signal in candidate_signals]
+    candidate_evaluations = [
+        (signal, evaluate_default_strategy_signal(signal, started_at=launch_at))
+        for signal in candidate_signals
+    ]
     qualified_signals = [signal for signal, evaluation in candidate_evaluations if evaluation.eligible]
     qualified_signal_ids = {signal.id for signal in qualified_signals}
 
@@ -274,7 +310,7 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     strategy_trade_rows = [
         (trade, signal)
         for trade, signal in all_trade_rows
-        if signal.id in qualified_signal_ids
+        if trade.strategy_run_id == strategy_run.id
     ]
     strategy_trade_rows.sort(key=_trade_opened_sort_key, reverse=True)
 
@@ -294,7 +330,7 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     if strategy_trade_rows:
         first_trade_at = min(_ensure_utc(trade.opened_at) for trade, _signal in strategy_trade_rows)
 
-    started_at = launch_at or first_trade_at
+    started_at = launch_at
 
     portfolio = _portfolio_from_trade_rows(strategy_trade_rows)
     metrics = _metrics_from_trade_rows(strategy_trade_rows)
@@ -306,6 +342,8 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
             continue
 
         metadata = _default_strategy_metadata(signal)
+        if metadata.get("strategy_run_id") not in (None, str(strategy_run.id)):
+            continue
         reason_code = metadata.get("reason_code") or evaluation.reason_code or "unclassified"
         reason_label = metadata.get("reason_label") or evaluation.reason_label or default_strategy_skip_label(reason_code) or "Unclassified"
         bucket = skip_reason_counts.setdefault(
@@ -339,10 +377,11 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         "unresolved_traded_signals": max(0, len(traded_signal_ids) - len(resolved_trade_signal_ids)),
         "pre_launch_candidate_signals": len(pre_launch_candidate_signals),
         "excluded_pre_launch_trades": excluded_pre_launch_trades,
-        "excluded_legacy_trades": max(0, len(all_trade_rows) - len(strategy_trade_rows)),
+        "excluded_legacy_trades": sum(1 for trade, _signal in all_trade_rows if trade.strategy_run_id != strategy_run.id),
     }
 
     return {
+        "strategy_run": strategy_run,
         "candidate_signals": candidate_signals,
         "pre_launch_candidate_signals": pre_launch_candidate_signals,
         "qualified_signals": qualified_signals,
@@ -408,8 +447,9 @@ async def get_strategy_history(
 
 async def get_strategy_health(session: AsyncSession) -> dict:
     """Return the consolidated health view for the default strategy."""
-    contract = get_default_strategy_contract()
     scope = await _get_default_strategy_scope(session)
+    strategy_run = scope["strategy_run"]
+    contract = strategy_run.contract_snapshot or {}
     portfolio = scope["portfolio"]
     metrics = scope["metrics"]
     now = datetime.now(timezone.utc)
@@ -549,6 +589,7 @@ async def get_strategy_health(session: AsyncSession) -> dict:
 
     return {
         "strategy": contract,
+        "strategy_run": serialize_strategy_run(strategy_run),
         "observation": {
             "started_at": started_at.isoformat() if started_at else None,
             "baseline_start_at": launch_at.isoformat() if launch_at else None,
@@ -575,6 +616,18 @@ async def get_strategy_health(session: AsyncSession) -> dict:
             "brier_score": _safe_float(default_brier.quantize(Decimal("0.000001"))) if default_brier is not None else None,
             "total_profit_loss_per_share": _safe_float(default_total_profit_loss.quantize(Decimal("0.000001"))),
             "max_drawdown_per_share": _safe_float(default_max_drawdown.quantize(Decimal("0.000001"))),
+        },
+        "execution_realism": {
+            "shadow_cumulative_pnl": metrics["shadow_cumulative_pnl"],
+            "shadow_profit_factor": metrics["shadow_profit_factor"],
+            "liquidity_constrained_trades": metrics["liquidity_constrained_trades"],
+            "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"],
+        },
+        "run_integrity": {
+            "pre_launch_candidate_signals": scope["funnel"]["pre_launch_candidate_signals"],
+            "excluded_pre_launch_trades": scope["funnel"]["excluded_pre_launch_trades"],
+            "excluded_legacy_trades": scope["funnel"]["excluded_legacy_trades"],
+            "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"],
         },
         "benchmark": {
             "label": "legacy_rank_threshold",

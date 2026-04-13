@@ -11,11 +11,12 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.paper_trade import PaperTrade
+from app.models.snapshot import OrderbookSnapshot
 from app.signals.ev import compute_ev_full
 from app.signals.kelly import kelly_size
 from app.signals.risk import check_exposure
@@ -23,6 +24,8 @@ from app.signals.risk import check_exposure
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
+ONE = Decimal("1")
+HALF = Decimal("0.5")
 
 
 @dataclass
@@ -54,23 +57,35 @@ def _risk_reason_label(reason_code: str) -> str:
 
 async def get_portfolio_state(session: AsyncSession) -> dict:
     """Get current portfolio state: open positions, P&L, exposure."""
+    return await _get_portfolio_state(session)
+
+
+async def _get_portfolio_state(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None = None,
+) -> dict:
+    """Get current portfolio state: open positions, P&L, exposure."""
     # Open positions
+    open_query = select(PaperTrade).where(PaperTrade.status == "open")
+    resolved_query = select(
+        func.count(PaperTrade.id).label("total_trades"),
+        func.sum(PaperTrade.pnl).label("cumulative_pnl"),
+        func.count(PaperTrade.id).filter(PaperTrade.pnl > 0).label("wins"),
+        func.count(PaperTrade.id).filter(PaperTrade.pnl <= 0).label("losses"),
+    ).where(PaperTrade.status == "resolved")
+
+    if strategy_run_id is not None:
+        open_query = open_query.where(PaperTrade.strategy_run_id == strategy_run_id)
+        resolved_query = resolved_query.where(PaperTrade.strategy_run_id == strategy_run_id)
+
     result = await session.execute(
-        select(PaperTrade)
-        .where(PaperTrade.status == "open")
-        .order_by(PaperTrade.opened_at.desc())
+        open_query.order_by(PaperTrade.opened_at.desc())
     )
     open_trades = result.scalars().all()
 
     # Resolved trades
-    result = await session.execute(
-        select(
-            func.count(PaperTrade.id).label("total_trades"),
-            func.sum(PaperTrade.pnl).label("cumulative_pnl"),
-            func.count(PaperTrade.id).filter(PaperTrade.pnl > 0).label("wins"),
-            func.count(PaperTrade.id).filter(PaperTrade.pnl <= 0).label("losses"),
-        ).where(PaperTrade.status == "resolved")
-    )
+    result = await session.execute(resolved_query)
     stats = result.one()
 
     total_trades = stats.total_trades or 0
@@ -99,6 +114,8 @@ async def attempt_open_trade(
     estimated_probability: Decimal | None,
     market_price: Decimal | None,
     market_question: str = "",
+    fired_at: datetime | None = None,
+    strategy_run_id: uuid.UUID | None = None,
 ) -> TradeOpenResult:
     """Open a paper trade for an EV-positive signal.
 
@@ -197,7 +214,7 @@ async def attempt_open_trade(
         )
 
     # Risk check
-    portfolio = await get_portfolio_state(session)
+    portfolio = await _get_portfolio_state(session, strategy_run_id=strategy_run_id)
     open_positions = [
         {
             "size_usd": t.size_usd,
@@ -251,14 +268,24 @@ async def attempt_open_trade(
     approved_size = risk_result["approved_size_usd"]
     entry_price = sizing["entry_price"]
     shares = (approved_size / entry_price).quantize(Decimal("0.0001")) if entry_price > ZERO else ZERO
+    shadow_execution = await _build_shadow_execution(
+        session=session,
+        outcome_id=outcome_id,
+        direction=sizing["direction"],
+        approved_size=approved_size,
+        ideal_entry_price=entry_price,
+        fired_at=fired_at,
+    )
 
     trade = PaperTrade(
         id=uuid.uuid4(),
         signal_id=signal_id,
+        strategy_run_id=strategy_run_id,
         outcome_id=outcome_id,
         market_id=market_id,
         direction=sizing["direction"],
         entry_price=entry_price,
+        shadow_entry_price=shadow_execution["shadow_entry_price"],
         size_usd=approved_size,
         shares=shares,
         status="open",
@@ -273,6 +300,8 @@ async def attempt_open_trade(
             "kelly_used": str(sizing["kelly_used"]),
             "risk_result": risk_result["reason"],
             "drawdown_active": risk_result["drawdown_active"],
+            "strategy_run_id": str(strategy_run_id) if strategy_run_id else None,
+            "shadow_execution": shadow_execution["details"],
         },
     )
     session.add(trade)
@@ -295,6 +324,9 @@ async def attempt_open_trade(
             "recommended_size_usd": str(sizing["recommended_size_usd"]),
             "approved_size_usd": str(approved_size),
             "drawdown_active": risk_result["drawdown_active"],
+            "shadow_entry_price": str(shadow_execution["shadow_entry_price"]) if shadow_execution["shadow_entry_price"] is not None else None,
+            "liquidity_constrained": shadow_execution["details"]["liquidity_constrained"],
+            "missing_orderbook_context": shadow_execution["details"]["missing_orderbook_context"],
         },
     )
 
@@ -307,6 +339,8 @@ async def open_trade(
     estimated_probability: Decimal | None,
     market_price: Decimal | None,
     market_question: str = "",
+    fired_at: datetime | None = None,
+    strategy_run_id: uuid.UUID | None = None,
 ) -> PaperTrade | None:
     """Backward-compatible wrapper that returns only the created trade."""
     result = await attempt_open_trade(
@@ -317,6 +351,8 @@ async def open_trade(
         estimated_probability=estimated_probability,
         market_price=market_price,
         market_question=market_question,
+        fired_at=fired_at,
+        strategy_run_id=strategy_run_id,
     )
     return result.trade
 
@@ -356,9 +392,14 @@ async def resolve_trades(
 
         # P&L = shares * (exit_price - entry_price)
         pnl = (trade.shares * (exit_price - trade.entry_price)).quantize(Decimal("0.01"))
+        shadow_pnl = None
+        if trade.shadow_entry_price is not None and trade.shadow_entry_price > ZERO:
+            shadow_shares = _shadow_shares_from_trade(trade)
+            shadow_pnl = (shadow_shares * (exit_price - trade.shadow_entry_price)).quantize(Decimal("0.01"))
 
         trade.exit_price = exit_price
         trade.pnl = pnl
+        trade.shadow_pnl = shadow_pnl
         trade.status = "resolved"
         trade.resolved_at = now
         count += 1
@@ -391,17 +432,24 @@ async def get_metrics(session: AsyncSession) -> dict:
             "losses": 0,
             "win_rate": 0.0,
             "cumulative_pnl": 0.0,
+            "shadow_cumulative_pnl": 0.0,
             "avg_pnl": 0.0,
             "max_drawdown": 0.0,
             "sharpe_ratio": 0.0,
             "profit_factor": 0.0,
+            "shadow_profit_factor": 0.0,
             "best_trade": 0.0,
             "worst_trade": 0.0,
+            "liquidity_constrained_trades": 0,
+            "trades_missing_orderbook_context": 0,
         }
 
     pnls = [float(t.pnl) for t in resolved if t.pnl is not None]
+    shadow_pnls = [float(t.shadow_pnl) for t in resolved if t.shadow_pnl is not None]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
+    shadow_wins = [p for p in shadow_pnls if p > 0]
+    shadow_losses = [p for p in shadow_pnls if p <= 0]
 
     # Cumulative P&L curve for max drawdown
     cumulative = []
@@ -433,6 +481,27 @@ async def get_metrics(session: AsyncSession) -> dict:
     total_wins = sum(wins) if wins else 0.0
     total_losses = abs(sum(losses)) if losses else 0.0
     profit_factor = (total_wins / total_losses) if total_losses > 0 else float("inf") if total_wins > 0 else 0.0
+    shadow_total_wins = sum(shadow_wins) if shadow_wins else 0.0
+    shadow_total_losses = abs(sum(shadow_losses)) if shadow_losses else 0.0
+    shadow_profit_factor = (
+        shadow_total_wins / shadow_total_losses
+        if shadow_total_losses > 0
+        else float("inf") if shadow_total_wins > 0 else 0.0
+    )
+    liquidity_constrained_trades = sum(
+        1
+        for trade in resolved
+        if isinstance(trade.details, dict)
+        and isinstance(trade.details.get("shadow_execution"), dict)
+        and trade.details["shadow_execution"].get("liquidity_constrained") is True
+    )
+    trades_missing_orderbook_context = sum(
+        1
+        for trade in resolved
+        if isinstance(trade.details, dict)
+        and isinstance(trade.details.get("shadow_execution"), dict)
+        and trade.details["shadow_execution"].get("missing_orderbook_context") is True
+    )
 
     return {
         "total_trades": len(pnls),
@@ -440,12 +509,16 @@ async def get_metrics(session: AsyncSession) -> dict:
         "losses": len(losses),
         "win_rate": round(len(wins) / len(pnls), 4) if pnls else 0.0,
         "cumulative_pnl": round(sum(pnls), 2),
+        "shadow_cumulative_pnl": round(sum(shadow_pnls), 2) if shadow_pnls else 0.0,
         "avg_pnl": round(mean_pnl, 2),
         "max_drawdown": round(max_dd, 2),
         "sharpe_ratio": round(sharpe, 4),
         "profit_factor": round(profit_factor, 4) if profit_factor != float("inf") else None,
+        "shadow_profit_factor": round(shadow_profit_factor, 4) if shadow_profit_factor != float("inf") else None,
         "best_trade": round(max(pnls), 2) if pnls else 0.0,
         "worst_trade": round(min(pnls), 2) if pnls else 0.0,
+        "liquidity_constrained_trades": liquidity_constrained_trades,
+        "trades_missing_orderbook_context": trades_missing_orderbook_context,
     }
 
 
@@ -467,8 +540,167 @@ async def get_pnl_curve(session: AsyncSession) -> list[dict]:
                 "timestamp": trade.resolved_at.isoformat(),
                 "pnl": float(running),
                 "trade_pnl": float(trade.pnl),
+                "shadow_trade_pnl": float(trade.shadow_pnl) if trade.shadow_pnl is not None else None,
                 "direction": trade.direction,
                 "trade_id": str(trade.id),
             })
 
     return curve
+
+
+def _parse_decimal(value) -> Decimal | None:
+    if value in (None, "", []):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _best_price(levels) -> Decimal | None:
+    if not levels:
+        return None
+    try:
+        return Decimal(str(levels[0][0]))
+    except Exception:
+        return None
+
+
+def _near_touch_depth(levels, *, side: str, half_spread: Decimal) -> Decimal | None:
+    if not levels:
+        return None
+    best = _best_price(levels)
+    if best is None:
+        return None
+    threshold = half_spread if half_spread > ZERO else Decimal("0.01")
+    depth = ZERO
+    for level in levels:
+        if len(level) < 2:
+            continue
+        price = _parse_decimal(level[0])
+        size = _parse_decimal(level[1])
+        if price is None or size is None:
+            continue
+        if side == "ask" and price <= best + threshold:
+            depth += size
+            continue
+        if side == "bid" and price >= best - threshold:
+            depth += size
+            continue
+        break
+    return depth if depth > ZERO else None
+
+
+async def _nearest_orderbook_snapshot(
+    session: AsyncSession,
+    outcome_id: uuid.UUID,
+    fired_at: datetime | None,
+) -> OrderbookSnapshot | None:
+    anchor = fired_at or datetime.now(timezone.utc)
+    before_result = await session.execute(
+        select(OrderbookSnapshot)
+        .where(
+            OrderbookSnapshot.outcome_id == outcome_id,
+            OrderbookSnapshot.captured_at <= anchor,
+        )
+        .order_by(desc(OrderbookSnapshot.captured_at))
+        .limit(1)
+    )
+    before = before_result.scalars().first()
+    if before is not None:
+        return before
+
+    after_result = await session.execute(
+        select(OrderbookSnapshot)
+        .where(
+            OrderbookSnapshot.outcome_id == outcome_id,
+            OrderbookSnapshot.captured_at >= anchor,
+        )
+        .order_by(OrderbookSnapshot.captured_at.asc())
+        .limit(1)
+    )
+    return after_result.scalars().first()
+
+
+async def _build_shadow_execution(
+    session: AsyncSession,
+    *,
+    outcome_id: uuid.UUID,
+    direction: str,
+    approved_size: Decimal,
+    ideal_entry_price: Decimal,
+    fired_at: datetime | None,
+) -> dict:
+    snapshot = await _nearest_orderbook_snapshot(session, outcome_id, fired_at)
+    if snapshot is None:
+        return {
+            "shadow_entry_price": ideal_entry_price,
+            "details": {
+                "missing_orderbook_context": True,
+                "liquidity_constrained": False,
+                "snapshot_id": None,
+                "captured_at": None,
+                "spread": None,
+                "available_depth_shares": None,
+                "available_depth_usd": None,
+                "size_to_depth_ratio": None,
+                "shadow_shares": str((approved_size / ideal_entry_price).quantize(Decimal("0.0001"))) if ideal_entry_price > ZERO else None,
+            },
+        }
+
+    spread = snapshot.spread or ZERO
+    half_spread = (spread * HALF).quantize(Decimal("0.000001"))
+    best_bid = _best_price(snapshot.bids)
+    best_ask = _best_price(snapshot.asks)
+    if direction == "buy_yes":
+        available_depth_shares = _near_touch_depth(snapshot.asks or [], side="ask", half_spread=half_spread)
+    else:
+        available_depth_shares = _near_touch_depth(snapshot.bids or [], side="bid", half_spread=half_spread)
+
+    shadow_entry_price = (ideal_entry_price + half_spread).quantize(Decimal("0.000001"))
+    if best_ask is not None and direction == "buy_yes":
+        shadow_entry_price = max(shadow_entry_price, best_ask)
+    if best_bid is not None and direction == "buy_no":
+        shadow_entry_price = max(shadow_entry_price, (ONE - best_bid).quantize(Decimal("0.000001")))
+    shadow_entry_price = min(shadow_entry_price, ONE)
+
+    available_depth_usd = None
+    if available_depth_shares is not None:
+        available_depth_usd = (available_depth_shares * shadow_entry_price).quantize(Decimal("0.01"))
+    size_to_depth_ratio = None
+    if available_depth_usd is not None and available_depth_usd > ZERO:
+        size_to_depth_ratio = (approved_size / available_depth_usd).quantize(Decimal("0.0001"))
+
+    liquidity_constrained = (
+        available_depth_usd is not None and available_depth_usd > ZERO and approved_size > available_depth_usd
+    )
+    shadow_shares = (approved_size / shadow_entry_price).quantize(Decimal("0.0001")) if shadow_entry_price > ZERO else ZERO
+
+    return {
+        "shadow_entry_price": shadow_entry_price,
+        "details": {
+            "missing_orderbook_context": False,
+            "liquidity_constrained": bool(liquidity_constrained),
+            "snapshot_id": snapshot.id,
+            "captured_at": snapshot.captured_at.isoformat() if snapshot.captured_at else None,
+            "spread": str(snapshot.spread) if snapshot.spread is not None else None,
+            "best_bid": str(best_bid) if best_bid is not None else None,
+            "best_ask": str(best_ask) if best_ask is not None else None,
+            "available_depth_shares": str(available_depth_shares) if available_depth_shares is not None else None,
+            "available_depth_usd": str(available_depth_usd) if available_depth_usd is not None else None,
+            "size_to_depth_ratio": str(size_to_depth_ratio) if size_to_depth_ratio is not None else None,
+            "shadow_shares": str(shadow_shares),
+        },
+    }
+
+
+def _shadow_shares_from_trade(trade: PaperTrade) -> Decimal:
+    if isinstance(trade.details, dict):
+        shadow_execution = trade.details.get("shadow_execution")
+        if isinstance(shadow_execution, dict):
+            shadow_shares = _parse_decimal(shadow_execution.get("shadow_shares"))
+            if shadow_shares is not None and shadow_shares > ZERO:
+                return shadow_shares
+    if trade.shadow_entry_price is not None and trade.shadow_entry_price > ZERO:
+        return (trade.size_usd / trade.shadow_entry_price).quantize(Decimal("0.0001"))
+    return trade.shares
