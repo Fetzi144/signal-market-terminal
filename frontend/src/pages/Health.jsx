@@ -1,33 +1,86 @@
-import { useEffect, useState, useRef } from "react";
-import { getHealth } from "../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  getHealth,
+  getPolymarketIngestStatus,
+  getPolymarketWatchAssets,
+  triggerPolymarketResync,
+  updatePolymarketWatchAsset,
+} from "../api";
 import PushNotificationToggle from "../components/PushNotificationToggle";
 
 const REFRESH_INTERVAL = 15_000;
-const STALE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_THRESHOLD_MS = 10 * 60 * 1000;
+const WATCH_PAGE_SIZE = 12;
 
 export default function Health() {
   const [health, setHealth] = useState(null);
+  const [streamStatus, setStreamStatus] = useState(null);
+  const [watchAssets, setWatchAssets] = useState([]);
+  const [watchAssetTotal, setWatchAssetTotal] = useState(0);
   const [error, setError] = useState(null);
+  const [actionError, setActionError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [isResyncing, setIsResyncing] = useState(false);
+  const [updatingWatchAssetId, setUpdatingWatchAssetId] = useState(null);
   const intervalRef = useRef(null);
 
-  const fetchData = () => {
-    getHealth()
-      .then((h) => {
-        setHealth(h);
-        setLastUpdated(new Date());
-        setError(null);
-      })
-      .catch((e) => setError(e.message));
-  };
+  const fetchData = useCallback(async () => {
+    try {
+      const [healthData, ingestData, watchAssetData] = await Promise.all([
+        getHealth(),
+        getPolymarketIngestStatus(),
+        getPolymarketWatchAssets({ page: 1, pageSize: WATCH_PAGE_SIZE }),
+      ]);
+      setHealth(healthData);
+      setStreamStatus(ingestData);
+      setWatchAssets(watchAssetData.watch_assets || []);
+      setWatchAssetTotal(watchAssetData.total || 0);
+      setLastUpdated(new Date());
+      setError(null);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, []);
 
   useEffect(() => {
     fetchData();
     intervalRef.current = setInterval(fetchData, REFRESH_INTERVAL);
     return () => clearInterval(intervalRef.current);
-  }, []);
+  }, [fetchData]);
 
-  if (!health && !error) {
+  const handleManualResync = async () => {
+    try {
+      setIsResyncing(true);
+      setActionError(null);
+      await triggerPolymarketResync({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsResyncing(false);
+    }
+  };
+
+  const handleToggleWatch = async (watchAsset) => {
+    try {
+      setUpdatingWatchAssetId(watchAsset.id);
+      setActionError(null);
+      await updatePolymarketWatchAsset(watchAsset.id, {
+        watch_enabled: !watchAsset.watch_enabled,
+        watch_reason: !watchAsset.watch_enabled
+          ? "manual_operator_enable"
+          : "manual_operator_disable",
+        priority: watchAsset.priority,
+      });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setUpdatingWatchAssetId(null);
+    }
+  };
+
+  if ((!health || !streamStatus) && !error) {
     return (
       <div>
         <h2 style={{ fontSize: 16, marginBottom: 16 }}>System Health</h2>
@@ -37,88 +90,271 @@ export default function Health() {
           <div className="skeleton" style={{ height: 70, borderRadius: 8 }} />
           <div className="skeleton" style={{ height: 70, borderRadius: 8 }} />
         </div>
+        <div className="skeleton" style={{ height: 220, borderRadius: 8, marginTop: 18 }} />
+        <div className="skeleton" style={{ height: 220, borderRadius: 8, marginTop: 18 }} />
       </div>
     );
   }
 
-  if (error) return <div style={{ color: "var(--red)" }}>Error: {error}</div>;
+  if (error && !health && !streamStatus) {
+    return <div style={{ color: "var(--red)" }}>Error: {error}</div>;
+  }
+
+  const ingestionRows = health?.ingestion || [];
+  const recentIncidents = streamStatus?.recent_incidents || [];
+  const recentRuns = streamStatus?.recent_resync_runs || [];
+  const eventsIngested = streamStatus?.events_ingested || {};
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <h2 style={{ fontSize: 16 }}>System Health</h2>
-        {lastUpdated && (
-          <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
-            Auto-refresh 15s &middot; Updated {lastUpdated.toLocaleTimeString()}
-          </span>
-        )}
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={fetchData}
+            style={secondaryButtonStyle}
+          >
+            Refresh
+          </button>
+          {lastUpdated && (
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              Auto-refresh 15s | Updated {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
       </div>
+
+      {error && (
+        <InlineAlert tone="error">
+          {error}
+        </InlineAlert>
+      )}
 
       <div
         style={{
           display: "grid",
           gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
           gap: 12,
-          marginBottom: 24,
         }}
       >
-        <StatCard label="Status" value={health.status} />
-        <StatCard label="Active Markets" value={health.active_markets} />
-        <StatCard label="Total Signals" value={health.total_signals} />
-        <StatCard label="Unresolved" value={health.unresolved_signals} />
-        <StatCard label="Alerts (24h)" value={health.recent_alerts_24h} />
-        <StatCard label="Alert Threshold" value={`${Math.round(health.alert_threshold * 100)}%`} />
+        <StatCard label="Status" value={health?.status || "unknown"} />
+        <StatCard label="Active Markets" value={health?.active_markets ?? "-"} />
+        <StatCard label="Total Signals" value={health?.total_signals ?? "-"} />
+        <StatCard label="Unresolved" value={health?.unresolved_signals ?? "-"} />
+        <StatCard label="Alerts (24h)" value={health?.recent_alerts_24h ?? "-"} />
+        <StatCard
+          label="Alert Threshold"
+          value={health?.alert_threshold != null ? `${Math.round(health.alert_threshold * 100)}%` : "-"}
+        />
       </div>
 
-      <div style={{ marginBottom: 24 }}>
+      <section>
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Notifications</h3>
         <PushNotificationToggle />
-      </div>
+      </section>
 
-      <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Ingestion</h3>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {health.ingestion.map((ing) => {
-          const isStale =
-            ing.last_run && Date.now() - new Date(ing.last_run).getTime() > STALE_THRESHOLD_MS;
-
-          return (
-            <div
-              key={ing.run_type}
+      <section style={panelStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <h3 style={{ fontSize: 14, fontWeight: 600 }}>Polymarket Stream</h3>
+              <StatusPill connected={streamStatus?.connected} />
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
+              Connection {shortId(streamStatus?.current_connection_id)} | Last event {formatDateTime(streamStatus?.last_event_received_at)}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={handleManualResync}
+              disabled={isResyncing}
               style={{
-                background: "var(--bg-card)",
-                border: `1px solid ${isStale ? "var(--yellow)" : "var(--border)"}`,
-                borderRadius: 8,
-                padding: "12px 16px",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                fontSize: 13,
+                ...primaryButtonStyle,
+                opacity: isResyncing ? 0.65 : 1,
+                cursor: isResyncing ? "wait" : "pointer",
               }}
             >
-              <span style={{ fontWeight: 500, minWidth: 140 }}>{ing.run_type}</span>
-              <span
+              {isResyncing ? "Resyncing..." : "Run Resync"}
+            </button>
+          </div>
+        </div>
+
+        {(streamStatus?.last_error || actionError) && (
+          <div style={{ marginBottom: 16 }}>
+            <InlineAlert tone="warning">
+              {actionError || streamStatus.last_error}
+            </InlineAlert>
+          </div>
+        )}
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+            gap: 12,
+            marginBottom: 16,
+          }}
+        >
+          <StatCard label="Reconnects" value={streamStatus?.reconnect_count ?? 0} />
+          <StatCard label="Gap Suspicions" value={streamStatus?.gap_suspected_count ?? 0} />
+          <StatCard label="Malformed" value={streamStatus?.malformed_message_count ?? 0} />
+          <StatCard label="Last Resync" value={formatShortDateTime(streamStatus?.last_successful_resync_at)} />
+          <StatCard
+            label="Watched / Subscribed"
+            value={`${streamStatus?.watched_asset_count ?? 0} / ${streamStatus?.subscribed_asset_count ?? 0}`}
+          />
+          <StatCard
+            label="Events 1 / 5 / 15m"
+            value={`${eventsIngested["1m"] ?? 0} / ${eventsIngested["5m"] ?? 0} / ${eventsIngested["15m"] ?? 0}`}
+          />
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
+          <TablePanel
+            title="Recent Incidents"
+            subtitle={`${recentIncidents.length} most recent`}
+            emptyLabel="No stream incidents recorded yet."
+            columns={["When", "Type", "Severity", "Summary"]}
+            rows={recentIncidents.map((incident) => [
+              formatShortDateTime(incident.created_at),
+              incident.incident_type,
+              incident.severity,
+              summarizeIncident(incident),
+            ])}
+          />
+
+          <TablePanel
+            title="Recent Resync Runs"
+            subtitle={`${recentRuns.length} most recent`}
+            emptyLabel="No resync runs recorded yet."
+            columns={["Started", "Reason", "Status", "Assets"]}
+            rows={recentRuns.map((run) => [
+              formatShortDateTime(run.started_at),
+              run.reason,
+              run.status,
+              `${run.succeeded_asset_count}/${run.requested_asset_count}`,
+            ])}
+          />
+        </div>
+      </section>
+
+      <section>
+        <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Scheduled Ingestion</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {ingestionRows.map((ing) => {
+            const isStale =
+              ing.last_run && Date.now() - new Date(ing.last_run).getTime() > STALE_THRESHOLD_MS;
+
+            return (
+              <div
+                key={ing.run_type}
                 style={{
-                  color:
-                    ing.last_status === "success"
-                      ? "var(--green)"
-                      : ing.last_status === "failed"
-                      ? "var(--red)"
-                      : "var(--text-dim)",
+                  background: "var(--bg-card)",
+                  border: `1px solid ${isStale ? "var(--yellow)" : "var(--border)"}`,
+                  borderRadius: 8,
+                  padding: "12px 16px",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 12,
+                  flexWrap: "wrap",
+                  fontSize: 13,
                 }}
               >
-                {ing.last_status || "never run"}
-              </span>
-              <span style={{ color: isStale ? "var(--yellow)" : "var(--text-dim)" }}>
-                {ing.last_run ? new Date(ing.last_run).toLocaleString() : "\u2014"}
-                {isStale && " (stale)"}
-              </span>
-              <span style={{ fontFamily: "var(--mono)" }}>
-                {ing.markets_processed != null ? `${ing.markets_processed} mkts` : "\u2014"}
-              </span>
+                <span style={{ fontWeight: 500, minWidth: 140 }}>{ing.run_type}</span>
+                <span
+                  style={{
+                    color:
+                      ing.last_status === "success"
+                        ? "var(--green)"
+                        : ing.last_status === "failed"
+                        ? "var(--red)"
+                        : "var(--text-dim)",
+                  }}
+                >
+                  {ing.last_status || "never run"}
+                </span>
+                <span style={{ color: isStale ? "var(--yellow)" : "var(--text-dim)" }}>
+                  {formatDateTime(ing.last_run)}
+                  {isStale && " (stale)"}
+                </span>
+                <span style={{ fontFamily: "var(--mono)" }}>
+                  {ing.markets_processed != null ? `${ing.markets_processed} mkts` : "-"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section style={panelStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+          <div>
+            <h3 style={{ fontSize: 14, fontWeight: 600 }}>Watch Registry</h3>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4 }}>
+              Showing {watchAssets.length} of {watchAssetTotal} watch assets
             </div>
-          );
-        })}
-      </div>
+          </div>
+        </div>
+
+        <div className="table-scroll">
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <TableHead>Asset</TableHead>
+                <TableHead>Outcome</TableHead>
+                <TableHead>Question</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Priority</TableHead>
+                <TableHead>Action</TableHead>
+              </tr>
+            </thead>
+            <tbody>
+              {watchAssets.length === 0 ? (
+                <tr>
+                  <td colSpan={6} style={emptyCellStyle}>No watch assets configured.</td>
+                </tr>
+              ) : (
+                watchAssets.map((watchAsset) => {
+                  const isUpdating = updatingWatchAssetId === watchAsset.id;
+                  return (
+                    <tr key={watchAsset.id} style={{ borderTop: "1px solid var(--border)" }}>
+                      <TableCell mono>{watchAsset.asset_id}</TableCell>
+                      <TableCell>{watchAsset.outcome_name}</TableCell>
+                      <TableCell>{watchAsset.market_question}</TableCell>
+                      <TableCell>
+                        <span style={{ color: watchAsset.watch_enabled ? "var(--green)" : "var(--text-dim)" }}>
+                          {watchAsset.watch_enabled ? "Watching" : "Paused"}
+                        </span>
+                      </TableCell>
+                      <TableCell>{watchAsset.priority ?? "-"}</TableCell>
+                      <TableCell>
+                        <button
+                          onClick={() => handleToggleWatch(watchAsset)}
+                          disabled={isUpdating}
+                          style={{
+                            ...secondaryButtonStyle,
+                            minHeight: 32,
+                            padding: "6px 10px",
+                            opacity: isUpdating ? 0.65 : 1,
+                            cursor: isUpdating ? "wait" : "pointer",
+                          }}
+                        >
+                          {isUpdating
+                            ? "Saving..."
+                            : watchAsset.watch_enabled
+                            ? "Disable"
+                            : "Enable"}
+                        </button>
+                      </TableCell>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
@@ -138,3 +374,188 @@ function StatCard({ label, value }) {
     </div>
   );
 }
+
+function StatusPill({ connected }) {
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        borderRadius: 999,
+        padding: "4px 10px",
+        fontSize: 12,
+        border: `1px solid ${connected ? "rgba(0, 214, 143, 0.35)" : "var(--border)"}`,
+        color: connected ? "var(--green)" : "var(--text-dim)",
+        background: connected ? "rgba(0, 214, 143, 0.08)" : "transparent",
+      }}
+    >
+      {connected ? "Connected" : "Disconnected"}
+    </span>
+  );
+}
+
+function TablePanel({ title, subtitle, emptyLabel, columns, rows }) {
+  return (
+    <div
+      style={{
+        background: "rgba(255, 255, 255, 0.02)",
+        border: "1px solid var(--border)",
+        borderRadius: 10,
+        padding: 14,
+        minWidth: 0,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{title}</div>
+        <div style={{ fontSize: 11, color: "var(--text-dim)" }}>{subtitle}</div>
+      </div>
+      <div className="table-scroll">
+        <table style={tableStyle}>
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <TableHead key={column}>{column}</TableHead>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td colSpan={columns.length} style={emptyCellStyle}>{emptyLabel}</td>
+              </tr>
+            ) : (
+              rows.map((row, index) => (
+                <tr key={`${title}-${index}`} style={{ borderTop: "1px solid var(--border)" }}>
+                  {row.map((cell, cellIndex) => (
+                    <TableCell key={`${title}-${index}-${cellIndex}`}>{cell}</TableCell>
+                  ))}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TableHead({ children }) {
+  return (
+    <th
+      style={{
+        padding: "0 0 10px",
+        textAlign: "left",
+        fontSize: 11,
+        color: "var(--text-dim)",
+        fontWeight: 500,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </th>
+  );
+}
+
+function TableCell({ children, mono = false }) {
+  return (
+    <td
+      style={{
+        padding: "10px 10px 10px 0",
+        fontSize: 12,
+        verticalAlign: "top",
+        fontFamily: mono ? "var(--mono)" : "inherit",
+        color: "var(--text)",
+      }}
+    >
+      {children}
+    </td>
+  );
+}
+
+function InlineAlert({ tone, children }) {
+  const color = tone === "error" ? "var(--red)" : "var(--yellow)";
+  return (
+    <div
+      style={{
+        background: "rgba(255, 255, 255, 0.03)",
+        border: `1px solid ${color}`,
+        color,
+        borderRadius: 8,
+        padding: "10px 12px",
+        fontSize: 12,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function summarizeIncident(incident) {
+  const details = incident.details_json || {};
+  if (details.reason) return details.reason;
+  if (details.error) return details.error;
+  if (details.current_sequence != null) {
+    return `sequence ${details.previous_sequence ?? "?"} -> ${details.current_sequence}`;
+  }
+  if (details.to_subscribe || details.to_unsubscribe) {
+    return `+${(details.to_subscribe || []).length} / -${(details.to_unsubscribe || []).length}`;
+  }
+  if (incident.asset_id) return incident.asset_id;
+  return "operator event";
+}
+
+function formatDateTime(value) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function formatShortDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return `${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function shortId(value) {
+  if (!value) return "-";
+  const text = String(value);
+  if (text.length <= 12) return text;
+  return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+const panelStyle = {
+  background: "var(--bg-card)",
+  border: "1px solid var(--border)",
+  borderRadius: 12,
+  padding: 16,
+};
+
+const tableStyle = {
+  width: "100%",
+  borderCollapse: "collapse",
+};
+
+const emptyCellStyle = {
+  padding: "18px 0 6px",
+  fontSize: 12,
+  color: "var(--text-dim)",
+};
+
+const primaryButtonStyle = {
+  background: "var(--green)",
+  color: "#fff",
+  border: "none",
+  borderRadius: 8,
+  padding: "8px 14px",
+  fontSize: 13,
+  fontWeight: 600,
+};
+
+const secondaryButtonStyle = {
+  background: "transparent",
+  color: "var(--text)",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  padding: "8px 14px",
+  fontSize: 13,
+};

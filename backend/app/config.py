@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # Polymarket
     polymarket_api_base: str = "https://clob.polymarket.com"
     polymarket_gamma_base: str = "https://gamma-api.polymarket.com"
+    polymarket_stream_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
     # Kalshi
     kalshi_api_base: str = "https://api.elections.kalshi.com/trade-api/v2"
@@ -25,6 +26,17 @@ class Settings(BaseSettings):
     min_volume_24h: float = 500.0
     market_pagination_cap: int = 100000
     orderbook_sample_size: int = 50
+    polymarket_stream_enabled: bool = False
+    polymarket_resync_on_startup: bool = True
+    polymarket_stream_reconnect_base_seconds: float = 1.0
+    polymarket_stream_reconnect_max_seconds: float = 30.0
+    polymarket_stream_ping_interval_seconds: int = 10
+    polymarket_watch_reconcile_interval_seconds: int = 30
+    polymarket_gap_suspect_after_seconds: int = 30
+    polymarket_malformed_burst_threshold: int = 5
+    polymarket_malformed_burst_window_seconds: int = 30
+    polymarket_normalization_enabled: bool = True
+    polymarket_watch_bootstrap_from_active_universe: bool = True
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
@@ -156,6 +168,8 @@ class Settings(BaseSettings):
         "deadline_near_price_threshold_pct",
         "min_volume_24h", "connector_timeout_seconds",
         "shadow_execution_min_fill_pct",
+        "polymarket_stream_reconnect_base_seconds",
+        "polymarket_stream_reconnect_max_seconds",
     )
     @classmethod
     def thresholds_must_be_positive(cls, v: float) -> float:
@@ -211,11 +225,32 @@ class Settings(BaseSettings):
         "default_strategy_preferred_observation_days",
         "strategy_review_lookback_days",
         "strategy_review_recent_mistakes_limit",
+        "polymarket_malformed_burst_threshold",
     )
     @classmethod
     def limits_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Limit must be >= 1")
+        return v
+
+    @field_validator(
+        "polymarket_stream_ping_interval_seconds",
+        "polymarket_watch_reconcile_interval_seconds",
+        "polymarket_gap_suspect_after_seconds",
+        "polymarket_malformed_burst_window_seconds",
+    )
+    @classmethod
+    def polymarket_intervals_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Polymarket interval must be >= 1 second")
+        return v
+
+    @field_validator("polymarket_stream_reconnect_max_seconds")
+    @classmethod
+    def reconnect_max_must_not_be_lower_than_base(cls, v: float, info) -> float:
+        reconnect_base = info.data.get("polymarket_stream_reconnect_base_seconds")
+        if reconnect_base is not None and v < reconnect_base:
+            raise ValueError("polymarket_stream_reconnect_max_seconds must be >= base")
         return v
 
     @field_validator("sse_max_connections")

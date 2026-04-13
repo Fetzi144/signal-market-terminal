@@ -4,6 +4,14 @@ from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
 from app.models.paper_trade import PaperTrade
 from app.models.portfolio import Position, Trade
+from app.models.polymarket_stream import (
+    PolymarketIngestIncident,
+    PolymarketMarketEvent,
+    PolymarketNormalizedEvent,
+    PolymarketResyncRun,
+    PolymarketStreamStatus,
+    PolymarketWatchAsset,
+)
 from app.models.push_subscription import PushSubscription
 from app.models.scheduler_lease import SchedulerLease
 from app.models.signal import Signal, SignalEvaluation
@@ -25,6 +33,12 @@ __all__ = [
     "ExecutionDecision",
     "Position",
     "Trade",
+    "PolymarketMarketEvent",
+    "PolymarketStreamStatus",
+    "PolymarketIngestIncident",
+    "PolymarketResyncRun",
+    "PolymarketWatchAsset",
+    "PolymarketNormalizedEvent",
     "PushSubscription",
     "SchedulerLease",
     "WalletProfile",

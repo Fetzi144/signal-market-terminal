@@ -1,0 +1,323 @@
+"""Polymarket stream ingestion status and control endpoints."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.db import get_db, get_session_factory
+from app.ingestion.polymarket_stream import (
+    ensure_watch_registry_bootstrapped,
+    fetch_polymarket_stream_status,
+    list_polymarket_incidents,
+    list_polymarket_resync_runs,
+    list_watch_asset_rows,
+    trigger_manual_polymarket_resync,
+    upsert_watch_asset,
+)
+from app.models.market import Market, Outcome
+from app.models.polymarket_stream import PolymarketWatchAsset
+
+router = APIRouter(prefix="/api/v1/ingest/polymarket", tags=["ingest"])
+
+
+class PolymarketIncidentOut(BaseModel):
+    id: uuid.UUID
+    created_at: datetime
+    incident_type: str
+    severity: str
+    asset_id: str | None = None
+    connection_id: uuid.UUID | None = None
+    raw_event_id: int | None = None
+    resync_run_id: uuid.UUID | None = None
+    details_json: dict[str, Any] | None = None
+    resolved_at: datetime | None = None
+
+
+class PolymarketResyncRunOut(BaseModel):
+    id: uuid.UUID
+    started_at: datetime
+    completed_at: datetime | None = None
+    status: str
+    reason: str
+    connection_id: uuid.UUID | None = None
+    requested_asset_count: int
+    succeeded_asset_count: int
+    failed_asset_count: int
+    details_json: dict[str, Any] | None = None
+
+
+class PolymarketWatchAssetOut(BaseModel):
+    id: uuid.UUID
+    outcome_id: uuid.UUID
+    asset_id: str
+    watch_enabled: bool
+    watch_reason: str | None = None
+    priority: int | None = None
+    created_at: datetime
+    updated_at: datetime
+    market_id: uuid.UUID
+    market_platform_id: str
+    market_question: str
+    market_active: bool
+    outcome_name: str
+
+
+class PaginatedIncidentsOut(BaseModel):
+    incidents: list[PolymarketIncidentOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class PaginatedResyncRunsOut(BaseModel):
+    resync_runs: list[PolymarketResyncRunOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class PaginatedWatchAssetsOut(BaseModel):
+    watch_assets: list[PolymarketWatchAssetOut]
+    total: int
+    page: int
+    page_size: int
+
+
+class PolymarketIngestStatusOut(BaseModel):
+    connected: bool
+    connection_started_at: datetime | None = None
+    current_connection_id: uuid.UUID | None = None
+    last_event_received_at: datetime | None = None
+    active_watch_count: int
+    watched_asset_count: int
+    active_subscription_count: int
+    subscribed_asset_count: int
+    events_ingested_5m: int
+    events_ingested: dict[str, int]
+    reconnect_count: int
+    resync_count: int
+    gap_suspected_count: int
+    malformed_message_count: int
+    last_resync_at: datetime | None = None
+    last_successful_resync_at: datetime | None = None
+    last_reconciliation_at: datetime | None = None
+    last_error: str | None = None
+    last_error_at: datetime | None = None
+    updated_at: datetime | None = None
+    recent_incidents: list[PolymarketIncidentOut]
+    recent_resync_runs: list[PolymarketResyncRunOut]
+
+
+class PolymarketManualResyncRequest(BaseModel):
+    asset_ids: list[str] | None = None
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+
+
+class PolymarketManualResyncOut(BaseModel):
+    run_id: uuid.UUID
+    asset_ids: list[str]
+    requested_asset_count: int
+    succeeded_asset_count: int
+    failed_asset_count: int
+    events_persisted: int
+    reason: str
+    status: str
+
+
+class PolymarketWatchAssetUpsertRequest(BaseModel):
+    outcome_id: uuid.UUID | None = None
+    asset_id: str | None = None
+    watch_enabled: bool = True
+    watch_reason: str | None = Field(default=None, max_length=255)
+    priority: int | None = None
+    bootstrap_from_active_universe: bool = False
+
+
+class PolymarketWatchAssetPatchRequest(BaseModel):
+    watch_enabled: bool | None = None
+    watch_reason: str | None = Field(default=None, max_length=255)
+    priority: int | None = None
+
+
+class PolymarketWatchAssetMutationOut(BaseModel):
+    watch_assets: list[PolymarketWatchAssetOut]
+    created_count: int
+    updated_count: int
+    bootstrap_created_count: int = 0
+    bootstrap_updated_count: int = 0
+
+
+async def _fetch_watch_asset_row(
+    session: AsyncSession,
+    watch_asset_id: uuid.UUID,
+) -> dict[str, Any] | None:
+    result = await session.execute(
+        select(PolymarketWatchAsset, Outcome, Market)
+        .join(Outcome, PolymarketWatchAsset.outcome_id == Outcome.id)
+        .join(Market, Outcome.market_id == Market.id)
+        .where(PolymarketWatchAsset.id == watch_asset_id)
+    )
+    row = result.first()
+    if row is None:
+        return None
+    watch_asset, outcome, market = row
+    return {
+        "id": watch_asset.id,
+        "outcome_id": watch_asset.outcome_id,
+        "asset_id": watch_asset.asset_id,
+        "watch_enabled": watch_asset.watch_enabled,
+        "watch_reason": watch_asset.watch_reason,
+        "priority": watch_asset.priority,
+        "created_at": watch_asset.created_at,
+        "updated_at": watch_asset.updated_at,
+        "market_id": market.id,
+        "market_platform_id": market.platform_id,
+        "market_question": market.question,
+        "market_active": market.active,
+        "outcome_name": outcome.name,
+    }
+
+
+@router.get("/status", response_model=PolymarketIngestStatusOut)
+async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
+    return await fetch_polymarket_stream_status(db)
+
+
+@router.get("/incidents", response_model=PaginatedIncidentsOut)
+async def get_polymarket_ingest_incidents(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    incidents, total = await list_polymarket_incidents(db, page=page, page_size=page_size)
+    return PaginatedIncidentsOut(incidents=incidents, total=total, page=page, page_size=page_size)
+
+
+@router.get("/resync-runs", response_model=PaginatedResyncRunsOut)
+async def get_polymarket_resync_runs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    runs, total = await list_polymarket_resync_runs(db, page=page, page_size=page_size)
+    return PaginatedResyncRunsOut(resync_runs=runs, total=total, page=page, page_size=page_size)
+
+
+@router.get("/watch-assets", response_model=PaginatedWatchAssetsOut)
+async def get_polymarket_watch_assets(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows, total = await list_watch_asset_rows(db, page=page, page_size=page_size)
+    return PaginatedWatchAssetsOut(watch_assets=rows, total=total, page=page, page_size=page_size)
+
+
+@router.post("/watch-assets", response_model=PolymarketWatchAssetMutationOut)
+async def create_or_enable_polymarket_watch_asset(
+    body: PolymarketWatchAssetUpsertRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    if body.bootstrap_from_active_universe and (body.outcome_id is not None or body.asset_id is not None):
+        raise HTTPException(status_code=400, detail="Bootstrap request cannot target a specific asset")
+
+    bootstrap_created_count = 0
+    bootstrap_updated_count = 0
+    created_count = 0
+    updated_count = 0
+    watch_assets: list[dict[str, Any]] = []
+
+    if body.bootstrap_from_active_universe:
+        bootstrap = await ensure_watch_registry_bootstrapped(db)
+        bootstrap_created_count = bootstrap["created_count"]
+        bootstrap_updated_count = bootstrap["updated_count"]
+        await db.commit()
+    else:
+        try:
+            existing_result = None
+            if body.outcome_id is not None:
+                existing_result = await db.execute(
+                    select(PolymarketWatchAsset).where(PolymarketWatchAsset.outcome_id == body.outcome_id)
+                )
+            elif body.asset_id is not None:
+                existing_result = await db.execute(
+                    select(PolymarketWatchAsset)
+                    .join(Outcome, PolymarketWatchAsset.outcome_id == Outcome.id)
+                    .where(Outcome.token_id == body.asset_id)
+                )
+            existing = existing_result.scalars().first() if existing_result is not None else None
+
+            watch_asset = await upsert_watch_asset(
+                db,
+                outcome_id=body.outcome_id,
+                asset_id=body.asset_id,
+                watch_enabled=body.watch_enabled,
+                watch_reason=body.watch_reason,
+                priority=body.priority,
+            )
+            await db.commit()
+            watch_row = await _fetch_watch_asset_row(db, watch_asset.id)
+            if watch_row is not None:
+                watch_assets.append(watch_row)
+            if existing is None:
+                created_count = 1
+            else:
+                updated_count = 1
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return PolymarketWatchAssetMutationOut(
+        watch_assets=watch_assets,
+        created_count=created_count,
+        updated_count=updated_count,
+        bootstrap_created_count=bootstrap_created_count,
+        bootstrap_updated_count=bootstrap_updated_count,
+    )
+
+
+@router.patch("/watch-assets/{watch_asset_id}", response_model=PolymarketWatchAssetOut)
+async def update_polymarket_watch_asset(
+    watch_asset_id: uuid.UUID,
+    body: PolymarketWatchAssetPatchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    watch_asset = await db.get(PolymarketWatchAsset, watch_asset_id)
+    if watch_asset is None:
+        raise HTTPException(status_code=404, detail="Watch asset not found")
+
+    if body.watch_enabled is not None:
+        watch_asset.watch_enabled = body.watch_enabled
+    if body.watch_reason is not None:
+        watch_asset.watch_reason = body.watch_reason
+    if body.priority is not None:
+        watch_asset.priority = body.priority
+
+    await db.commit()
+    watch_row = await _fetch_watch_asset_row(db, watch_asset_id)
+    if watch_row is None:
+        raise HTTPException(status_code=404, detail="Watch asset not found")
+    return PolymarketWatchAssetOut(**watch_row)
+
+
+@router.post("/resync", response_model=PolymarketManualResyncOut)
+async def resync_polymarket_market_data(
+    body: PolymarketManualResyncRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        result = await trigger_manual_polymarket_resync(
+            session_factory,
+            asset_ids=body.asset_ids,
+            reason=body.reason,
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Polymarket resync failed: {exc}") from exc
+    return PolymarketManualResyncOut(**result)

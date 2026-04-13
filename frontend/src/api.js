@@ -16,10 +16,31 @@ function resolveApiBase() {
 
 const API_BASE = resolveApiBase();
 
-async function fetchJson(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+async function requestJson(url, options = {}) {
+  const init = {
+    ...options,
+    headers: {
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+  };
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    let message = `API ${res.status}: ${res.statusText}`;
+    try {
+      const payload = await res.json();
+      message = payload.detail || payload.message || message;
+    } catch {
+      // Ignore non-JSON error bodies and fall back to the HTTP status text.
+    }
+    throw new Error(message);
+  }
+  if (res.status === 204) return null;
   return res.json();
+}
+
+async function fetchJson(url) {
+  return requestJson(url);
 }
 
 export function getSignals({ page = 1, pageSize = 50, signalType, marketId, platform, timeframe, resolvedCorrectly } = {}) {
@@ -55,6 +76,46 @@ export function getMarketSnapshots(id, limit = 100) {
 
 export function getHealth() {
   return fetchJson(`${API_BASE}/health`);
+}
+
+export function getPolymarketIngestStatus() {
+  return fetchJson(`${API_BASE}/ingest/polymarket/status`);
+}
+
+export function getPolymarketIncidents({ page = 1, pageSize = 20 } = {}) {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  return fetchJson(`${API_BASE}/ingest/polymarket/incidents?${params}`);
+}
+
+export function getPolymarketResyncRuns({ page = 1, pageSize = 20 } = {}) {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  return fetchJson(`${API_BASE}/ingest/polymarket/resync-runs?${params}`);
+}
+
+export function getPolymarketWatchAssets({ page = 1, pageSize = 20 } = {}) {
+  const params = new URLSearchParams({ page, page_size: pageSize });
+  return fetchJson(`${API_BASE}/ingest/polymarket/watch-assets?${params}`);
+}
+
+export function createPolymarketWatchAsset(body) {
+  return requestJson(`${API_BASE}/ingest/polymarket/watch-assets`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updatePolymarketWatchAsset(id, body) {
+  return requestJson(`${API_BASE}/ingest/polymarket/watch-assets/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export function triggerPolymarketResync(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/resync`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function getChartData(marketId, range = "24h") {

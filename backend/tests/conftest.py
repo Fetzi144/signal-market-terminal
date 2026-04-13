@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.db import Base, get_db
+from app.db import Base, get_db, get_session_factory
 from app.models import *  # noqa: F401,F403
 
 # Register UUID adapter for sqlite3 so it stores as text
@@ -53,9 +53,13 @@ def reset_default_strategy_window(monkeypatch):
 
 
 @pytest_asyncio.fixture
-async def engine():
+async def engine(tmp_path):
     _patch_metadata_for_sqlite()
-    eng = create_async_engine("sqlite+aiosqlite:///:memory:")
+    database_path = tmp_path / "test.db"
+    eng = create_async_engine(
+        f"sqlite+aiosqlite:///{database_path.as_posix()}",
+        connect_args={"check_same_thread": False},
+    )
 
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -83,6 +87,7 @@ async def client(engine):
             yield sess
 
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_session_factory] = lambda: async_sess
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
@@ -174,3 +179,57 @@ def make_signal(session, market_id, outcome_id, **kwargs):
     s = Signal(**defaults)
     session.add(s)
     return s
+
+
+def make_polymarket_market_event(session, **kwargs):
+    from app.models.polymarket_stream import PolymarketMarketEvent
+
+    defaults = dict(
+        venue="polymarket",
+        provenance="stream",
+        channel="market",
+        message_type="book",
+        market_id="cond-test",
+        asset_id="token-test",
+        asset_ids=["token-test"],
+        event_time=datetime.now(timezone.utc),
+        received_at_local=datetime.now(timezone.utc),
+        payload={"event_type": "book", "asset_id": "token-test"},
+    )
+    defaults.update(kwargs)
+    event = PolymarketMarketEvent(**defaults)
+    session.add(event)
+    return event
+
+
+def make_polymarket_stream_status(session, **kwargs):
+    from app.models.polymarket_stream import PolymarketStreamStatus
+
+    defaults = dict(
+        venue="polymarket",
+        connected=False,
+        active_subscription_count=0,
+        reconnect_count=0,
+        resync_count=0,
+        gap_suspected_count=0,
+        malformed_message_count=0,
+        updated_at=datetime.now(timezone.utc),
+    )
+    defaults.update(kwargs)
+    status = PolymarketStreamStatus(**defaults)
+    session.add(status)
+    return status
+
+
+def make_polymarket_watch_asset(session, outcome_id, asset_id, **kwargs):
+    from app.models.polymarket_stream import PolymarketWatchAsset
+
+    defaults = dict(
+        outcome_id=outcome_id,
+        asset_id=asset_id,
+        watch_enabled=True,
+    )
+    defaults.update(kwargs)
+    watch_asset = PolymarketWatchAsset(**defaults)
+    session.add(watch_asset)
+    return watch_asset
