@@ -10,6 +10,14 @@ from app.models.polymarket_metadata import (
     PolymarketMarketParamHistory,
     PolymarketMetaSyncRun,
 )
+from app.models.polymarket_microstructure import (
+    PolymarketAlphaLabel,
+    PolymarketBookStateTopN,
+    PolymarketFeatureRun,
+    PolymarketMicrostructureFeature100ms,
+    PolymarketMicrostructureFeature1s,
+    PolymarketPassiveFillLabel,
+)
 from app.models.polymarket_raw import (
     PolymarketBboEvent,
     PolymarketBookDelta,
@@ -63,6 +71,12 @@ __all__ = [
     "PolymarketAssetDim",
     "PolymarketMarketParamHistory",
     "PolymarketMetaSyncRun",
+    "PolymarketFeatureRun",
+    "PolymarketBookStateTopN",
+    "PolymarketMicrostructureFeature100ms",
+    "PolymarketMicrostructureFeature1s",
+    "PolymarketAlphaLabel",
+    "PolymarketPassiveFillLabel",
     "PolymarketRawCaptureRun",
     "PolymarketBookSnapshot",
     "PolymarketBookDelta",

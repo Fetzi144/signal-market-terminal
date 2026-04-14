@@ -6,6 +6,7 @@ import {
   triggerPolymarketBookSnapshot,
   triggerPolymarketMetadataSync,
   triggerPolymarketBookReconResync,
+  triggerPolymarketFeatureMaterialization,
   triggerPolymarketOiPoll,
   triggerPolymarketRawProjector,
   triggerPolymarketResync,
@@ -33,6 +34,7 @@ export default function Health() {
   const [isTradeBackfilling, setIsTradeBackfilling] = useState(false);
   const [isOiPolling, setIsOiPolling] = useState(false);
   const [isReconResyncing, setIsReconResyncing] = useState(false);
+  const [isFeatureMaterializing, setIsFeatureMaterializing] = useState(false);
   const [updatingWatchAssetId, setUpdatingWatchAssetId] = useState(null);
   const intervalRef = useRef(null);
 
@@ -170,6 +172,19 @@ export default function Health() {
     }
   };
 
+  const handleFeatureMaterialization = async () => {
+    try {
+      setIsFeatureMaterializing(true);
+      setActionError(null);
+      await triggerPolymarketFeatureMaterialization({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsFeatureMaterializing(false);
+    }
+  };
+
   if ((!health || !streamStatus) && !error) {
     return (
       <div>
@@ -197,6 +212,7 @@ export default function Health() {
   const metadataSync = streamStatus?.metadata_sync || null;
   const rawStorage = streamStatus?.raw_storage || null;
   const bookReconstruction = streamStatus?.book_reconstruction || health?.polymarket_phase4 || null;
+  const featureStatus = streamStatus?.features || health?.polymarket_phase5 || null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -476,6 +492,57 @@ export default function Health() {
               }}
             >
               {isReconResyncing ? "Repairing..." : "Repair Books"}
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 5 Derived Research</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {featureStatus?.enabled ? "Enabled" : "Disabled"} | Last feature run {formatShortDateTime(featureStatus?.last_successful_feature_run_at)}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard
+              label="Buckets"
+              value={(featureStatus?.bucket_widths_ms || []).length ? (featureStatus.bucket_widths_ms || []).join(" / ") : "-"}
+            />
+            <StatCard
+              label="Horizons"
+              value={(featureStatus?.label_horizons_ms || []).length ? (featureStatus.label_horizons_ms || []).join(" / ") : "-"}
+            />
+            <StatCard label="Feature Rows (24h)" value={featureStatus?.recent_feature_rows_24h ?? 0} />
+            <StatCard label="Label Rows (24h)" value={featureStatus?.recent_label_rows_24h ?? 0} />
+            <StatCard label="Incomplete Buckets" value={featureStatus?.incomplete_bucket_count_24h ?? 0} />
+            <StatCard label="Last Label Run" value={formatShortDateTime(featureStatus?.last_successful_label_run_at)} />
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={handleFeatureMaterialization}
+              disabled={isFeatureMaterializing || !featureStatus?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isFeatureMaterializing || !featureStatus?.enabled ? 0.65 : 1,
+                cursor: isFeatureMaterializing ? "wait" : (!featureStatus?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isFeatureMaterializing ? "Materializing..." : "Materialize Features"}
             </button>
           </div>
         </div>

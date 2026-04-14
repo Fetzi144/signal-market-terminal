@@ -30,6 +30,15 @@ from app.ingestion.polymarket_metadata import (
     lookup_polymarket_market_registry,
     trigger_manual_polymarket_meta_sync,
 )
+from app.ingestion.polymarket_microstructure import (
+    fetch_polymarket_feature_status,
+    list_polymarket_feature_runs,
+    lookup_polymarket_alpha_labels,
+    lookup_polymarket_book_state_topn,
+    lookup_polymarket_microstructure_features,
+    lookup_polymarket_passive_fill_labels,
+    trigger_manual_polymarket_feature_materialization,
+)
 from app.ingestion.polymarket_raw_storage import (
     fetch_polymarket_raw_storage_status,
     list_polymarket_raw_capture_runs,
@@ -132,6 +141,36 @@ class PolymarketRawCaptureRunOut(BaseModel):
     rows_inserted_json: dict[str, Any] | list[Any] | str | None = None
     error_count: int
     details_json: dict[str, Any] | list[Any] | str | None = None
+
+
+class PolymarketFeatureRunOut(BaseModel):
+    id: uuid.UUID
+    run_type: str
+    reason: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    status: str
+    scope_json: dict[str, Any] | list[Any] | str | None = None
+    cursor_json: dict[str, Any] | list[Any] | str | None = None
+    rows_inserted_json: dict[str, Any] | list[Any] | str | None = None
+    error_count: int
+    details_json: dict[str, Any] | list[Any] | str | None = None
+
+
+class PolymarketFeatureStatusOut(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    lookback_hours: int
+    bucket_widths_ms: list[int]
+    label_horizons_ms: list[int]
+    max_watched_assets: int
+    last_successful_feature_run_at: datetime | None = None
+    last_successful_label_run_at: datetime | None = None
+    recent_feature_rows_24h: int
+    recent_label_rows_24h: int
+    incomplete_bucket_count_24h: int
+    recent_runs: list[PolymarketFeatureRunOut]
 
 
 class PolymarketRawStorageStatusOut(BaseModel):
@@ -284,6 +323,13 @@ class PaginatedRawCaptureRunsOut(BaseModel):
     page_size: int
 
 
+class PaginatedFeatureRunsOut(BaseModel):
+    feature_runs: list[PolymarketFeatureRunOut]
+    total: int
+    page: int
+    page_size: int
+
+
 class PolymarketIngestStatusOut(BaseModel):
     connected: bool
     connection_started_at: datetime | None = None
@@ -310,6 +356,7 @@ class PolymarketIngestStatusOut(BaseModel):
     metadata_sync: PolymarketMetaSyncStatusOut
     raw_storage: PolymarketRawStorageStatusOut
     book_reconstruction: PolymarketBookReconStatusOut
+    features: PolymarketFeatureStatusOut
 
 
 class PolymarketManualResyncRequest(BaseModel):
@@ -389,6 +436,22 @@ class PolymarketManualBookReconResyncRequest(BaseModel):
 class PolymarketManualBookReconCatchupRequest(BaseModel):
     reason: str = Field(default="manual", min_length=1, max_length=64)
     asset_ids: list[str] | None = None
+
+
+class PolymarketManualFeatureMaterializeRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    asset_ids: list[str] | None = None
+    condition_ids: list[str] | None = None
+    start: datetime | None = None
+    end: datetime | None = None
+
+
+class PolymarketManualFeatureMaterializeOut(BaseModel):
+    status: str
+    scope_json: dict[str, Any]
+    book_state_run: PolymarketFeatureRunOut
+    feature_run: PolymarketFeatureRunOut
+    label_run: PolymarketFeatureRunOut
 
 
 class PolymarketWatchAssetUpsertRequest(BaseModel):
@@ -492,6 +555,7 @@ async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
     status = await fetch_polymarket_stream_status(db)
     status["raw_storage"] = await fetch_polymarket_raw_storage_status(db)
     status["book_reconstruction"] = await fetch_polymarket_book_recon_status(db)
+    status["features"] = await fetch_polymarket_feature_status(db)
     return status
 
 
@@ -824,6 +888,127 @@ async def run_polymarket_book_reconstruction_catch_up(
         reason=body.reason,
     )
     return PolymarketBookReconActionOut(**result, reason=body.reason, status="completed")
+
+
+@router.get("/features/status", response_model=PolymarketFeatureStatusOut)
+async def get_polymarket_feature_pipeline_status(
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_polymarket_feature_status(db)
+
+
+@router.get("/features/runs", response_model=PaginatedFeatureRunsOut)
+async def get_polymarket_feature_pipeline_runs(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    runs, total = await list_polymarket_feature_runs(db, page=page, page_size=page_size)
+    return PaginatedFeatureRunsOut(feature_runs=runs, total=total, page=page, page_size=page_size)
+
+
+@router.post("/features/materialize", response_model=PolymarketManualFeatureMaterializeOut)
+async def run_polymarket_feature_materialization(
+    body: PolymarketManualFeatureMaterializeRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    result = await trigger_manual_polymarket_feature_materialization(
+        session_factory,
+        reason=body.reason,
+        asset_ids=body.asset_ids,
+        condition_ids=body.condition_ids,
+        start=body.start,
+        end=body.end,
+    )
+    return PolymarketManualFeatureMaterializeOut(**result)
+
+
+@router.get("/features/book-state", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_book_state_rows(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    bucket_width_ms: int | None = Query(default=None, ge=1),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_book_state_topn(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        bucket_width_ms=bucket_width_ms,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/features/rows", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_feature_rows(
+    bucket_width_ms: int = Query(default=100, ge=1),
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_microstructure_features(
+        db,
+        bucket_width_ms=bucket_width_ms,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/features/alpha-labels", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_alpha_label_rows(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    horizon_ms: int | None = Query(default=None, ge=1),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_alpha_labels(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        horizon_ms=horizon_ms,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/features/passive-fill-labels", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_passive_fill_label_rows(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    horizon_ms: int | None = Query(default=None, ge=1),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_passive_fill_labels(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        horizon_ms=horizon_ms,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
 
 
 @router.get("/raw/status", response_model=PolymarketRawStorageStatusOut)

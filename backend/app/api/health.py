@@ -11,6 +11,7 @@ from app.config import settings
 from app.db import get_db
 from app.ingestion.polymarket_book_reconstruction import fetch_polymarket_book_recon_status
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
+from app.ingestion.polymarket_microstructure import fetch_polymarket_feature_status
 from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
 from app.models.ingestion import IngestionRun
 from app.models.market import Market
@@ -70,6 +71,21 @@ class PolymarketPhase4Status(BaseModel):
     status_counts: dict[str, int]
 
 
+class PolymarketPhase5Status(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    lookback_hours: int
+    bucket_widths_ms: list[int]
+    label_horizons_ms: list[int]
+    max_watched_assets: int
+    last_successful_feature_run_at: datetime | None = None
+    last_successful_label_run_at: datetime | None = None
+    recent_feature_rows_24h: int
+    recent_label_rows_24h: int
+    incomplete_bucket_count_24h: int
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -82,6 +98,7 @@ class HealthOut(BaseModel):
     polymarket_phase2: PolymarketPhase2Status
     polymarket_phase3: PolymarketPhase3Status
     polymarket_phase4: PolymarketPhase4Status
+    polymarket_phase5: PolymarketPhase5Status
 
 
 @router.get("/health", response_model=HealthOut)
@@ -126,6 +143,7 @@ async def health(db: AsyncSession = Depends(get_db)):
     polymarket_phase2 = await fetch_polymarket_meta_sync_status(db)
     polymarket_phase3 = await fetch_polymarket_raw_storage_status(db)
     polymarket_phase4 = await fetch_polymarket_book_recon_status(db)
+    polymarket_phase5 = await fetch_polymarket_feature_status(db)
 
     return HealthOut(
         status="ok",
@@ -184,6 +202,23 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "last_successful_resync_at",
                 "recent_incident_count",
                 "status_counts",
+            )
+        }),
+        polymarket_phase5=PolymarketPhase5Status(**{
+            key: polymarket_phase5[key]
+            for key in (
+                "enabled",
+                "on_startup",
+                "interval_seconds",
+                "lookback_hours",
+                "bucket_widths_ms",
+                "label_horizons_ms",
+                "max_watched_assets",
+                "last_successful_feature_run_at",
+                "last_successful_label_run_at",
+                "recent_feature_rows_24h",
+                "recent_label_rows_24h",
+                "incomplete_bucket_count_24h",
             )
         }),
     )

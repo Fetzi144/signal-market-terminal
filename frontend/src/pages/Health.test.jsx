@@ -5,6 +5,7 @@ import {
   getPolymarketWatchAssets,
   triggerPolymarketBookSnapshot,
   triggerPolymarketBookReconResync,
+  triggerPolymarketFeatureMaterialization,
   triggerPolymarketMetadataSync,
   triggerPolymarketOiPoll,
   triggerPolymarketRawProjector,
@@ -20,6 +21,7 @@ vi.mock("../api", () => ({
   getPolymarketWatchAssets: vi.fn(),
   triggerPolymarketBookSnapshot: vi.fn(),
   triggerPolymarketBookReconResync: vi.fn(),
+  triggerPolymarketFeatureMaterialization: vi.fn(),
   triggerPolymarketMetadataSync: vi.fn(),
   triggerPolymarketOiPoll: vi.fn(),
   triggerPolymarketRawProjector: vi.fn(),
@@ -134,6 +136,21 @@ const ingestPayload = {
     recent_incident_count: 2,
     status_counts: { live: 2, drifted: 1 },
     recent_incidents: [],
+  },
+  features: {
+    enabled: true,
+    on_startup: true,
+    interval_seconds: 300,
+    lookback_hours: 1,
+    bucket_widths_ms: [100, 1000],
+    label_horizons_ms: [250, 1000, 5000],
+    max_watched_assets: 50,
+    last_successful_feature_run_at: "2026-04-13T10:04:50Z",
+    last_successful_label_run_at: "2026-04-13T10:04:55Z",
+    recent_feature_rows_24h: 12,
+    recent_label_rows_24h: 18,
+    incomplete_bucket_count_24h: 2,
+    recent_runs: [],
   },
   recent_incidents: [
     {
@@ -288,6 +305,49 @@ beforeEach(() => {
     events_persisted: 1,
     reconstruction: { live_count: 1, degraded_count: 0, asset_count: 1, results: [] },
   });
+  triggerPolymarketFeatureMaterialization.mockResolvedValue({
+    status: "completed",
+    scope_json: {},
+    book_state_run: {
+      id: "33333333-3333-3333-3333-333333333333",
+      run_type: "book_state_materialize",
+      reason: "manual",
+      started_at: "2026-04-13T10:05:00Z",
+      completed_at: "2026-04-13T10:05:05Z",
+      status: "completed",
+      scope_json: {},
+      cursor_json: null,
+      rows_inserted_json: { polymarket_book_state_topn: 2 },
+      error_count: 0,
+      details_json: {},
+    },
+    feature_run: {
+      id: "44444444-4444-4444-4444-444444444444",
+      run_type: "feature_materialize",
+      reason: "manual",
+      started_at: "2026-04-13T10:05:00Z",
+      completed_at: "2026-04-13T10:05:05Z",
+      status: "completed",
+      scope_json: {},
+      cursor_json: null,
+      rows_inserted_json: { polymarket_microstructure_features_100ms: 2 },
+      error_count: 0,
+      details_json: {},
+    },
+    label_run: {
+      id: "55555555-5555-5555-5555-555555555555",
+      run_type: "label_materialize",
+      reason: "manual",
+      started_at: "2026-04-13T10:05:00Z",
+      completed_at: "2026-04-13T10:05:05Z",
+      status: "completed",
+      scope_json: {},
+      cursor_json: null,
+      rows_inserted_json: { polymarket_alpha_labels: 2 },
+      error_count: 0,
+      details_json: {},
+    },
+  });
 });
 
 describe("Health", () => {
@@ -299,6 +359,7 @@ describe("Health", () => {
     expect(screen.getByText("Phase 2 Metadata Registry")).toBeInTheDocument();
     expect(screen.getByText("Phase 3 Raw Storage")).toBeInTheDocument();
     expect(screen.getByText("Phase 4 Book Reconstruction")).toBeInTheDocument();
+    expect(screen.getByText("Phase 5 Derived Research")).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 
@@ -335,6 +396,11 @@ describe("Health", () => {
     fireEvent.click(screen.getByRole("button", { name: "Repair Books" }));
     await waitFor(() => {
       expect(triggerPolymarketBookReconResync).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Materialize Features" }));
+    await waitFor(() => {
+      expect(triggerPolymarketFeatureMaterialization).toHaveBeenCalledWith({ reason: "manual" });
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));

@@ -4,6 +4,20 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
+def _parse_positive_int_csv(value: str) -> list[int]:
+    parsed: list[int] = []
+    for chunk in value.split(","):
+        stripped = chunk.strip()
+        if not stripped:
+            continue
+        parsed.append(int(stripped))
+    if not parsed:
+        raise ValueError("At least one positive integer is required")
+    if any(item < 1 for item in parsed):
+        raise ValueError("Values must be >= 1")
+    return parsed
+
+
 class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://smt:smt@localhost:5432/smt"
@@ -61,6 +75,13 @@ class Settings(BaseSettings):
     polymarket_book_recon_max_watched_assets: int = 500
     polymarket_book_recon_bbo_tolerance: float = 0.0
     polymarket_book_recon_bootstrap_lookback_hours: int = 48
+    polymarket_features_enabled: bool = False
+    polymarket_features_on_startup: bool = True
+    polymarket_features_interval_seconds: int = 300
+    polymarket_features_lookback_hours: int = 1
+    polymarket_feature_buckets_ms: str = "100,1000"
+    polymarket_label_horizons_ms: str = "250,1000,5000"
+    polymarket_features_max_watched_assets: int = 50
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
@@ -259,6 +280,8 @@ class Settings(BaseSettings):
         "polymarket_malformed_burst_threshold",
         "polymarket_book_recon_max_watched_assets",
         "polymarket_book_recon_bootstrap_lookback_hours",
+        "polymarket_features_lookback_hours",
+        "polymarket_features_max_watched_assets",
     )
     @classmethod
     def limits_must_be_positive(cls, v: int) -> int:
@@ -277,11 +300,18 @@ class Settings(BaseSettings):
         "polymarket_oi_poll_interval_seconds",
         "polymarket_book_recon_stale_after_seconds",
         "polymarket_book_recon_resync_cooldown_seconds",
+        "polymarket_features_interval_seconds",
     )
     @classmethod
     def polymarket_intervals_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Polymarket interval must be >= 1 second")
+        return v
+
+    @field_validator("polymarket_feature_buckets_ms", "polymarket_label_horizons_ms")
+    @classmethod
+    def polymarket_positive_int_csv(cls, v: str) -> str:
+        _parse_positive_int_csv(v)
         return v
 
     @field_validator("polymarket_meta_sync_page_size")
@@ -326,6 +356,14 @@ class Settings(BaseSettings):
         if v < 1:
             raise ValueError("sse_max_connections must be >= 1")
         return v
+
+    @property
+    def polymarket_feature_bucket_values_ms(self) -> list[int]:
+        return _parse_positive_int_csv(self.polymarket_feature_buckets_ms)
+
+    @property
+    def polymarket_label_horizon_values_ms(self) -> list[int]:
+        return _parse_positive_int_csv(self.polymarket_label_horizons_ms)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

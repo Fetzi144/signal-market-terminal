@@ -255,3 +255,43 @@ polymarket_book_recon_assets_degraded = Gauge(
     "Current Polymarket reconstructed assets in degraded states",
     ["status"],
 )
+
+# Polymarket Phase 5 microstructure / derived research
+polymarket_feature_runs = Counter(
+    "smt_polymarket_feature_runs_total",
+    "Total Polymarket feature-materialization runs",
+    ["run_type", "reason", "status"],
+)
+
+polymarket_feature_run_failures = Counter(
+    "smt_polymarket_feature_run_failures_total",
+    "Total failed Polymarket feature-materialization runs",
+    ["run_type"],
+)
+
+polymarket_feature_rows_inserted = Counter(
+    "smt_polymarket_feature_rows_inserted_total",
+    "Total Polymarket derived feature rows inserted",
+    ["table_name"],
+)
+
+polymarket_label_rows_inserted = Counter(
+    "smt_polymarket_label_rows_inserted_total",
+    "Total Polymarket derived label rows inserted",
+    ["label_type"],
+)
+
+polymarket_feature_last_success_timestamp = Gauge(
+    "smt_polymarket_feature_last_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket feature-materialization run",
+)
+
+polymarket_label_last_success_timestamp = Gauge(
+    "smt_polymarket_label_last_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket label-materialization run",
+)
+
+polymarket_incomplete_bucket_count = Gauge(
+    "smt_polymarket_incomplete_bucket_count",
+    "Current count of incomplete Polymarket derived feature buckets",
+)
