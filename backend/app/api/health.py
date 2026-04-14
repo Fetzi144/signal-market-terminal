@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
+from app.execution.polymarket_live_state import fetch_polymarket_live_status
 from app.ingestion.polymarket_book_reconstruction import fetch_polymarket_book_recon_status
 from app.ingestion.polymarket_execution_policy import fetch_polymarket_execution_policy_status
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
@@ -104,6 +105,20 @@ class PolymarketPhase6Status(BaseModel):
     recent_avg_est_net_ev_bps: float | None = None
 
 
+class PolymarketPhase7AStatus(BaseModel):
+    enabled: bool
+    dry_run: bool
+    manual_approval_required: bool
+    gateway_reachable: bool
+    user_stream_connected: bool
+    kill_switch_enabled: bool
+    outstanding_live_orders: int
+    outstanding_reservations: float
+    recent_fills_24h: int
+    last_reconcile_success_at: datetime | None = None
+    last_user_stream_message_at: datetime | None = None
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -118,6 +133,7 @@ class HealthOut(BaseModel):
     polymarket_phase4: PolymarketPhase4Status
     polymarket_phase5: PolymarketPhase5Status
     polymarket_phase6: PolymarketPhase6Status
+    polymarket_phase7a: PolymarketPhase7AStatus
 
 
 @router.get("/health", response_model=HealthOut)
@@ -164,6 +180,7 @@ async def health(db: AsyncSession = Depends(get_db)):
     polymarket_phase4 = await fetch_polymarket_book_recon_status(db)
     polymarket_phase5 = await fetch_polymarket_feature_status(db)
     polymarket_phase6 = await fetch_polymarket_execution_policy_status(db)
+    polymarket_phase7a = await fetch_polymarket_live_status(db)
 
     return HealthOut(
         status="ok",
@@ -258,6 +275,22 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "recent_invalid_candidates_24h",
                 "recent_skip_decisions_24h",
                 "recent_avg_est_net_ev_bps",
+            )
+        }),
+        polymarket_phase7a=PolymarketPhase7AStatus(**{
+            key: polymarket_phase7a[key]
+            for key in (
+                "enabled",
+                "dry_run",
+                "manual_approval_required",
+                "gateway_reachable",
+                "user_stream_connected",
+                "kill_switch_enabled",
+                "outstanding_live_orders",
+                "outstanding_reservations",
+                "recent_fills_24h",
+                "last_reconcile_success_at",
+                "last_user_stream_message_at",
             )
         }),
     )

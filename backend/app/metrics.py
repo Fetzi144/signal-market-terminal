@@ -340,3 +340,77 @@ polymarket_execution_estimated_slippage_bps = Histogram(
     "Estimated slippage versus touch or midpoint for Polymarket execution actions in basis points",
     ["action_type"],
 )
+
+# Polymarket Phase 7A OMS / EMS foundation
+polymarket_live_order_intents_created = Counter(
+    "smt_polymarket_live_order_intents_created_total",
+    "Total Polymarket live-order intents created",
+)
+
+polymarket_live_submissions_attempted = Counter(
+    "smt_polymarket_live_submissions_attempted_total",
+    "Total Polymarket live-order submission attempts",
+)
+
+polymarket_live_submissions_blocked = Counter(
+    "smt_polymarket_live_submissions_blocked_total",
+    "Total Polymarket live-order submissions blocked by validation or safety controls",
+    ["reason"],
+)
+
+polymarket_live_submissions_failed = Counter(
+    "smt_polymarket_live_submissions_failed_total",
+    "Total failed Polymarket live-order submissions after an attempted gateway call",
+)
+
+polymarket_live_cancels = Counter(
+    "smt_polymarket_live_cancels_total",
+    "Total Polymarket live-order cancel attempts",
+)
+
+polymarket_live_cancel_failures = Counter(
+    "smt_polymarket_live_cancel_failures_total",
+    "Total failed Polymarket live-order cancel attempts",
+)
+
+polymarket_user_stream_reconnects = Counter(
+    "smt_polymarket_user_stream_reconnects_total",
+    "Total Polymarket authenticated user-stream reconnects",
+)
+
+polymarket_live_reconcile_runs = Counter(
+    "smt_polymarket_live_reconcile_runs_total",
+    "Total Polymarket live-order reconcile runs",
+    ["reason"],
+)
+
+polymarket_live_reconcile_failures = Counter(
+    "smt_polymarket_live_reconcile_failures_total",
+    "Total failed Polymarket live-order reconcile runs",
+)
+
+polymarket_live_fills_observed = Counter(
+    "smt_polymarket_live_fills_observed_total",
+    "Total Polymarket live fills observed",
+    ["fill_status"],
+)
+
+polymarket_live_outstanding_reservations = Gauge(
+    "smt_polymarket_live_outstanding_reservations",
+    "Current outstanding Polymarket reserved capacity",
+)
+
+polymarket_live_kill_switch = Gauge(
+    "smt_polymarket_live_kill_switch",
+    "Current Polymarket live kill-switch state (1=enabled, 0=disabled)",
+)
+
+polymarket_live_last_user_stream_message_timestamp = Gauge(
+    "smt_polymarket_live_last_user_stream_message_timestamp",
+    "Unix timestamp of the most recent Polymarket authenticated user-stream message",
+)
+
+polymarket_live_last_reconcile_success_timestamp = Gauge(
+    "smt_polymarket_live_last_reconcile_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket live reconcile run",
+)

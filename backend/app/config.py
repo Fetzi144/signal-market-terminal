@@ -18,6 +18,15 @@ def _parse_positive_int_csv(value: str) -> list[int]:
     return parsed
 
 
+def _parse_string_csv(value: str) -> list[str]:
+    parsed: list[str] = []
+    for chunk in value.split(","):
+        stripped = chunk.strip()
+        if stripped:
+            parsed.append(stripped)
+    return parsed
+
+
 class Settings(BaseSettings):
     # Database
     database_url: str = "postgresql+asyncpg://smt:smt@localhost:5432/smt"
@@ -90,6 +99,27 @@ class Settings(BaseSettings):
     polymarket_execution_policy_max_cross_slippage_bps: float = 150.0
     polymarket_execution_policy_step_ahead_enabled: bool = True
     polymarket_execution_policy_min_net_ev_bps: float = 0.0
+    polymarket_live_trading_enabled: bool = False
+    polymarket_live_dry_run: bool = True
+    polymarket_live_manual_approval_required: bool = True
+    polymarket_live_decision_max_age_seconds: int = 300
+    polymarket_user_stream_enabled: bool = False
+    polymarket_user_stream_url: str = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+    polymarket_user_stream_reconnect_base_seconds: float = 1.0
+    polymarket_user_stream_reconnect_max_seconds: float = 30.0
+    polymarket_reconcile_interval_seconds: int = 60
+    polymarket_kill_switch_enabled: bool = False
+    polymarket_allowlist_markets: str = ""
+    polymarket_allowlist_categories: str = ""
+    polymarket_max_outstanding_notional_usd: float = 0.0
+    polymarket_clob_host: str = "https://clob.polymarket.com"
+    polymarket_chain_id: int = 137
+    polymarket_api_key: str = ""
+    polymarket_api_secret: str = ""
+    polymarket_api_passphrase: str = ""
+    polymarket_private_key: str = ""
+    polymarket_signature_type: int = 2
+    polymarket_funder_address: str = ""
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
@@ -230,6 +260,8 @@ class Settings(BaseSettings):
         "shadow_execution_min_fill_pct",
         "polymarket_stream_reconnect_base_seconds",
         "polymarket_stream_reconnect_max_seconds",
+        "polymarket_user_stream_reconnect_base_seconds",
+        "polymarket_user_stream_reconnect_max_seconds",
     )
     @classmethod
     def thresholds_must_be_positive(cls, v: float) -> float:
@@ -293,6 +325,10 @@ class Settings(BaseSettings):
         "polymarket_execution_policy_default_horizon_ms",
         "polymarket_execution_policy_passive_lookback_hours",
         "polymarket_execution_policy_passive_min_label_rows",
+        "polymarket_live_decision_max_age_seconds",
+        "polymarket_reconcile_interval_seconds",
+        "polymarket_chain_id",
+        "polymarket_signature_type",
     )
     @classmethod
     def limits_must_be_positive(cls, v: int) -> int:
@@ -371,6 +407,21 @@ class Settings(BaseSettings):
             raise ValueError("polymarket_stream_reconnect_max_seconds must be >= base")
         return v
 
+    @field_validator("polymarket_user_stream_reconnect_max_seconds")
+    @classmethod
+    def user_stream_reconnect_max_must_not_be_lower_than_base(cls, v: float, info) -> float:
+        reconnect_base = info.data.get("polymarket_user_stream_reconnect_base_seconds")
+        if reconnect_base is not None and v < reconnect_base:
+            raise ValueError("polymarket_user_stream_reconnect_max_seconds must be >= base")
+        return v
+
+    @field_validator("polymarket_max_outstanding_notional_usd")
+    @classmethod
+    def polymarket_outstanding_notional_must_be_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("polymarket_max_outstanding_notional_usd must be >= 0")
+        return v
+
     @field_validator("sse_max_connections")
     @classmethod
     def sse_max_connections_must_be_positive(cls, v: int) -> int:
@@ -385,6 +436,14 @@ class Settings(BaseSettings):
     @property
     def polymarket_label_horizon_values_ms(self) -> list[int]:
         return _parse_positive_int_csv(self.polymarket_label_horizons_ms)
+
+    @property
+    def polymarket_allowlist_market_values(self) -> list[str]:
+        return _parse_string_csv(self.polymarket_allowlist_markets)
+
+    @property
+    def polymarket_allowlist_category_values(self) -> list[str]:
+        return _parse_string_csv(self.polymarket_allowlist_categories)
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

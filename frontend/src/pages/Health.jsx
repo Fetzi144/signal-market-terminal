@@ -214,6 +214,7 @@ export default function Health() {
   const bookReconstruction = streamStatus?.book_reconstruction || health?.polymarket_phase4 || null;
   const featureStatus = streamStatus?.features || health?.polymarket_phase5 || null;
   const executionPolicy = streamStatus?.execution_policy || health?.polymarket_phase6 || null;
+  const liveExecution = health?.polymarket_phase7a || null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -588,6 +589,41 @@ export default function Health() {
           </div>
         </div>
 
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 7A OMS/EMS Foundation</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {liveExecution?.enabled ? "Live enabled" : "Live disabled"} | {liveExecution?.dry_run ? "Dry-run" : "Venue submit"} | {liveExecution?.manual_approval_required ? "Manual approval" : "Auto approval"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <StatCard label="Gateway" value={liveExecution?.gateway_reachable ? "Reachable" : "Unreachable"} />
+            <StatCard label="User Stream" value={liveExecution?.user_stream_connected ? "Connected" : "Disconnected"} />
+            <StatCard label="Kill Switch" value={liveExecution?.kill_switch_enabled ? "On" : "Off"} />
+            <StatCard label="Open Live Orders" value={liveExecution?.outstanding_live_orders ?? 0} />
+            <StatCard
+              label="Reservations"
+              value={liveExecution?.outstanding_reservations != null ? Number(liveExecution.outstanding_reservations).toFixed(2) : "-"}
+            />
+            <StatCard label="Fills (24h)" value={liveExecution?.recent_fills_24h ?? 0} />
+            <StatCard label="Last Reconcile" value={formatShortDateTime(liveExecution?.last_reconcile_success_at)} />
+            <StatCard label="Last User Msg" value={formatShortDateTime(liveExecution?.last_user_stream_message_at)} />
+          </div>
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
           <TablePanel

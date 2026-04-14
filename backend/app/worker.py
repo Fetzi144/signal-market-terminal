@@ -6,6 +6,8 @@ import signal
 
 from app.db import async_session
 from app.config import settings
+from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
+from app.execution.polymarket_user_stream import PolymarketUserStreamService
 from app.ingestion.polymarket_book_reconstruction import PolymarketBookReconstructionService
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
 from app.ingestion.polymarket_microstructure import PolymarketMicrostructureService
@@ -30,6 +32,8 @@ async def _run_worker() -> None:
         and not settings.polymarket_raw_storage_enabled
         and not settings.polymarket_book_recon_enabled
         and not settings.polymarket_features_enabled
+        and not settings.polymarket_user_stream_enabled
+        and not settings.polymarket_live_trading_enabled
     ):
         logger.warning("Worker started with all worker features disabled; exiting")
         return
@@ -47,6 +51,10 @@ async def _run_worker() -> None:
     book_recon_task: asyncio.Task | None = None
     feature_service: PolymarketMicrostructureService | None = None
     feature_task: asyncio.Task | None = None
+    user_stream_service: PolymarketUserStreamService | None = None
+    user_stream_task: asyncio.Task | None = None
+    reconcile_service: PolymarketLiveReconciler | None = None
+    reconcile_task: asyncio.Task | None = None
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -81,6 +89,14 @@ async def _run_worker() -> None:
         feature_service = PolymarketMicrostructureService(async_session)
         feature_task = asyncio.create_task(feature_service.run(stop_event))
 
+    if settings.polymarket_user_stream_enabled:
+        user_stream_service = PolymarketUserStreamService(async_session)
+        user_stream_task = asyncio.create_task(user_stream_service.run(stop_event))
+
+    if settings.polymarket_user_stream_enabled or settings.polymarket_live_trading_enabled:
+        reconcile_service = PolymarketLiveReconciler(async_session)
+        reconcile_task = asyncio.create_task(reconcile_service.run(stop_event))
+
     if (
         not scheduler_started
         and stream_task is None
@@ -88,6 +104,8 @@ async def _run_worker() -> None:
         and raw_storage_task is None
         and book_recon_task is None
         and feature_task is None
+        and user_stream_task is None
+        and reconcile_task is None
     ):
         logger.warning("No worker responsibilities started; exiting")
         return
@@ -137,6 +155,20 @@ async def _run_worker() -> None:
                 pass
         if feature_service is not None:
             await feature_service.close()
+        if user_stream_task is not None:
+            user_stream_task.cancel()
+            try:
+                await user_stream_task
+            except asyncio.CancelledError:
+                pass
+        if user_stream_service is not None:
+            await user_stream_service.close()
+        if reconcile_task is not None:
+            reconcile_task.cancel()
+            try:
+                await reconcile_task
+            except asyncio.CancelledError:
+                pass
         if scheduler_started:
             await _maybe_await(stop_scheduler())
 

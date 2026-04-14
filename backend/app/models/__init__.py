@@ -4,6 +4,14 @@ from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
 from app.models.paper_trade import PaperTrade
 from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
+from app.models.polymarket_live_execution import (
+    CapitalReservation,
+    LiveFill,
+    LiveOrder,
+    LiveOrderEvent,
+    PolymarketLiveState,
+    PolymarketUserEventRaw,
+)
 from app.models.polymarket_metadata import (
     PolymarketAssetDim,
     PolymarketEventDim,
@@ -60,6 +68,12 @@ __all__ = [
     "BacktestSignal",
     "ExecutionDecision",
     "PolymarketExecutionActionCandidate",
+    "PolymarketUserEventRaw",
+    "LiveOrder",
+    "LiveOrderEvent",
+    "LiveFill",
+    "CapitalReservation",
+    "PolymarketLiveState",
     "Position",
     "Trade",
     "PolymarketMarketEvent",

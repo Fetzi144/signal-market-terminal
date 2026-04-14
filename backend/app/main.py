@@ -12,7 +12,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.api import alerts, analytics, backtest, health, ingest, markets, paper_trading, performance, portfolio, push, signals, sse
+from app.api import alerts, analytics, backtest, health, ingest, markets, paper_trading, performance, polymarket_live, portfolio, push, signals, sse
 from app.api.signals import signals_limiter
 from app.config import settings
 from app.jobs.scheduler import start_scheduler, stop_scheduler
@@ -105,6 +105,7 @@ app.include_router(performance.router)
 app.include_router(portfolio.router)
 app.include_router(push.router)
 app.include_router(paper_trading.router)
+app.include_router(polymarket_live.router)
 
 # Prometheus auto-instrumentation — exposes /metrics
 Instrumentator().instrument(app).expose(app)

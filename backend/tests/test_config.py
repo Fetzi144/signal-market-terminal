@@ -133,3 +133,10 @@ class TestDefaults:
         assert s.polymarket_execution_policy_max_cross_slippage_bps == 150.0
         assert s.polymarket_execution_policy_step_ahead_enabled is True
         assert s.polymarket_execution_policy_min_net_ev_bps == 0.0
+        assert s.polymarket_live_trading_enabled is False
+        assert s.polymarket_live_dry_run is True
+        assert s.polymarket_live_manual_approval_required is True
+        assert s.polymarket_user_stream_enabled is False
+        assert s.polymarket_kill_switch_enabled is False
+        assert s.polymarket_allowlist_market_values == []
+        assert s.polymarket_allowlist_category_values == []

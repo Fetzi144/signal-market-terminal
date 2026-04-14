@@ -57,6 +57,19 @@ const healthPayload = {
     recent_skip_decisions_24h: 1,
     recent_avg_est_net_ev_bps: 17.25,
   },
+  polymarket_phase7a: {
+    enabled: false,
+    dry_run: true,
+    manual_approval_required: true,
+    gateway_reachable: false,
+    user_stream_connected: false,
+    kill_switch_enabled: false,
+    outstanding_live_orders: 2,
+    outstanding_reservations: 75.25,
+    recent_fills_24h: 1,
+    last_reconcile_success_at: "2026-04-13T10:05:10Z",
+    last_user_stream_message_at: "2026-04-13T10:04:59Z",
+  },
   ingestion: [
     {
       run_type: "market_discovery",
@@ -393,6 +406,8 @@ describe("Health", () => {
     expect(screen.getByText("Phase 4 Book Reconstruction")).toBeInTheDocument();
     expect(screen.getByText("Phase 5 Derived Research")).toBeInTheDocument();
     expect(screen.getByText("Phase 6 Execution Policy")).toBeInTheDocument();
+    expect(screen.getByText("Phase 7A OMS/EMS Foundation")).toBeInTheDocument();
+    expect(screen.getByText(/Live disabled/)).toBeInTheDocument();
     expect(screen.getByText(/cross_now:2/)).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
