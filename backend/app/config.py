@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     polymarket_execution_policy_max_cross_slippage_bps: float = 150.0
     polymarket_execution_policy_step_ahead_enabled: bool = True
     polymarket_execution_policy_min_net_ev_bps: float = 0.0
+    polymarket_structure_engine_enabled: bool = False
+    polymarket_structure_on_startup: bool = True
+    polymarket_structure_interval_seconds: int = 300
+    polymarket_structure_min_net_edge_bps: float = 0.0
+    polymarket_structure_require_executable_all_legs: bool = True
+    polymarket_structure_include_cross_venue: bool = False
+    polymarket_structure_allow_augmented_neg_risk: bool = False
+    polymarket_structure_max_groups_per_run: int = 250
+    polymarket_structure_cross_venue_max_staleness_seconds: int = 180
+    polymarket_structure_max_leg_slippage_bps: float = 150.0
     polymarket_live_trading_enabled: bool = False
     polymarket_live_dry_run: bool = True
     polymarket_live_manual_approval_required: bool = True
@@ -325,6 +335,8 @@ class Settings(BaseSettings):
         "polymarket_execution_policy_default_horizon_ms",
         "polymarket_execution_policy_passive_lookback_hours",
         "polymarket_execution_policy_passive_min_label_rows",
+        "polymarket_structure_max_groups_per_run",
+        "polymarket_structure_cross_venue_max_staleness_seconds",
         "polymarket_live_decision_max_age_seconds",
         "polymarket_reconcile_interval_seconds",
         "polymarket_chain_id",
@@ -339,6 +351,8 @@ class Settings(BaseSettings):
     @field_validator(
         "polymarket_execution_policy_max_cross_slippage_bps",
         "polymarket_execution_policy_min_net_ev_bps",
+        "polymarket_structure_min_net_edge_bps",
+        "polymarket_structure_max_leg_slippage_bps",
     )
     @classmethod
     def polymarket_execution_policy_thresholds_must_be_non_negative(cls, v: float) -> float:
@@ -358,6 +372,7 @@ class Settings(BaseSettings):
         "polymarket_book_recon_stale_after_seconds",
         "polymarket_book_recon_resync_cooldown_seconds",
         "polymarket_features_interval_seconds",
+        "polymarket_structure_interval_seconds",
     )
     @classmethod
     def polymarket_intervals_must_be_positive(cls, v: int) -> int:

@@ -414,3 +414,50 @@ polymarket_live_last_reconcile_success_timestamp = Gauge(
     "smt_polymarket_live_last_reconcile_success_timestamp",
     "Unix timestamp of the most recent successful Polymarket live reconcile run",
 )
+
+# Polymarket Phase 8A structural edge engine
+polymarket_structure_runs = Counter(
+    "smt_polymarket_structure_runs_total",
+    "Total Polymarket structure engine runs",
+    ["run_type", "status"],
+)
+
+polymarket_structure_run_failures = Counter(
+    "smt_polymarket_structure_run_failures_total",
+    "Total failed Polymarket structure engine runs",
+    ["run_type"],
+)
+
+polymarket_structure_groups_built = Counter(
+    "smt_polymarket_structure_groups_built_total",
+    "Total market-structure groups built or refreshed",
+    ["group_type"],
+)
+
+polymarket_structure_opportunities_detected = Counter(
+    "smt_polymarket_structure_opportunities_detected_total",
+    "Total structural opportunities detected",
+    ["opportunity_type"],
+)
+
+polymarket_structure_actionable_opportunities = Counter(
+    "smt_polymarket_structure_actionable_opportunities_total",
+    "Total actionable structural opportunities detected",
+    ["opportunity_type"],
+)
+
+polymarket_structure_non_executable_rejections = Counter(
+    "smt_polymarket_structure_non_executable_rejections_total",
+    "Total structural opportunities rejected for non-executable legs",
+    ["opportunity_type"],
+)
+
+polymarket_structure_augmented_filters = Counter(
+    "smt_polymarket_structure_augmented_filters_total",
+    "Total augmented negative-risk placeholder or Other filters triggered",
+)
+
+polymarket_structure_last_successful_scan_timestamp = Gauge(
+    "smt_polymarket_structure_last_successful_scan_timestamp",
+    "Unix timestamp of the most recent successful structural opportunity scan",
+)

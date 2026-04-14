@@ -12,7 +12,7 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.api import alerts, analytics, backtest, health, ingest, markets, paper_trading, performance, polymarket_live, portfolio, push, signals, sse
+from app.api import alerts, analytics, backtest, health, ingest, markets, paper_trading, performance, polymarket_live, polymarket_structure, portfolio, push, signals, sse
 from app.api.signals import signals_limiter
 from app.config import settings
 from app.jobs.scheduler import start_scheduler, stop_scheduler
@@ -97,6 +97,7 @@ app.include_router(signals.router)
 app.include_router(markets.router)
 app.include_router(health.router)
 app.include_router(ingest.router)
+app.include_router(polymarket_structure.router)
 app.include_router(alerts.router)
 app.include_router(sse.router)
 app.include_router(analytics.router)

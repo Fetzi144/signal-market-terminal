@@ -12,6 +12,7 @@ from app.ingestion.polymarket_book_reconstruction import PolymarketBookReconstru
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
 from app.ingestion.polymarket_microstructure import PolymarketMicrostructureService
 from app.ingestion.polymarket_raw_storage import PolymarketRawStorageService
+from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.ingestion.polymarket_stream import PolymarketStreamService
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
@@ -32,6 +33,7 @@ async def _run_worker() -> None:
         and not settings.polymarket_raw_storage_enabled
         and not settings.polymarket_book_recon_enabled
         and not settings.polymarket_features_enabled
+        and not settings.polymarket_structure_engine_enabled
         and not settings.polymarket_user_stream_enabled
         and not settings.polymarket_live_trading_enabled
     ):
@@ -51,6 +53,8 @@ async def _run_worker() -> None:
     book_recon_task: asyncio.Task | None = None
     feature_service: PolymarketMicrostructureService | None = None
     feature_task: asyncio.Task | None = None
+    structure_service: PolymarketStructureEngineService | None = None
+    structure_task: asyncio.Task | None = None
     user_stream_service: PolymarketUserStreamService | None = None
     user_stream_task: asyncio.Task | None = None
     reconcile_service: PolymarketLiveReconciler | None = None
@@ -89,6 +93,10 @@ async def _run_worker() -> None:
         feature_service = PolymarketMicrostructureService(async_session)
         feature_task = asyncio.create_task(feature_service.run(stop_event))
 
+    if settings.polymarket_structure_engine_enabled:
+        structure_service = PolymarketStructureEngineService(async_session)
+        structure_task = asyncio.create_task(structure_service.run(stop_event))
+
     if settings.polymarket_user_stream_enabled:
         user_stream_service = PolymarketUserStreamService(async_session)
         user_stream_task = asyncio.create_task(user_stream_service.run(stop_event))
@@ -104,6 +112,7 @@ async def _run_worker() -> None:
         and raw_storage_task is None
         and book_recon_task is None
         and feature_task is None
+        and structure_task is None
         and user_stream_task is None
         and reconcile_task is None
     ):
@@ -155,6 +164,14 @@ async def _run_worker() -> None:
                 pass
         if feature_service is not None:
             await feature_service.close()
+        if structure_task is not None:
+            structure_task.cancel()
+            try:
+                await structure_task
+            except asyncio.CancelledError:
+                pass
+        if structure_service is not None:
+            await structure_service.close()
         if user_stream_task is not None:
             user_stream_task.cancel()
             try:

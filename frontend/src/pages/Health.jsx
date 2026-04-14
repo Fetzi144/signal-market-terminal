@@ -10,6 +10,8 @@ import {
   triggerPolymarketOiPoll,
   triggerPolymarketRawProjector,
   triggerPolymarketResync,
+  triggerPolymarketStructureGroupBuild,
+  triggerPolymarketStructureOpportunityScan,
   triggerPolymarketTradeBackfill,
   updatePolymarketWatchAsset,
 } from "../api";
@@ -35,6 +37,8 @@ export default function Health() {
   const [isOiPolling, setIsOiPolling] = useState(false);
   const [isReconResyncing, setIsReconResyncing] = useState(false);
   const [isFeatureMaterializing, setIsFeatureMaterializing] = useState(false);
+  const [isStructureBuilding, setIsStructureBuilding] = useState(false);
+  const [isStructureScanning, setIsStructureScanning] = useState(false);
   const [updatingWatchAssetId, setUpdatingWatchAssetId] = useState(null);
   const intervalRef = useRef(null);
 
@@ -185,6 +189,32 @@ export default function Health() {
     }
   };
 
+  const handleStructureGroupBuild = async () => {
+    try {
+      setIsStructureBuilding(true);
+      setActionError(null);
+      await triggerPolymarketStructureGroupBuild({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsStructureBuilding(false);
+    }
+  };
+
+  const handleStructureOpportunityScan = async () => {
+    try {
+      setIsStructureScanning(true);
+      setActionError(null);
+      await triggerPolymarketStructureOpportunityScan({ reason: "manual" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsStructureScanning(false);
+    }
+  };
+
   if ((!health || !streamStatus) && !error) {
     return (
       <div>
@@ -215,6 +245,7 @@ export default function Health() {
   const featureStatus = streamStatus?.features || health?.polymarket_phase5 || null;
   const executionPolicy = streamStatus?.execution_policy || health?.polymarket_phase6 || null;
   const liveExecution = health?.polymarket_phase7a || null;
+  const structureStatus = health?.polymarket_phase8a || streamStatus?.structure_engine || null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -622,6 +653,62 @@ export default function Health() {
             <StatCard label="Fills (24h)" value={liveExecution?.recent_fills_24h ?? 0} />
             <StatCard label="Last Reconcile" value={formatShortDateTime(liveExecution?.last_reconcile_success_at)} />
             <StatCard label="Last User Msg" value={formatShortDateTime(liveExecution?.last_user_stream_message_at)} />
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 8A Structural Edge Engine</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {structureStatus?.enabled ? "Enabled" : "Disabled"} | Last scan {formatShortDateTime(structureStatus?.last_successful_scan_at)}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard label="Last Group Build" value={formatShortDateTime(structureStatus?.last_successful_group_build_at)} />
+            <StatCard label="Last Scan" value={formatShortDateTime(structureStatus?.last_successful_scan_at)} />
+            <StatCard label="Actionable" value={formatActionMix(structureStatus?.recent_actionable_by_type)} />
+            <StatCard label="Non-Executable" value={structureStatus?.recent_non_executable_count ?? 0} />
+            <StatCard label="Augmented / Info" value={structureStatus?.informational_augmented_group_count ?? 0} />
+            <StatCard label="Groups" value={formatActionMix(structureStatus?.active_group_counts)} />
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={handleStructureGroupBuild}
+              disabled={isStructureBuilding || !structureStatus?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isStructureBuilding || !structureStatus?.enabled ? 0.65 : 1,
+                cursor: isStructureBuilding ? "wait" : (!structureStatus?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isStructureBuilding ? "Building..." : "Build Groups"}
+            </button>
+            <button
+              onClick={handleStructureOpportunityScan}
+              disabled={isStructureScanning || !structureStatus?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isStructureScanning || !structureStatus?.enabled ? 0.65 : 1,
+                cursor: isStructureScanning ? "wait" : (!structureStatus?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isStructureScanning ? "Scanning..." : "Scan Opportunities"}
+            </button>
           </div>
         </div>
 

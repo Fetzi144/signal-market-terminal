@@ -10,6 +10,8 @@ import {
   triggerPolymarketOiPoll,
   triggerPolymarketRawProjector,
   triggerPolymarketResync,
+  triggerPolymarketStructureGroupBuild,
+  triggerPolymarketStructureOpportunityScan,
   triggerPolymarketTradeBackfill,
   updatePolymarketWatchAsset,
 } from "../api";
@@ -26,6 +28,8 @@ vi.mock("../api", () => ({
   triggerPolymarketOiPoll: vi.fn(),
   triggerPolymarketRawProjector: vi.fn(),
   triggerPolymarketResync: vi.fn(),
+  triggerPolymarketStructureGroupBuild: vi.fn(),
+  triggerPolymarketStructureOpportunityScan: vi.fn(),
   triggerPolymarketTradeBackfill: vi.fn(),
   updatePolymarketWatchAsset: vi.fn(),
 }));
@@ -69,6 +73,27 @@ const healthPayload = {
     recent_fills_24h: 1,
     last_reconcile_success_at: "2026-04-13T10:05:10Z",
     last_user_stream_message_at: "2026-04-13T10:04:59Z",
+  },
+  polymarket_phase8a: {
+    enabled: true,
+    on_startup: true,
+    interval_seconds: 300,
+    min_net_edge_bps: 0,
+    require_executable_all_legs: true,
+    include_cross_venue: false,
+    allow_augmented_neg_risk: false,
+    max_groups_per_run: 250,
+    cross_venue_max_staleness_seconds: 180,
+    max_leg_slippage_bps: 150,
+    last_successful_group_build_at: "2026-04-13T10:04:45Z",
+    last_successful_scan_at: "2026-04-13T10:05:15Z",
+    last_group_build_status: "completed",
+    last_scan_status: "completed",
+    recent_actionable_by_type: { neg_risk_direct_vs_basket: 2, binary_complement: 1 },
+    recent_non_executable_count: 3,
+    informational_augmented_group_count: 2,
+    active_group_counts: { neg_risk_event: 4, binary_complement: 8, event_sum_parity: 2 },
+    active_cross_venue_link_count: 0,
   },
   ingestion: [
     {
@@ -196,6 +221,30 @@ const ingestPayload = {
     recent_invalid_candidates_24h: 3,
     recent_skip_decisions_24h: 1,
     recent_avg_est_net_ev_bps: 17.25,
+  },
+  structure_engine: {
+    enabled: true,
+    on_startup: true,
+    interval_seconds: 300,
+    min_net_edge_bps: 0,
+    require_executable_all_legs: true,
+    include_cross_venue: false,
+    allow_augmented_neg_risk: false,
+    max_groups_per_run: 250,
+    cross_venue_max_staleness_seconds: 180,
+    max_leg_slippage_bps: 150,
+    last_successful_group_build_at: "2026-04-13T10:04:45Z",
+    last_successful_scan_at: "2026-04-13T10:05:15Z",
+    last_group_build_status: "completed",
+    last_group_build_started_at: "2026-04-13T10:04:40Z",
+    last_scan_status: "completed",
+    last_scan_started_at: "2026-04-13T10:05:10Z",
+    recent_actionable_by_type: { neg_risk_direct_vs_basket: 2, binary_complement: 1 },
+    recent_non_executable_count: 3,
+    informational_augmented_group_count: 2,
+    active_group_counts: { neg_risk_event: 4, binary_complement: 8, event_sum_parity: 2 },
+    active_cross_venue_link_count: 0,
+    recent_runs: [],
   },
   recent_incidents: [
     {
@@ -393,6 +442,32 @@ beforeEach(() => {
       details_json: {},
     },
   });
+  triggerPolymarketStructureGroupBuild.mockResolvedValue({
+    id: "66666666-6666-6666-6666-666666666666",
+    run_type: "group_build",
+    reason: "manual",
+    started_at: "2026-04-13T10:05:00Z",
+    completed_at: "2026-04-13T10:05:05Z",
+    status: "completed",
+    scope_json: {},
+    cursor_json: null,
+    rows_inserted_json: { groups_upserted: 3, members_upserted: 8 },
+    error_count: 0,
+    details_json: {},
+  });
+  triggerPolymarketStructureOpportunityScan.mockResolvedValue({
+    id: "77777777-7777-7777-7777-777777777777",
+    run_type: "opportunity_scan",
+    reason: "manual",
+    started_at: "2026-04-13T10:05:00Z",
+    completed_at: "2026-04-13T10:05:05Z",
+    status: "completed",
+    scope_json: {},
+    cursor_json: null,
+    rows_inserted_json: { opportunities_inserted: 2, legs_inserted: 5 },
+    error_count: 0,
+    details_json: {},
+  });
 });
 
 describe("Health", () => {
@@ -407,8 +482,10 @@ describe("Health", () => {
     expect(screen.getByText("Phase 5 Derived Research")).toBeInTheDocument();
     expect(screen.getByText("Phase 6 Execution Policy")).toBeInTheDocument();
     expect(screen.getByText("Phase 7A OMS/EMS Foundation")).toBeInTheDocument();
+    expect(screen.getByText("Phase 8A Structural Edge Engine")).toBeInTheDocument();
     expect(screen.getByText(/Live disabled/)).toBeInTheDocument();
     expect(screen.getByText(/cross_now:2/)).toBeInTheDocument();
+    expect(screen.getByText(/neg_risk_direct_vs_basket:2/)).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 
@@ -450,6 +527,16 @@ describe("Health", () => {
     fireEvent.click(screen.getByRole("button", { name: "Materialize Features" }));
     await waitFor(() => {
       expect(triggerPolymarketFeatureMaterialization).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Build Groups" }));
+    await waitFor(() => {
+      expect(triggerPolymarketStructureGroupBuild).toHaveBeenCalledWith({ reason: "manual" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Scan Opportunities" }));
+    await waitFor(() => {
+      expect(triggerPolymarketStructureOpportunityScan).toHaveBeenCalledWith({ reason: "manual" });
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Disable" }));

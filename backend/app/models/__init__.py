@@ -2,6 +2,14 @@ from app.models.backtest import BacktestRun, BacktestSignal
 from app.models.execution_decision import ExecutionDecision
 from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
+from app.models.market_structure import (
+    CrossVenueMarketLink,
+    MarketStructureGroup,
+    MarketStructureGroupMember,
+    MarketStructureOpportunity,
+    MarketStructureOpportunityLeg,
+    MarketStructureRun,
+)
 from app.models.paper_trade import PaperTrade
 from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
 from app.models.polymarket_live_execution import (
@@ -58,6 +66,12 @@ from app.models.whale import WalletActivity, WalletProfile
 __all__ = [
     "Market",
     "Outcome",
+    "MarketStructureGroup",
+    "MarketStructureGroupMember",
+    "MarketStructureRun",
+    "MarketStructureOpportunity",
+    "MarketStructureOpportunityLeg",
+    "CrossVenueMarketLink",
     "PriceSnapshot",
     "OrderbookSnapshot",
     "Signal",

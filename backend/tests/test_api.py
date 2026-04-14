@@ -23,6 +23,7 @@ async def test_health_endpoint(client):
     assert "alert_threshold" in data
     assert "ingestion" in data
     assert isinstance(data["ingestion"], list)
+    assert "polymarket_phase8a" in data
 
 
 # ── Signals list ────────────────────────────────────────

@@ -15,6 +15,7 @@ from app.ingestion.polymarket_execution_policy import fetch_polymarket_execution
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
 from app.ingestion.polymarket_microstructure import fetch_polymarket_feature_status
 from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
+from app.ingestion.structure_engine import fetch_market_structure_status
 from app.models.ingestion import IngestionRun
 from app.models.market import Market
 from app.models.signal import Signal
@@ -119,6 +120,28 @@ class PolymarketPhase7AStatus(BaseModel):
     last_user_stream_message_at: datetime | None = None
 
 
+class PolymarketPhase8AStatus(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    min_net_edge_bps: float
+    require_executable_all_legs: bool
+    include_cross_venue: bool
+    allow_augmented_neg_risk: bool
+    max_groups_per_run: int
+    cross_venue_max_staleness_seconds: int
+    max_leg_slippage_bps: float
+    last_successful_group_build_at: datetime | None = None
+    last_successful_scan_at: datetime | None = None
+    last_group_build_status: str | None = None
+    last_scan_status: str | None = None
+    recent_actionable_by_type: dict[str, int]
+    recent_non_executable_count: int
+    informational_augmented_group_count: int
+    active_group_counts: dict[str, int]
+    active_cross_venue_link_count: int
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -134,6 +157,7 @@ class HealthOut(BaseModel):
     polymarket_phase5: PolymarketPhase5Status
     polymarket_phase6: PolymarketPhase6Status
     polymarket_phase7a: PolymarketPhase7AStatus
+    polymarket_phase8a: PolymarketPhase8AStatus
 
 
 @router.get("/health", response_model=HealthOut)
@@ -181,6 +205,7 @@ async def health(db: AsyncSession = Depends(get_db)):
     polymarket_phase5 = await fetch_polymarket_feature_status(db)
     polymarket_phase6 = await fetch_polymarket_execution_policy_status(db)
     polymarket_phase7a = await fetch_polymarket_live_status(db)
+    polymarket_phase8a = await fetch_market_structure_status(db)
 
     return HealthOut(
         status="ok",
@@ -291,6 +316,30 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "recent_fills_24h",
                 "last_reconcile_success_at",
                 "last_user_stream_message_at",
+            )
+        }),
+        polymarket_phase8a=PolymarketPhase8AStatus(**{
+            key: polymarket_phase8a[key]
+            for key in (
+                "enabled",
+                "on_startup",
+                "interval_seconds",
+                "min_net_edge_bps",
+                "require_executable_all_legs",
+                "include_cross_venue",
+                "allow_augmented_neg_risk",
+                "max_groups_per_run",
+                "cross_venue_max_staleness_seconds",
+                "max_leg_slippage_bps",
+                "last_successful_group_build_at",
+                "last_successful_scan_at",
+                "last_group_build_status",
+                "last_scan_status",
+                "recent_actionable_by_type",
+                "recent_non_executable_count",
+                "informational_augmented_group_count",
+                "active_group_counts",
+                "active_cross_venue_link_count",
             )
         }),
     )

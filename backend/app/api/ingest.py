@@ -60,6 +60,7 @@ from app.ingestion.polymarket_raw_storage import (
     trigger_manual_polymarket_raw_projector,
     trigger_manual_polymarket_trade_backfill,
 )
+from app.ingestion.structure_engine import fetch_market_structure_status
 from app.ingestion.polymarket_stream import (
     ensure_watch_registry_bootstrapped,
     fetch_polymarket_stream_status,
@@ -383,6 +384,7 @@ class PolymarketIngestStatusOut(BaseModel):
     book_reconstruction: PolymarketBookReconStatusOut
     features: PolymarketFeatureStatusOut
     execution_policy: PolymarketExecutionPolicyStatusOut
+    structure_engine: dict[str, Any]
 
 
 class PolymarketManualResyncRequest(BaseModel):
@@ -598,6 +600,7 @@ async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
     status["book_reconstruction"] = await fetch_polymarket_book_recon_status(db)
     status["features"] = await fetch_polymarket_feature_status(db)
     status["execution_policy"] = await fetch_polymarket_execution_policy_status(db)
+    status["structure_engine"] = await fetch_market_structure_status(db)
     return status
 
 

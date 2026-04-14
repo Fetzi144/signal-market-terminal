@@ -82,6 +82,10 @@ export function getPolymarketIngestStatus() {
   return fetchJson(`${API_BASE}/ingest/polymarket/status`);
 }
 
+export function getPolymarketStructureStatus() {
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/status`);
+}
+
 export function getPolymarketIncidents({ page = 1, pageSize = 20 } = {}) {
   const params = new URLSearchParams({ page, page_size: pageSize });
   return fetchJson(`${API_BASE}/ingest/polymarket/incidents?${params}`);
@@ -171,6 +175,20 @@ export function triggerPolymarketBookReconResync(body = { reason: "manual" }) {
 
 export function triggerPolymarketFeatureMaterialization(body = { reason: "manual" }) {
   return requestJson(`${API_BASE}/ingest/polymarket/features/materialize`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function triggerPolymarketStructureGroupBuild(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/groups/build`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function triggerPolymarketStructureOpportunityScan(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/opportunities/scan`, {
     method: "POST",
     body: JSON.stringify(body),
   });
