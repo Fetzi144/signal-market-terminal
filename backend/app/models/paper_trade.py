@@ -40,6 +40,7 @@ class PaperTrade(Base):
     details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
 
     execution_decision: Mapped["ExecutionDecision"] = relationship(back_populates="paper_trade")
+    signal: Mapped["Signal | None"] = relationship(foreign_keys=[signal_id])
 
     __table_args__ = (
         Index("ix_paper_trades_status", "status"),

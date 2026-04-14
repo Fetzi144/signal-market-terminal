@@ -38,6 +38,13 @@ from app.ingestion.polymarket_metadata import (
     lookup_polymarket_market_registry,
     trigger_manual_polymarket_meta_sync,
 )
+from app.ingestion.polymarket_maker_economics import (
+    fetch_polymarket_maker_status,
+    lookup_current_reward_state,
+    lookup_current_token_fee_state,
+    lookup_reward_history,
+    lookup_token_fee_history,
+)
 from app.ingestion.polymarket_microstructure import (
     fetch_polymarket_feature_status,
     list_polymarket_feature_runs,
@@ -197,6 +204,29 @@ class PolymarketExecutionPolicyStatusOut(BaseModel):
     recent_invalid_candidates_24h: int
     recent_skip_decisions_24h: int
     recent_avg_est_net_ev_bps: float | None = None
+
+
+class PolymarketMakerStatusOut(BaseModel):
+    enabled: bool
+    fee_history_enabled: bool
+    reward_history_enabled: bool
+    quote_optimizer_enabled: bool
+    quote_optimizer_max_notional: float
+    quote_optimizer_max_age_seconds: int
+    quote_optimizer_require_rewards_data: bool
+    quote_optimizer_require_fee_data: bool
+    last_fee_sync_at: datetime | None = None
+    last_reward_sync_at: datetime | None = None
+    last_snapshot_at: datetime | None = None
+    last_recommendation_at: datetime | None = None
+    fee_history_rows: int
+    reward_history_rows: int
+    economics_snapshot_rows: int
+    quote_recommendation_rows: int
+    reward_state_counts: dict[str, int]
+    recent_reason_counts_24h: dict[str, int]
+    fee_freshness_seconds: int | None = None
+    reward_freshness_seconds: int | None = None
 
 
 class PolymarketRawStorageStatusOut(BaseModel):
@@ -384,6 +414,7 @@ class PolymarketIngestStatusOut(BaseModel):
     book_reconstruction: PolymarketBookReconStatusOut
     features: PolymarketFeatureStatusOut
     execution_policy: PolymarketExecutionPolicyStatusOut
+    maker_economics: PolymarketMakerStatusOut
     structure_engine: dict[str, Any]
 
 
@@ -600,6 +631,7 @@ async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
     status["book_reconstruction"] = await fetch_polymarket_book_recon_status(db)
     status["features"] = await fetch_polymarket_feature_status(db)
     status["execution_policy"] = await fetch_polymarket_execution_policy_status(db)
+    status["maker_economics"] = await fetch_polymarket_maker_status(db)
     status["structure_engine"] = await fetch_market_structure_status(db)
     return status
 
@@ -842,6 +874,85 @@ async def get_polymarket_param_history(
         limit=limit,
     )
     return PolymarketParamHistoryQueryOut(rows=rows, limit=limit, changed_only=changed_only)
+
+
+@router.get("/maker-economics/status", response_model=PolymarketMakerStatusOut)
+async def get_polymarket_maker_status(
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_polymarket_maker_status(db)
+
+
+@router.get("/maker-economics/fees/current", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_current_fee_state(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    as_of: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_current_token_fee_state(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        as_of=as_of,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/maker-economics/fees/history", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_fee_history(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_token_fee_history(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/maker-economics/rewards/current", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_current_reward_state(
+    condition_id: str | None = Query(default=None),
+    as_of: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_current_reward_state(
+        db,
+        condition_id=condition_id,
+        as_of=as_of,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/maker-economics/rewards/history", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_reward_history(
+    condition_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_reward_history(
+        db,
+        condition_id=condition_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
 
 
 @router.get("/reconstruction/status", response_model=PolymarketBookReconStatusOut)

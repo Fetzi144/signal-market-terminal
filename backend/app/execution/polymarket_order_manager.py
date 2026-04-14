@@ -13,6 +13,15 @@ from app.config import settings
 from app.execution.polymarket_capital_reservation import (
     PolymarketCapitalReservationService,
 )
+from app.execution.polymarket_control_plane import (
+    evaluate_live_submission,
+    get_active_pilot_config,
+    get_open_pilot_run,
+    is_restart_window_error,
+    record_approval_event,
+    record_submission_block,
+    register_restart_pause,
+)
 from app.execution.polymarket_gateway import GatewayOrderRequest, GatewayUnavailableError, PolymarketGateway
 from app.execution.polymarket_live_state import (
     LIVE_ORDER_TERMINAL_STATUSES,
@@ -116,6 +125,8 @@ class PolymarketOrderManager:
         candidate = await self._resolve_candidate(session, decision=decision)
         signal = await session.get(Signal, decision.signal_id) if decision.signal_id is not None else None
         state = await fetch_live_state_row(session)
+        pilot_config = await get_active_pilot_config(session)
+        pilot_run = await get_open_pilot_run(session, pilot_config_id=pilot_config.id) if pilot_config is not None else None
         target_asset = await self._resolve_target_asset(session, decision=decision, candidate=candidate)
         market_dim = await self._resolve_market_dim(session, candidate=candidate, asset=target_asset)
         event_dim = await self._resolve_event_dim(session, market_dim=market_dim)
@@ -136,6 +147,8 @@ class PolymarketOrderManager:
             recon_state=recon_state,
             param_history=param_history,
             state=state,
+            pilot_config=pilot_config,
+            pilot_run=pilot_run,
         )
         session.add(order)
         await session.flush()
@@ -155,6 +168,7 @@ class PolymarketOrderManager:
         if validation_issues:
             order.status = "validation_failed"
             order.validation_error = "; ".join(validation_issues)
+            order.blocked_reason_code = validation_issues[0]
             await self._record_event(
                 session,
                 order=order,
@@ -181,6 +195,7 @@ class PolymarketOrderManager:
         if not reserved:
             order.status = "submit_blocked"
             order.validation_error = reservation_reason
+            order.blocked_reason_code = reservation_reason
             await self._record_event(
                 session,
                 order=order,
@@ -194,6 +209,7 @@ class PolymarketOrderManager:
         if order.kill_switch_blocked or order.allowlist_blocked:
             order.status = "submit_blocked"
             block_reason = "kill_switch_enabled" if order.kill_switch_blocked else "allowlist_blocked"
+            order.blocked_reason_code = block_reason
             await self._record_event(
                 session,
                 order=order,
@@ -201,6 +217,16 @@ class PolymarketOrderManager:
                 event_type="safety_blocked",
                 new_status="submit_blocked",
                 details={"reason": block_reason},
+            )
+
+        if order.manual_approval_required:
+            await record_approval_event(
+                session,
+                live_order=order,
+                pilot_run_id=order.pilot_run_id,
+                action="queued",
+                reason_code="manual_approval_required",
+                details={"approval_expires_at": order.approval_expires_at},
             )
 
         return serialize_live_order(order)
@@ -222,9 +248,18 @@ class PolymarketOrderManager:
 
         order.approved_by = approved_by
         order.approved_at = utcnow()
+        order.approval_state = "approved"
         next_status = order.status
         if order.status == "approval_pending":
             next_status = "submit_blocked" if (order.kill_switch_blocked or order.allowlist_blocked) else "submission_pending"
+        await record_approval_event(
+            session,
+            live_order=order,
+            pilot_run_id=order.pilot_run_id,
+            action="approved",
+            operator_identity=approved_by,
+            details={"approved_at": order.approved_at},
+        )
         await self._record_event(
             session,
             order=order,
@@ -250,6 +285,17 @@ class PolymarketOrderManager:
             return serialize_live_order(order)
 
         order.validation_error = reason
+        order.blocked_reason_code = "manual_rejected"
+        order.approval_state = "rejected"
+        await record_approval_event(
+            session,
+            live_order=order,
+            pilot_run_id=order.pilot_run_id,
+            action="rejected",
+            operator_identity=rejected_by,
+            reason_code="manual_rejected",
+            details={"reason": reason},
+        )
         await self._record_event(
             session,
             order=order,
@@ -284,14 +330,7 @@ class PolymarketOrderManager:
         dynamic_block = await self._revalidate_submit_time(session, order=order)
         if dynamic_block is not None:
             polymarket_live_submissions_blocked.labels(reason=dynamic_block).inc()
-            await self._record_event(
-                session,
-                order=order,
-                source_kind="internal",
-                event_type="submission_blocked",
-                new_status="submit_blocked",
-                details={"reason": dynamic_block, "operator": operator},
-            )
+            await record_submission_block(session, order=order, reason=dynamic_block, operator_identity=operator)
             return serialize_live_order(order)
 
         polymarket_live_submissions_attempted.inc()
@@ -336,6 +375,9 @@ class PolymarketOrderManager:
             order.venue_order_id = result.venue_order_id
             order.submitted_at = result.submitted_at or utcnow()
             order.submitted_size = result.submitted_size or order.requested_size
+            active_run = await get_open_pilot_run(session, pilot_config_id=order.pilot_config_id) if order.pilot_config_id is not None else None
+            if active_run is not None:
+                active_run.status = "running"
             await set_gateway_status(session, reachable=True, error=None)
             await self._record_event(
                 session,
@@ -356,17 +398,16 @@ class PolymarketOrderManager:
         except GatewayUnavailableError as exc:
             polymarket_live_submissions_blocked.labels(reason="gateway_unavailable").inc()
             order.submission_error = str(exc)
+            order.blocked_reason_code = "gateway_unavailable"
             await set_gateway_status(session, reachable=False, error=str(exc))
-            await self._record_event(
-                session,
-                order=order,
-                source_kind="internal",
-                event_type="submission_blocked",
-                new_status="submit_blocked",
-                details={"reason": "gateway_unavailable", "operator": operator},
-            )
+            await record_submission_block(session, order=order, reason="gateway_unavailable", operator_identity=operator)
             return serialize_live_order(order)
         except Exception as exc:
+            if is_restart_window_error(exc):
+                order.submission_error = str(exc)
+                await register_restart_pause(session, error=str(exc), live_order=order)
+                await record_submission_block(session, order=order, reason="restart_pause_active", operator_identity=operator)
+                return serialize_live_order(order)
             polymarket_live_submissions_failed.inc()
             order.submission_error = str(exc)
             await set_gateway_status(session, reachable=False, error=str(exc))
@@ -432,6 +473,8 @@ class PolymarketOrderManager:
             )
             return serialize_live_order(order)
         except Exception as exc:
+            if is_restart_window_error(exc):
+                await register_restart_pause(session, error=str(exc), live_order=order)
             polymarket_live_cancel_failures.inc()
             await self._record_event(
                 session,
@@ -573,6 +616,8 @@ class PolymarketOrderManager:
         recon_state: PolymarketBookReconState | None,
         param_history: PolymarketMarketParamHistory | None,
         state,
+        pilot_config,
+        pilot_run,
     ) -> tuple[LiveOrder, list[str]]:
         validation_issues: list[str] = []
         chosen_action_type = decision.chosen_action_type or (candidate.action_type if candidate is not None else None)
@@ -640,6 +685,17 @@ class PolymarketOrderManager:
             category_blocked = observed_category not in allowed_categories if observed_category is not None else True
 
         dry_run = settings.polymarket_live_dry_run or not settings.polymarket_live_trading_enabled
+        manual_approval_required = (
+            bool(pilot_config.manual_approval_required)
+            if pilot_config is not None and pilot_config.strategy_family == "exec_policy"
+            else settings.polymarket_live_manual_approval_required
+        )
+        approval_requested_at = utcnow() if manual_approval_required else None
+        approval_expires_at = (
+            approval_requested_at + timedelta(seconds=settings.polymarket_pilot_approval_ttl_seconds)
+            if approval_requested_at is not None
+            else None
+        )
         order = LiveOrder(
             execution_decision_id=decision.id,
             signal_id=decision.signal_id,
@@ -659,12 +715,19 @@ class PolymarketOrderManager:
             filled_size=ZERO,
             status="approval_pending" if settings.polymarket_live_manual_approval_required else "submission_pending",
             dry_run=dry_run,
-            manual_approval_required=settings.polymarket_live_manual_approval_required,
+            strategy_family="exec_policy",
+            pilot_config_id=pilot_config.id if pilot_config is not None and pilot_config.strategy_family == "exec_policy" else None,
+            pilot_run_id=pilot_run.id if pilot_run is not None and pilot_config is not None and pilot_config.strategy_family == "exec_policy" else None,
+            manual_approval_required=manual_approval_required,
+            approval_state="queued" if manual_approval_required else "not_required",
+            approval_requested_at=approval_requested_at,
+            approval_expires_at=approval_expires_at,
             kill_switch_blocked=effective_kill_switch_enabled(state),
             allowlist_blocked=market_blocked or category_blocked,
             policy_version=decision.chosen_policy_version or (candidate.policy_version if candidate is not None else None),
             decision_reason_json=decision.decision_reason_json,
         )
+        order.status = "approval_pending" if manual_approval_required else "submission_pending"
         if validation_issues:
             order.status = "validation_failed"
             order.validation_error = "; ".join(validation_issues)
@@ -680,13 +743,14 @@ class PolymarketOrderManager:
             return "kill_switch_enabled"
         if order.allowlist_blocked:
             return "allowlist_blocked"
-        if order.manual_approval_required and order.approved_at is None:
-            return "manual_approval_required"
         decision = (
             await session.get(ExecutionDecision, order.execution_decision_id)
             if order.execution_decision_id is not None
             else None
         )
+        live_pilot_block = await evaluate_live_submission(session, order=order, decision=decision)
+        if live_pilot_block is not None:
+            return live_pilot_block
         if decision is None:
             return "missing_execution_decision"
         if decision.decision_at < utcnow() - timedelta(seconds=settings.polymarket_live_decision_max_age_seconds):

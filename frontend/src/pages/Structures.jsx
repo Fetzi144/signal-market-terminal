@@ -2,10 +2,16 @@ import { useEffect, useState } from "react";
 import {
   approvePolymarketStructurePaperPlan,
   createPolymarketStructurePaperPlan,
+  getPolymarketFeeHistory,
+  getPolymarketRewardHistory,
   getPolymarketStructureOpportunity,
+  getPolymarketStructureLatestMakerEconomics,
+  getPolymarketStructureLatestQuoteRecommendation,
   getPolymarketStructureOpportunities,
   getPolymarketStructureStatus,
   rejectPolymarketStructurePaperPlan,
+  runPolymarketStructureMakerEconomics,
+  runPolymarketStructureQuoteRecommendation,
   routePolymarketStructurePaperPlan,
   validatePolymarketStructureOpportunities,
 } from "../api";
@@ -79,6 +85,10 @@ function latestPlanFromDetail(detail) {
   return detail?.paper_plans?.[0] || null;
 }
 
+function makerLegFromDetail(detail) {
+  return detail?.legs?.find((leg) => leg.venue === "polymarket" && leg.asset_id && leg.condition_id) || null;
+}
+
 function statusTone(value) {
   if (value === "executable_candidate" || value === "routed") return "var(--green)";
   if (value === "blocked" || value === "rejected") return "var(--red)";
@@ -92,6 +102,10 @@ export default function Structures() {
   const [opportunities, setOpportunities] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [makerSnapshot, setMakerSnapshot] = useState(null);
+  const [quoteRecommendation, setQuoteRecommendation] = useState(null);
+  const [feeHistory, setFeeHistory] = useState([]);
+  const [rewardHistory, setRewardHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -157,6 +171,10 @@ export default function Structures() {
     async function loadDetail() {
       if (!selectedId) {
         setDetail(null);
+        setMakerSnapshot(null);
+        setQuoteRecommendation(null);
+        setFeeHistory([]);
+        setRewardHistory([]);
         return;
       }
       setDetailLoading(true);
@@ -164,6 +182,18 @@ export default function Structures() {
         const detailData = await getPolymarketStructureOpportunity(selectedId);
         if (!active) return;
         setDetail(detailData);
+        const makerLeg = makerLegFromDetail(detailData);
+        const [makerResult, recommendationResult, feeHistoryResult, rewardHistoryResult] = await Promise.allSettled([
+          getPolymarketStructureLatestMakerEconomics(selectedId),
+          getPolymarketStructureLatestQuoteRecommendation(selectedId),
+          makerLeg ? getPolymarketFeeHistory({ assetId: makerLeg.asset_id, conditionId: makerLeg.condition_id, limit: 6 }) : Promise.resolve({ rows: [] }),
+          makerLeg ? getPolymarketRewardHistory({ conditionId: makerLeg.condition_id, limit: 6 }) : Promise.resolve({ rows: [] }),
+        ]);
+        if (!active) return;
+        setMakerSnapshot(makerResult.status === "fulfilled" ? makerResult.value : null);
+        setQuoteRecommendation(recommendationResult.status === "fulfilled" ? recommendationResult.value : null);
+        setFeeHistory(feeHistoryResult.status === "fulfilled" ? (feeHistoryResult.value.rows || []) : []);
+        setRewardHistory(rewardHistoryResult.status === "fulfilled" ? (rewardHistoryResult.value.rows || []) : []);
         setActionError(null);
       } catch (e) {
         if (active) {
@@ -195,6 +225,7 @@ export default function Structures() {
   }
 
   const latestPlan = latestPlanFromDetail(detail);
+  const makerLeg = makerLegFromDetail(detail);
   const reasonOptions = Object.keys(status?.validation_reason_counts || {});
   const latestValidation = detail?.latest_validation || null;
   const reasonLabels = fmtReasonLabels(latestValidation);
@@ -433,6 +464,130 @@ export default function Structures() {
                   {detail.cross_venue_link.notes && (
                     <div style={{ marginTop: 10, fontSize: 12, color: "var(--text-dim)" }}>{detail.cross_venue_link.notes}</div>
                   )}
+                </div>
+              )}
+
+              <div>
+                <div style={sectionTitleStyle}>Maker Economics</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                  <button
+                    style={secondaryButtonStyle}
+                    disabled={!selectedId || busyAction === "maker-economics"}
+                    onClick={() => runAction("maker-economics", () => runPolymarketStructureMakerEconomics(detail.opportunity.id, {}))}
+                  >
+                    {busyAction === "maker-economics" ? "Evaluating..." : "Evaluate Economics"}
+                  </button>
+                  <button
+                    style={primaryButtonStyle}
+                    disabled={!selectedId || busyAction === "quote-recommendation"}
+                    onClick={() => runAction("quote-recommendation", () => runPolymarketStructureQuoteRecommendation(detail.opportunity.id, {}))}
+                  >
+                    {busyAction === "quote-recommendation" ? "Optimizing..." : "Generate Quote Recommendation"}
+                  </button>
+                </div>
+
+                {!makerSnapshot ? (
+                  <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No maker economics snapshot has been captured for this opportunity yet.</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10 }}>
+                      <SummaryCard label="Preferred" value={makerSnapshot.preferred_action || "-"} />
+                      <SummaryCard label="Maker Net" value={makerSnapshot.maker_net_total != null ? fmtNumber(makerSnapshot.maker_net_total, 4) : "-"} />
+                      <SummaryCard label="Taker Net" value={makerSnapshot.taker_net_total != null ? fmtNumber(makerSnapshot.taker_net_total, 4) : "-"} />
+                      <SummaryCard label="Advantage" value={makerSnapshot.maker_advantage_total != null ? fmtNumber(makerSnapshot.maker_advantage_total, 4) : "-"} />
+                      <SummaryCard label="Fill Prob." value={makerSnapshot.maker_fill_probability != null ? `${fmtNumber(Number(makerSnapshot.maker_fill_probability) * 100, 1)}%` : "-"} />
+                      <SummaryCard label="Snapshot" value={fmtDateTime(makerSnapshot.evaluated_at)} />
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+                      <DetailStat label="Status" value={makerSnapshot.status || "-"} />
+                      <DetailStat label="Maker Fees" value={makerSnapshot.maker_fees_total != null ? fmtNumber(makerSnapshot.maker_fees_total, 4) : "-"} />
+                      <DetailStat label="Maker Rewards" value={makerSnapshot.maker_rewards_total != null ? fmtNumber(makerSnapshot.maker_rewards_total, 4) : "-"} />
+                      <DetailStat label="Realism Adj." value={makerSnapshot.maker_realism_adjustment_total != null ? fmtNumber(makerSnapshot.maker_realism_adjustment_total, 4) : "-"} />
+                      <DetailStat label="Action Type" value={makerSnapshot.maker_action_type || "-"} />
+                      <DetailStat label="Reason Codes" value={(makerSnapshot.reason_codes_json || []).join(", ") || "-"} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <div style={sectionTitleStyle}>Quote Recommendation</div>
+                {!quoteRecommendation ? (
+                  <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No advisory quote recommendation has been generated yet.</div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
+                    <DetailStat label="Recommendation" value={quoteRecommendation.recommendation_action || "-"} />
+                    <DetailStat label="Winner" value={quoteRecommendation.comparison_winner || "-"} />
+                    <DetailStat label="Action Type" value={quoteRecommendation.recommended_action_type || "-"} />
+                    <DetailStat label="Side" value={quoteRecommendation.recommended_side || "-"} />
+                    <DetailStat label="Yes Price" value={quoteRecommendation.recommended_yes_price != null ? fmtNumber(quoteRecommendation.recommended_yes_price, 3) : "-"} />
+                    <DetailStat label="Size" value={quoteRecommendation.recommended_size != null ? fmtNumber(quoteRecommendation.recommended_size, 2) : "-"} />
+                    <DetailStat label="Notional" value={quoteRecommendation.recommended_notional != null ? fmtNumber(quoteRecommendation.recommended_notional, 4) : "-"} />
+                    <DetailStat label="Reason Codes" value={(quoteRecommendation.reason_codes_json || []).join(", ") || "-"} />
+                  </div>
+                )}
+              </div>
+
+              {(makerLeg || feeHistory.length || rewardHistory.length) && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12 }}>
+                  <div>
+                    <div style={sectionTitleStyle}>Fee History</div>
+                    {!feeHistory.length ? (
+                      <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No fee history rows available for the selected Polymarket token yet.</div>
+                    ) : (
+                      <div className="table-scroll">
+                        <table style={tableStyle}>
+                          <thead>
+                            <tr>
+                              <TableHead>Observed</TableHead>
+                              <TableHead>Taker</TableHead>
+                              <TableHead>Maker</TableHead>
+                              <TableHead>Base</TableHead>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {feeHistory.map((row) => (
+                              <tr key={row.id}>
+                                <TableCell>{fmtDateTime(row.observed_at_local)}</TableCell>
+                                <TableCell>{row.taker_fee_rate != null ? fmtNumber(row.taker_fee_rate, 4) : "-"}</TableCell>
+                                <TableCell>{row.maker_fee_rate != null ? fmtNumber(row.maker_fee_rate, 4) : "-"}</TableCell>
+                                <TableCell>{row.token_base_fee_rate != null ? fmtNumber(row.token_base_fee_rate, 4) : "-"}</TableCell>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <div style={sectionTitleStyle}>Reward History</div>
+                    {!rewardHistory.length ? (
+                      <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No reward history rows available for the selected market yet.</div>
+                    ) : (
+                      <div className="table-scroll">
+                        <table style={tableStyle}>
+                          <thead>
+                            <tr>
+                              <TableHead>Observed</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead>Daily Rate</TableHead>
+                              <TableHead>Min Size</TableHead>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rewardHistory.map((row) => (
+                              <tr key={row.id}>
+                                <TableCell>{fmtDateTime(row.observed_at_local)}</TableCell>
+                                <TableCell>{row.reward_status || "-"}</TableCell>
+                                <TableCell>{row.reward_daily_rate != null ? fmtNumber(row.reward_daily_rate, 4) : "-"}</TableCell>
+                                <TableCell>{row.min_incentive_size != null ? fmtNumber(row.min_incentive_size, 2) : "-"}</TableCell>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

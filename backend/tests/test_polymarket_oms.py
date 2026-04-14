@@ -14,6 +14,7 @@ from app.execution.polymarket_gateway import (
     GatewayOrderRequest,
     GatewaySubmitResult,
 )
+from app.execution.polymarket_control_plane import arm_pilot, create_or_update_pilot_config
 from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
 from app.execution.polymarket_live_state import (
     fetch_live_state_row,
@@ -419,6 +420,28 @@ async def _latest_reservation_for_order(session: AsyncSession, *, live_order_id)
     ).scalar_one_or_none()
 
 
+async def _arm_exec_pilot(
+    session: AsyncSession,
+    *,
+    live_enabled: bool = True,
+    manual_approval_required: bool = False,
+) -> dict[str, object]:
+    config = await create_or_update_pilot_config(
+        session,
+        payload={
+            "pilot_name": f"exec-pilot-{uuid.uuid4()}",
+            "strategy_family": "exec_policy",
+            "active": True,
+            "live_enabled": live_enabled,
+            "manual_approval_required": manual_approval_required,
+            "max_open_orders": 5,
+            "max_notional_per_day_usd": 500.0,
+            "max_notional_per_order_usd": 250.0,
+        },
+    )
+    return await arm_pilot(session, pilot_config_id=config["id"], operator_identity="test-operator")
+
+
 @pytest.mark.asyncio
 async def test_order_intent_creation_is_idempotent_and_resolves_buy_no(session, monkeypatch):
     monkeypatch.setattr(settings, "polymarket_live_trading_enabled", False)
@@ -486,8 +509,10 @@ async def test_live_submit_is_blocked_by_kill_switch(session, monkeypatch):
     monkeypatch.setattr(settings, "polymarket_live_dry_run", False)
     monkeypatch.setattr(settings, "polymarket_live_manual_approval_required", False)
     monkeypatch.setattr(settings, "polymarket_execution_policy_require_live_book", True)
+    monkeypatch.setattr(settings, "polymarket_pilot_enabled", True)
 
     seeded = await _seed_execution_fixture(session, condition_id="cond-phase7a-killswitch")
+    await _arm_exec_pilot(session, live_enabled=True, manual_approval_required=False)
     fake_gateway = FakeGateway()
     manager = PolymarketOrderManager(gateway=fake_gateway)
 
@@ -693,6 +718,7 @@ async def test_reconcile_recovers_backlog_and_dedupes_rest_trade_repair(session,
     monkeypatch.setattr(settings, "polymarket_live_dry_run", False)
     monkeypatch.setattr(settings, "polymarket_live_manual_approval_required", False)
     monkeypatch.setattr(settings, "polymarket_execution_policy_require_live_book", True)
+    monkeypatch.setattr(settings, "polymarket_pilot_enabled", True)
 
     trade_payload = {
         "event_type": "trade",
@@ -720,6 +746,7 @@ async def test_reconcile_recovers_backlog_and_dedupes_rest_trade_repair(session,
     )
     manager = PolymarketOrderManager(gateway=fake_gateway)
     seeded = await _seed_execution_fixture(session, condition_id="cond-phase7a-reconcile")
+    await _arm_exec_pilot(session, live_enabled=True, manual_approval_required=False)
     intent = await manager.create_order_intent(session, execution_decision_id=seeded["decision"].id)
     await manager.submit_order(session, live_order_id=uuid.UUID(intent["id"]), operator="operator")
     raw_row = PolymarketUserEventRaw(
@@ -755,10 +782,12 @@ async def test_cancel_flow_is_idempotent(session, monkeypatch):
     monkeypatch.setattr(settings, "polymarket_live_dry_run", False)
     monkeypatch.setattr(settings, "polymarket_live_manual_approval_required", False)
     monkeypatch.setattr(settings, "polymarket_execution_policy_require_live_book", True)
+    monkeypatch.setattr(settings, "polymarket_pilot_enabled", True)
 
     fake_gateway = FakeGateway(venue_order_id="venue-cancel-1")
     manager = PolymarketOrderManager(gateway=fake_gateway)
     seeded = await _seed_execution_fixture(session, condition_id="cond-phase7a-cancel")
+    await _arm_exec_pilot(session, live_enabled=True, manual_approval_required=False)
     intent = await manager.create_order_intent(session, execution_decision_id=seeded["decision"].id)
     await manager.submit_order(session, live_order_id=uuid.UUID(intent["id"]), operator="operator")
     first_cancel = await manager.cancel_order(session, live_order_id=uuid.UUID(intent["id"]), operator="operator")

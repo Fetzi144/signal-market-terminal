@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from sqlalchemy import DateTime, ForeignKey, Index, Numeric
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
@@ -22,6 +22,7 @@ class PriceSnapshot(Base):
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    outcome: Mapped["Outcome | None"] = relationship(foreign_keys=[outcome_id])
 
     __table_args__ = (
         Index("ix_price_snap_outcome_time", "outcome_id", "captured_at"),
@@ -43,6 +44,7 @@ class OrderbookSnapshot(Base):
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
+    outcome: Mapped["Outcome | None"] = relationship(foreign_keys=[outcome_id])
 
     __table_args__ = (
         Index("ix_ob_snap_outcome_time", "outcome_id", "captured_at"),

@@ -97,6 +97,19 @@ class LiveOrder(Base):
     manual_approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     approved_by: Mapped[str | None] = mapped_column(String(128))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    strategy_family: Mapped[str | None] = mapped_column(String(32))
+    pilot_config_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("polymarket_pilot_configs.id", ondelete="SET NULL"),
+    )
+    pilot_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("polymarket_pilot_runs.id", ondelete="SET NULL"),
+    )
+    approval_state: Mapped[str] = mapped_column(String(32), nullable=False, default="not_required")
+    approval_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approval_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    blocked_reason_code: Mapped[str | None] = mapped_column(String(128))
     kill_switch_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     allowlist_blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     validation_error: Mapped[str | None] = mapped_column(Text)
@@ -136,6 +149,8 @@ class LiveOrder(Base):
         Index("ix_live_orders_asset_status", "asset_id", "status"),
         Index("ix_live_orders_status_created_at", "status", "created_at"),
         Index("ix_live_orders_venue_order_id", "venue_order_id"),
+        Index("ix_live_orders_strategy_status", "strategy_family", "status"),
+        Index("ix_live_orders_approval_state_created", "approval_state", "created_at"),
     )
 
 
@@ -267,6 +282,10 @@ class PolymarketLiveState(Base):
     last_reconcile_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_reconcile_error: Mapped[str | None] = mapped_column(String(255))
     last_reconcile_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_healthy: Mapped[bool | None] = mapped_column(Boolean)
+    heartbeat_last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_last_error: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

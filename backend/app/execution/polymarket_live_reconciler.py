@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.execution.polymarket_capital_reservation import PolymarketCapitalReservationService
+from app.execution.polymarket_control_plane import is_restart_window_error, register_restart_pause
 from app.execution.polymarket_gateway import GatewayUnavailableError, PolymarketGateway
 from app.execution.polymarket_live_state import (
     LIVE_ORDER_TERMINAL_STATUSES,
@@ -140,6 +141,8 @@ class PolymarketLiveReconciler:
                 except GatewayUnavailableError as exc:
                     await set_gateway_status(session, reachable=False, error=str(exc))
                 except Exception as exc:
+                    if is_restart_window_error(exc):
+                        await register_restart_pause(session, error=str(exc), live_order=order)
                     await set_gateway_status(session, reachable=False, error=str(exc))
 
             await mark_reconcile_finished(

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { Routes, Route, Link, useLocation } from "react-router-dom";
 import SignalFeed from "./pages/SignalFeed";
 import OnboardingWizard from "./components/OnboardingWizard";
@@ -14,6 +14,9 @@ import PaperTrading from "./pages/PaperTrading";
 import Health from "./pages/Health";
 import Portfolio from "./pages/Portfolio";
 import Structures from "./pages/Structures";
+import PilotConsole from "./pages/PilotConsole";
+import LiveOrders from "./pages/LiveOrders";
+import MarketTape from "./pages/MarketTape";
 import PushNotificationToggle from "./components/PushNotificationToggle";
 
 function ThemeToggle() {
@@ -53,6 +56,9 @@ const NAV_LINKS = [
   { to: "/backtests", label: "Backtest" },
   { to: "/alerts", label: "Alerts" },
   { to: "/structures", label: "Structures" },
+  { to: "/pilot-console", label: "Pilot Console" },
+  { to: "/live-orders", label: "Live Orders" },
+  { to: "/market-tape", label: "Market Tape" },
   { to: "/health", label: "Health" },
 ];
 
@@ -149,6 +155,9 @@ export default function App() {
         <Route path="/backtests/:id" element={<BacktestResult />} />
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/structures" element={<Structures />} />
+        <Route path="/pilot-console" element={<PilotConsole />} />
+        <Route path="/live-orders" element={<LiveOrders />} />
+        <Route path="/market-tape" element={<MarketTape />} />
         <Route path="/health" element={<Health />} />
       </Routes>
     </div>

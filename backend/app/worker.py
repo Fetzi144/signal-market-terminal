@@ -7,10 +7,13 @@ import signal
 from app.db import async_session
 from app.config import settings
 from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
+from app.execution.polymarket_pilot_supervisor import PolymarketPilotSupervisor
 from app.execution.polymarket_user_stream import PolymarketUserStreamService
 from app.ingestion.polymarket_book_reconstruction import PolymarketBookReconstructionService
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
 from app.ingestion.polymarket_microstructure import PolymarketMicrostructureService
+from app.ingestion.polymarket_replay_simulator import PolymarketReplaySimulatorService
+from app.ingestion.polymarket_risk_graph import PolymarketRiskGraphService
 from app.ingestion.polymarket_raw_storage import PolymarketRawStorageService
 from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.ingestion.polymarket_stream import PolymarketStreamService
@@ -34,6 +37,9 @@ async def _run_worker() -> None:
         and not settings.polymarket_book_recon_enabled
         and not settings.polymarket_features_enabled
         and not settings.polymarket_structure_engine_enabled
+        and not settings.polymarket_risk_graph_enabled
+        and not settings.polymarket_portfolio_optimizer_enabled
+        and not settings.polymarket_replay_enabled
         and not settings.polymarket_user_stream_enabled
         and not settings.polymarket_live_trading_enabled
     ):
@@ -55,10 +61,16 @@ async def _run_worker() -> None:
     feature_task: asyncio.Task | None = None
     structure_service: PolymarketStructureEngineService | None = None
     structure_task: asyncio.Task | None = None
+    risk_service: PolymarketRiskGraphService | None = None
+    risk_task: asyncio.Task | None = None
+    replay_service: PolymarketReplaySimulatorService | None = None
+    replay_task: asyncio.Task | None = None
     user_stream_service: PolymarketUserStreamService | None = None
     user_stream_task: asyncio.Task | None = None
     reconcile_service: PolymarketLiveReconciler | None = None
     reconcile_task: asyncio.Task | None = None
+    pilot_supervisor_service: PolymarketPilotSupervisor | None = None
+    pilot_supervisor_task: asyncio.Task | None = None
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -97,6 +109,14 @@ async def _run_worker() -> None:
         structure_service = PolymarketStructureEngineService(async_session)
         structure_task = asyncio.create_task(structure_service.run(stop_event))
 
+    if settings.polymarket_risk_graph_enabled or settings.polymarket_portfolio_optimizer_enabled:
+        risk_service = PolymarketRiskGraphService(async_session)
+        risk_task = asyncio.create_task(risk_service.run(stop_event))
+
+    if settings.polymarket_replay_enabled:
+        replay_service = PolymarketReplaySimulatorService(async_session)
+        replay_task = asyncio.create_task(replay_service.run(stop_event))
+
     if settings.polymarket_user_stream_enabled:
         user_stream_service = PolymarketUserStreamService(async_session)
         user_stream_task = asyncio.create_task(user_stream_service.run(stop_event))
@@ -104,6 +124,10 @@ async def _run_worker() -> None:
     if settings.polymarket_user_stream_enabled or settings.polymarket_live_trading_enabled:
         reconcile_service = PolymarketLiveReconciler(async_session)
         reconcile_task = asyncio.create_task(reconcile_service.run(stop_event))
+
+    if settings.polymarket_pilot_enabled or settings.polymarket_live_trading_enabled or settings.polymarket_user_stream_enabled:
+        pilot_supervisor_service = PolymarketPilotSupervisor(async_session)
+        pilot_supervisor_task = asyncio.create_task(pilot_supervisor_service.run(stop_event))
 
     if (
         not scheduler_started
@@ -113,8 +137,11 @@ async def _run_worker() -> None:
         and book_recon_task is None
         and feature_task is None
         and structure_task is None
+        and risk_task is None
+        and replay_task is None
         and user_stream_task is None
         and reconcile_task is None
+        and pilot_supervisor_task is None
     ):
         logger.warning("No worker responsibilities started; exiting")
         return
@@ -172,6 +199,22 @@ async def _run_worker() -> None:
                 pass
         if structure_service is not None:
             await structure_service.close()
+        if risk_task is not None:
+            risk_task.cancel()
+            try:
+                await risk_task
+            except asyncio.CancelledError:
+                pass
+        if risk_service is not None:
+            await risk_service.close()
+        if replay_task is not None:
+            replay_task.cancel()
+            try:
+                await replay_task
+            except asyncio.CancelledError:
+                pass
+        if replay_service is not None:
+            await replay_service.close()
         if user_stream_task is not None:
             user_stream_task.cancel()
             try:
@@ -186,6 +229,14 @@ async def _run_worker() -> None:
                 await reconcile_task
             except asyncio.CancelledError:
                 pass
+        if pilot_supervisor_task is not None:
+            pilot_supervisor_task.cancel()
+            try:
+                await pilot_supervisor_task
+            except asyncio.CancelledError:
+                pass
+        if pilot_supervisor_service is not None:
+            await pilot_supervisor_service.close()
         if scheduler_started:
             await _maybe_await(stop_scheduler())
 

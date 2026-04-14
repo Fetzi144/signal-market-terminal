@@ -2,9 +2,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   approvePolymarketStructurePaperPlan,
   createPolymarketStructurePaperPlan,
+  getPolymarketFeeHistory,
+  getPolymarketRewardHistory,
   getPolymarketStructureOpportunity,
+  getPolymarketStructureLatestMakerEconomics,
+  getPolymarketStructureLatestQuoteRecommendation,
   getPolymarketStructureOpportunities,
   getPolymarketStructureStatus,
+  runPolymarketStructureMakerEconomics,
+  runPolymarketStructureQuoteRecommendation,
   routePolymarketStructurePaperPlan,
   validatePolymarketStructureOpportunities,
 } from "../api";
@@ -13,10 +19,16 @@ import Structures from "./Structures";
 vi.mock("../api", () => ({
   approvePolymarketStructurePaperPlan: vi.fn(),
   createPolymarketStructurePaperPlan: vi.fn(),
+  getPolymarketFeeHistory: vi.fn(),
+  getPolymarketRewardHistory: vi.fn(),
   getPolymarketStructureOpportunity: vi.fn(),
+  getPolymarketStructureLatestMakerEconomics: vi.fn(),
+  getPolymarketStructureLatestQuoteRecommendation: vi.fn(),
   getPolymarketStructureOpportunities: vi.fn(),
   getPolymarketStructureStatus: vi.fn(),
   rejectPolymarketStructurePaperPlan: vi.fn(),
+  runPolymarketStructureMakerEconomics: vi.fn(),
+  runPolymarketStructureQuoteRecommendation: vi.fn(),
   routePolymarketStructurePaperPlan: vi.fn(),
   validatePolymarketStructureOpportunities: vi.fn(),
 }));
@@ -74,8 +86,10 @@ const baseDetail = {
     {
       id: 1,
       leg_index: 0,
-      venue: "manifold",
+      venue: "polymarket",
       side: "buy_yes",
+      asset_id: "token-yes",
+      condition_id: "cond-1",
       target_size: "1.00",
       est_avg_entry_price: "0.41",
       est_slippage_bps: "12.0",
@@ -141,20 +155,68 @@ const routedPlan = {
   ],
 };
 
+const makerSnapshot = {
+  id: "snapshot-1",
+  preferred_action: "maker",
+  maker_net_total: "0.1425",
+  taker_net_total: "0.1025",
+  maker_advantage_total: "0.0400",
+  maker_fill_probability: "0.6200",
+  maker_fees_total: "0.0080",
+  maker_rewards_total: "0.0010",
+  maker_realism_adjustment_total: "0.0120",
+  maker_action_type: "step_ahead",
+  status: "degraded",
+  reason_codes_json: ["advisory_only_output", "downgraded_confidence"],
+  evaluated_at: "2026-04-13T10:06:20Z",
+};
+
+const quoteRecommendation = {
+  id: "quote-1",
+  recommendation_action: "recommend_quote",
+  comparison_winner: "maker",
+  recommended_action_type: "step_ahead",
+  recommended_side: "buy_yes",
+  recommended_yes_price: "0.405",
+  recommended_size: "1.00",
+  recommended_notional: "0.4050",
+  reason_codes_json: ["advisory_only_output", "downgraded_confidence"],
+};
+
+let currentDetail;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  currentDetail = baseDetail;
   getPolymarketStructureStatus.mockResolvedValue(statusPayload);
   getPolymarketStructureOpportunities.mockResolvedValue(opportunitiesPayload);
-  getPolymarketStructureOpportunity
-    .mockResolvedValueOnce(baseDetail)
-    .mockResolvedValueOnce(baseDetail)
-    .mockResolvedValueOnce({ ...baseDetail, paper_plans: [approvalPendingPlan] })
-    .mockResolvedValueOnce({ ...baseDetail, paper_plans: [routingPendingPlan] })
-    .mockResolvedValueOnce({ ...baseDetail, paper_plans: [routedPlan] })
-    .mockResolvedValue({ ...baseDetail, paper_plans: [routedPlan] });
-  createPolymarketStructurePaperPlan.mockResolvedValue(approvalPendingPlan);
-  approvePolymarketStructurePaperPlan.mockResolvedValue(routingPendingPlan);
-  routePolymarketStructurePaperPlan.mockResolvedValue(routedPlan);
+  getPolymarketStructureOpportunity.mockImplementation(async () => currentDetail);
+  getPolymarketStructureLatestMakerEconomics.mockResolvedValue(makerSnapshot);
+  getPolymarketStructureLatestQuoteRecommendation.mockResolvedValue(quoteRecommendation);
+  getPolymarketFeeHistory.mockResolvedValue({
+    rows: [
+      { id: 1, observed_at_local: "2026-04-13T10:01:00Z", taker_fee_rate: "0.0200", maker_fee_rate: "0.0000", token_base_fee_rate: "6.0000" },
+    ],
+  });
+  getPolymarketRewardHistory.mockResolvedValue({
+    rows: [
+      { id: 1, observed_at_local: "2026-04-13T10:02:00Z", reward_status: "active", reward_daily_rate: "1.2500", min_incentive_size: "1.00" },
+    ],
+  });
+  createPolymarketStructurePaperPlan.mockImplementation(async () => {
+    currentDetail = { ...baseDetail, paper_plans: [approvalPendingPlan] };
+    return approvalPendingPlan;
+  });
+  approvePolymarketStructurePaperPlan.mockImplementation(async () => {
+    currentDetail = { ...baseDetail, paper_plans: [routingPendingPlan] };
+    return routingPendingPlan;
+  });
+  routePolymarketStructurePaperPlan.mockImplementation(async () => {
+    currentDetail = { ...baseDetail, paper_plans: [routedPlan] };
+    return routedPlan;
+  });
+  runPolymarketStructureMakerEconomics.mockResolvedValue(makerSnapshot);
+  runPolymarketStructureQuoteRecommendation.mockResolvedValue(quoteRecommendation);
   validatePolymarketStructureOpportunities.mockResolvedValue({ status: "completed" });
 });
 
@@ -166,6 +228,10 @@ describe("Structures", () => {
     expect(await screen.findByText("State race linkage")).toBeInTheDocument();
     expect(await screen.findByText("Cross-Venue Governance")).toBeInTheDocument();
     expect(screen.getByText("reviewed_sheet")).toBeInTheDocument();
+    expect(await screen.findByText("Maker Economics")).toBeInTheDocument();
+    expect(await screen.findByText("Quote Recommendation")).toBeInTheDocument();
+    expect(screen.getByText("Fee History")).toBeInTheDocument();
+    expect(screen.getByText("Reward History")).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText("Validation"), {
       target: { value: "blocked" },
@@ -182,6 +248,16 @@ describe("Structures", () => {
         reason: "manual",
         opportunity_id: 101,
       });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Evaluate Economics" }));
+    await waitFor(() => {
+      expect(runPolymarketStructureMakerEconomics).toHaveBeenCalledWith(101, {});
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate Quote Recommendation" }));
+    await waitFor(() => {
+      expect(runPolymarketStructureQuoteRecommendation).toHaveBeenCalledWith(101, {});
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Create Paper Plan" }));

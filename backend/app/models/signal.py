@@ -56,6 +56,7 @@ class Signal(Base):
 
     evaluations: Mapped[list["SignalEvaluation"]] = relationship(back_populates="signal")
     execution_decisions: Mapped[list["ExecutionDecision"]] = relationship(back_populates="signal")
+    outcome: Mapped["Outcome | None"] = relationship(foreign_keys=[outcome_id])
 
     __table_args__ = (
         # Dedupe: one signal per type per outcome per timeframe per 15-min window

@@ -24,6 +24,13 @@ from app.ingestion.polymarket_common import (
     unique_preserving_order,
     utcnow,
 )
+from app.ingestion.polymarket_maker_economics import (
+    FEE_SOURCE_KIND,
+    REWARD_SOURCE_KIND,
+    insert_reward_history_if_changed,
+    insert_token_fee_history_if_changed,
+    normalize_reward_history_payload,
+)
 from app.metrics import (
     polymarket_meta_assets_upserted,
     polymarket_meta_events_upserted,
@@ -63,6 +70,8 @@ class MetaSyncCounters:
     events_upserted: int = 0
     markets_upserted: int = 0
     param_rows_inserted: int = 0
+    fee_rows_inserted: int = 0
+    reward_rows_inserted: int = 0
     error_count: int = 0
 
 
@@ -1136,6 +1145,7 @@ class PolymarketMetaSyncService:
         include_closed: bool,
         target_asset_ids: list[str] | None,
         sync_run_id: uuid.UUID,
+        reward_configs_by_condition: dict[str, dict[str, Any]] | None,
     ) -> None:
         for closed_flag in ([False, True] if include_closed else [False]):
             params: dict[str, Any] = {
@@ -1202,6 +1212,25 @@ class PolymarketMetaSyncService:
                     sync_run_id=sync_run_id,
                     raw_event_id=None,
                 )
+                counters.fee_rows_inserted += await self._sync_market_fee_history(
+                    session,
+                    market_dim=market_dim,
+                    asset_dims=asset_dims,
+                    observed_at_local=observed_at_local,
+                    sync_run_id=sync_run_id,
+                    market_payload=market_payload,
+                )
+                counters.reward_rows_inserted += await self._sync_market_reward_history(
+                    session,
+                    market_dim=market_dim,
+                    observed_at_local=observed_at_local,
+                    sync_run_id=sync_run_id,
+                    reward_payload=(
+                        reward_configs_by_condition.get(market_dim.condition_id)
+                        if reward_configs_by_condition is not None
+                        else None
+                    ),
+                )
 
     async def _normalize_books_response(self, data: Any, asset_ids: list[str]) -> list[dict[str, Any]]:
         if isinstance(data, list):
@@ -1226,6 +1255,130 @@ class PolymarketMetaSyncService:
         )
         response.raise_for_status()
         return await self._normalize_books_response(response.json(), asset_ids)
+
+    async def _fetch_token_fee_rate(self, asset_id: str) -> dict[str, Any] | None:
+        client = await self._get_client()
+        response = await client.get(f"{settings.polymarket_api_base}/fee-rate/{asset_id}")
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+
+    async def _fetch_current_reward_configs(self) -> dict[str, dict[str, Any]]:
+        client = await self._get_client()
+        configs_by_condition: dict[str, dict[str, Any]] = {}
+        next_cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {}
+            if next_cursor:
+                params["next_cursor"] = next_cursor
+            response = await client.get(f"{settings.polymarket_api_base}/rewards/markets/current", params=params)
+            response.raise_for_status()
+            payload = response.json()
+            rows: list[dict[str, Any]] = []
+            if isinstance(payload, list):
+                rows = [row for row in payload if isinstance(row, dict)]
+            elif isinstance(payload, dict):
+                if isinstance(payload.get("data"), list):
+                    rows = [row for row in payload["data"] if isinstance(row, dict)]
+                elif isinstance(payload.get("markets"), list):
+                    rows = [row for row in payload["markets"] if isinstance(row, dict)]
+            for row in rows:
+                condition_id = _coalesce(
+                    row.get("condition_id"),
+                    row.get("market"),
+                    row.get("market_id"),
+                )
+                if condition_id is None:
+                    continue
+                configs_by_condition[str(condition_id)] = row
+            next_cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
+            if not next_cursor or not rows:
+                break
+        return configs_by_condition
+
+    async def _sync_market_fee_history(
+        self,
+        session: AsyncSession,
+        *,
+        market_dim: PolymarketMarketDim,
+        asset_dims: list[PolymarketAssetDim],
+        observed_at_local: datetime,
+        sync_run_id: uuid.UUID,
+        market_payload: dict[str, Any],
+    ) -> int:
+        if not settings.polymarket_fee_history_enabled:
+            return 0
+        inserted = 0
+        fees_enabled = _to_bool(_coalesce(market_payload.get("feesEnabled"), market_payload.get("fees_enabled")))
+        fee_schedule_json = _normalize_fee_schedule(_coalesce(market_payload.get("feeSchedule"), market_payload.get("fee_schedule")))
+        maker_base_fee = _to_decimal(_coalesce(market_payload.get("makerBaseFee"), market_payload.get("maker_base_fee")))
+        taker_base_fee = _to_decimal(_coalesce(market_payload.get("takerBaseFee"), market_payload.get("taker_base_fee")))
+        effective_at_exchange = _market_effective_at(market_payload)
+        for asset_dim in asset_dims:
+            fee_payload = None
+            try:
+                fee_payload = await self._fetch_token_fee_rate(asset_dim.asset_id)
+            except httpx.HTTPError:
+                logger.warning("Failed to fetch fee rate for asset %s", asset_dim.asset_id, exc_info=True)
+            token_base_fee_rate = _to_decimal(_coalesce(
+                fee_payload.get("base_fee") if isinstance(fee_payload, dict) else None,
+                fee_payload.get("baseFee") if isinstance(fee_payload, dict) else None,
+            ))
+            if await insert_token_fee_history_if_changed(
+                session,
+                market_dim=market_dim,
+                asset_dim=asset_dim,
+                condition_id=market_dim.condition_id,
+                asset_id=asset_dim.asset_id,
+                source_kind=FEE_SOURCE_KIND,
+                effective_at_exchange=effective_at_exchange,
+                observed_at_local=observed_at_local,
+                sync_run_id=sync_run_id,
+                fees_enabled=fees_enabled,
+                maker_fee_rate=maker_base_fee,
+                taker_fee_rate=taker_base_fee,
+                token_base_fee_rate=token_base_fee_rate,
+                fee_schedule_json=fee_schedule_json,
+                details_json={
+                    "market_fee_schedule": fee_schedule_json,
+                    "fee_rate_payload": fee_payload,
+                },
+            ):
+                inserted += 1
+        return inserted
+
+    async def _sync_market_reward_history(
+        self,
+        session: AsyncSession,
+        *,
+        market_dim: PolymarketMarketDim,
+        observed_at_local: datetime,
+        sync_run_id: uuid.UUID,
+        reward_payload: dict[str, Any] | None,
+    ) -> int:
+        if not settings.polymarket_reward_history_enabled:
+            return 0
+        normalized = normalize_reward_history_payload(reward_payload, observed_at=observed_at_local)
+        if await insert_reward_history_if_changed(
+            session,
+            market_dim=market_dim,
+            condition_id=market_dim.condition_id,
+            source_kind=REWARD_SOURCE_KIND,
+            effective_at_exchange=normalized["start_at_exchange"] or observed_at_local,
+            observed_at_local=observed_at_local,
+            sync_run_id=sync_run_id,
+            reward_status=normalized["reward_status"],
+            reward_program_id=normalized["reward_program_id"],
+            reward_daily_rate=normalized["reward_daily_rate"],
+            min_incentive_size=normalized["min_incentive_size"],
+            max_incentive_spread=normalized["max_incentive_spread"],
+            start_at_exchange=normalized["start_at_exchange"],
+            end_at_exchange=normalized["end_at_exchange"],
+            rewards_config_json=normalized["rewards_config_json"],
+            details_json={"reward_payload": reward_payload},
+        ):
+            return 1
+        return 0
 
     async def _watched_assets_missing_metadata(
         self,
@@ -1317,6 +1470,11 @@ class PolymarketMetaSyncService:
         failure_exc: Exception | None = None
         try:
             async with self._session_factory() as session:
+                reward_configs_by_condition = (
+                    await self._fetch_current_reward_configs()
+                    if settings.polymarket_reward_history_enabled
+                    else None
+                )
                 if not target_asset_ids:
                     await self._sync_gamma_events(
                         session,
@@ -1329,6 +1487,7 @@ class PolymarketMetaSyncService:
                     include_closed=include_closed_value,
                     target_asset_ids=target_asset_ids or None,
                     sync_run_id=sync_run_id,
+                    reward_configs_by_condition=reward_configs_by_condition,
                 )
                 await self._seed_missing_book_metadata(
                     session,
@@ -1351,6 +1510,8 @@ class PolymarketMetaSyncService:
                 run.details_json = {
                     "target_asset_ids": target_asset_ids or None,
                     "include_closed": include_closed_value,
+                    "fee_rows_inserted": counters.fee_rows_inserted,
+                    "reward_rows_inserted": counters.reward_rows_inserted,
                 }
                 await session.commit()
         except Exception as exc:
@@ -1370,6 +1531,8 @@ class PolymarketMetaSyncService:
                     run.details_json = {
                         "target_asset_ids": target_asset_ids or None,
                         "include_closed": include_closed_value,
+                        "fee_rows_inserted": counters.fee_rows_inserted,
+                        "reward_rows_inserted": counters.reward_rows_inserted,
                         "error": str(exc),
                     }
                     await session.commit()

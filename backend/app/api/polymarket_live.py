@@ -1,14 +1,30 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.db import get_db
+from app.execution.polymarket_control_plane import (
+    arm_pilot,
+    create_or_update_pilot_config,
+    disarm_active_pilot,
+    fetch_execution_console_summary,
+    fetch_market_tape_view,
+    fetch_pilot_status,
+    get_pilot_config,
+    list_approval_queue,
+    list_control_plane_incidents,
+    list_live_shadow_evaluations,
+    list_pilot_configs,
+    list_pilot_runs,
+    pause_active_pilot,
+    resume_active_pilot,
+)
 from app.execution.polymarket_gateway import GatewayUnavailableError, PolymarketGateway
 from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
 from app.execution.polymarket_live_state import (
@@ -27,6 +43,11 @@ from app.execution.polymarket_live_state import (
 from app.execution.polymarket_order_manager import PolymarketOrderManager
 
 router = APIRouter(prefix="/api/v1/ingest/polymarket/live", tags=["polymarket-live"])
+
+
+class RowsOut(BaseModel):
+    rows: list[dict[str, Any]]
+    limit: int
 
 
 class PolymarketLiveStatusOut(BaseModel):
@@ -53,15 +74,14 @@ class PolymarketLiveStatusOut(BaseModel):
     last_reconcile_success_at: Any | None = None
     last_reconcile_error: str | None = None
     last_reconcile_error_at: Any | None = None
+    heartbeat_healthy: bool | None = None
+    heartbeat_last_checked_at: Any | None = None
+    heartbeat_last_success_at: Any | None = None
+    heartbeat_last_error: str | None = None
     outstanding_live_orders: int
     outstanding_reservations: float
     recent_fills_24h: int
     live_submission_permitted: bool
-
-
-class LiveOrderListOut(BaseModel):
-    rows: list[dict[str, Any]]
-    limit: int
 
 
 class LiveMutationRequest(BaseModel):
@@ -101,6 +121,29 @@ class ReconcileRequest(BaseModel):
     reason: str = Field(default="manual", min_length=1, max_length=64)
 
 
+class PilotConfigRequest(BaseModel):
+    pilot_name: str | None = Field(default=None, max_length=128)
+    strategy_family: str | None = Field(default=None, max_length=32)
+    active: bool | None = None
+    manual_approval_required: bool | None = None
+    live_enabled: bool | None = None
+    market_allowlist_json: list[str] | None = None
+    category_allowlist_json: list[str] | None = None
+    max_notional_per_order_usd: float | None = Field(default=None, ge=0)
+    max_notional_per_day_usd: float | None = Field(default=None, ge=0)
+    max_open_orders: int | None = Field(default=None, ge=1)
+    max_plan_age_seconds: int | None = Field(default=None, ge=1)
+    max_decision_age_seconds: int | None = Field(default=None, ge=1)
+    max_slippage_bps: float | None = Field(default=None, ge=0)
+    require_complete_replay_coverage: bool | None = None
+    details_json: dict[str, Any] | list[Any] | str | None = None
+
+
+class PilotArmRequest(BaseModel):
+    pilot_config_id: int
+    operator_identity: str | None = Field(default=None, max_length=128)
+
+
 @router.get("/status", response_model=PolymarketLiveStatusOut)
 async def get_polymarket_live_status(
     probe_gateway: bool = Query(default=False),
@@ -119,6 +162,205 @@ async def get_polymarket_live_status(
     return await fetch_polymarket_live_status(db)
 
 
+@router.get("/console-summary")
+async def get_polymarket_live_console_summary(db: AsyncSession = Depends(get_db)):
+    return await fetch_execution_console_summary(db)
+
+
+@router.get("/pilot/configs", response_model=RowsOut)
+async def get_polymarket_pilot_configs(
+    strategy_family: str | None = Query(default=None),
+    active: bool | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_pilot_configs(db, strategy_family=strategy_family, active=active, limit=limit)
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/pilot/configs/{pilot_config_id}")
+async def get_polymarket_pilot_config(
+    pilot_config_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    row = await get_pilot_config(db, pilot_config_id=pilot_config_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pilot config not found")
+    from app.execution.polymarket_control_plane import serialize_pilot_config
+
+    return serialize_pilot_config(row)
+
+
+@router.post("/pilot/configs")
+async def post_polymarket_pilot_config(
+    body: PilotConfigRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        result = await create_or_update_pilot_config(db, payload=body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    return result
+
+
+@router.put("/pilot/configs/{pilot_config_id}")
+async def put_polymarket_pilot_config(
+    pilot_config_id: int,
+    body: PilotConfigRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        result = await create_or_update_pilot_config(
+            db,
+            payload=body.model_dump(exclude_none=True),
+            pilot_config_id=pilot_config_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    return result
+
+
+@router.post("/pilot/arm")
+async def arm_polymarket_pilot(
+    body: PilotArmRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        result = await arm_pilot(db, pilot_config_id=body.pilot_config_id, operator_identity=body.operator_identity)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await db.commit()
+    return result
+
+
+@router.post("/pilot/disarm")
+async def disarm_polymarket_pilot(
+    body: LiveMutationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await disarm_active_pilot(db, operator_identity=body.operator)
+    await db.commit()
+    return result or {"pilot_config": None, "pilot_run": None}
+
+
+@router.post("/pilot/pause")
+async def pause_polymarket_pilot(
+    body: LiveMutationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await pause_active_pilot(db, reason="manual", operator_identity=body.operator)
+    await db.commit()
+    return result or {"pilot_config": None, "pilot_run": None}
+
+
+@router.post("/pilot/resume")
+async def resume_polymarket_pilot(
+    body: LiveMutationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        result = await resume_active_pilot(db, operator_identity=body.operator)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    return result
+
+
+@router.get("/pilot/status")
+async def get_polymarket_pilot_status(db: AsyncSession = Depends(get_db)):
+    return await fetch_pilot_status(db)
+
+
+@router.get("/pilot/runs", response_model=RowsOut)
+async def get_polymarket_pilot_runs(
+    status: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_pilot_runs(db, status=status, limit=limit)
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/approvals", response_model=RowsOut)
+async def get_polymarket_pilot_approvals(
+    strategy_family: str | None = Query(default=None),
+    approval_state: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_approval_queue(
+        db,
+        strategy_family=strategy_family,
+        approval_state=approval_state,
+        status=status,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/incidents", response_model=RowsOut)
+async def get_polymarket_control_plane_incidents(
+    incident_type: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_control_plane_incidents(
+        db,
+        incident_type=incident_type,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/shadow-evaluations", response_model=RowsOut)
+async def get_polymarket_shadow_evaluations(
+    variant_name: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_live_shadow_evaluations(
+        db,
+        variant_name=variant_name,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/tape")
+async def get_polymarket_market_tape(
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_market_tape_view(db, condition_id=condition_id, asset_id=asset_id, limit=limit)
+
+
 @router.post("/orders/intents", response_model=dict[str, Any])
 async def create_polymarket_live_order_intent(
     body: LiveIntentRequest,
@@ -133,13 +375,17 @@ async def create_polymarket_live_order_intent(
     return result
 
 
-@router.get("/orders", response_model=LiveOrderListOut)
+@router.get("/orders", response_model=RowsOut)
 async def get_polymarket_live_orders(
     asset_id: str | None = Query(default=None),
     condition_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    strategy_family: str | None = Query(default=None),
+    approval_state: str | None = Query(default=None),
     client_order_id: str | None = Query(default=None),
     venue_order_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
@@ -148,20 +394,28 @@ async def get_polymarket_live_orders(
         asset_id=asset_id,
         condition_id=condition_id,
         status=status,
+        strategy_family=strategy_family,
+        approval_state=approval_state,
         client_order_id=client_order_id,
         venue_order_id=venue_order_id,
+        start=start,
+        end=end,
         limit=limit,
     )
-    return LiveOrderListOut(rows=rows, limit=limit)
+    return RowsOut(rows=rows, limit=limit)
 
 
-@router.get("/orders/events", response_model=LiveOrderListOut)
+@router.get("/orders/events", response_model=RowsOut)
 async def get_polymarket_live_order_events(
     asset_id: str | None = Query(default=None),
     condition_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    strategy_family: str | None = Query(default=None),
+    approval_state: str | None = Query(default=None),
     client_order_id: str | None = Query(default=None),
     venue_order_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
@@ -170,20 +424,28 @@ async def get_polymarket_live_order_events(
         asset_id=asset_id,
         condition_id=condition_id,
         status=status,
+        strategy_family=strategy_family,
+        approval_state=approval_state,
         client_order_id=client_order_id,
         venue_order_id=venue_order_id,
+        start=start,
+        end=end,
         limit=limit,
     )
-    return LiveOrderListOut(rows=rows, limit=limit)
+    return RowsOut(rows=rows, limit=limit)
 
 
-@router.get("/fills", response_model=LiveOrderListOut)
+@router.get("/fills", response_model=RowsOut)
 async def get_polymarket_live_fills(
     asset_id: str | None = Query(default=None),
     condition_id: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    strategy_family: str | None = Query(default=None),
+    approval_state: str | None = Query(default=None),
     client_order_id: str | None = Query(default=None),
     venue_order_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
@@ -192,14 +454,18 @@ async def get_polymarket_live_fills(
         asset_id=asset_id,
         condition_id=condition_id,
         status=status,
+        strategy_family=strategy_family,
+        approval_state=approval_state,
         client_order_id=client_order_id,
         venue_order_id=venue_order_id,
+        start=start,
+        end=end,
         limit=limit,
     )
-    return LiveOrderListOut(rows=rows, limit=limit)
+    return RowsOut(rows=rows, limit=limit)
 
 
-@router.get("/reservations", response_model=LiveOrderListOut)
+@router.get("/reservations", response_model=RowsOut)
 async def get_polymarket_live_reservations(
     asset_id: str | None = Query(default=None),
     condition_id: str | None = Query(default=None),
@@ -212,7 +478,7 @@ async def get_polymarket_live_reservations(
         condition_id=condition_id,
         limit=limit,
     )
-    return LiveOrderListOut(rows=rows, limit=limit)
+    return RowsOut(rows=rows, limit=limit)
 
 
 @router.post("/orders/{live_order_id}/approve", response_model=dict[str, Any])

@@ -20,6 +20,7 @@ from app.ingestion.polymarket_execution_policy import (
     evaluate_polymarket_execution_policy,
     persist_polymarket_execution_policy_result,
 )
+from app.ingestion.polymarket_risk_graph import assess_paper_trade_risk
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
 from app.models.snapshot import OrderbookSnapshot
@@ -87,6 +88,14 @@ class OrderbookContext:
 
 
 def _risk_reason_code(reason: str) -> str:
+    if reason == "event_cap_exceeded":
+        return "risk_event_exposure"
+    if reason == "entity_cap_exceeded":
+        return "risk_entity_exposure"
+    if reason == "conversion_group_cap_exceeded":
+        return "risk_conversion_exposure"
+    if reason == "inventory_toxicity_exceeded":
+        return "risk_inventory_toxicity"
     if reason.startswith("Total exposure limit reached"):
         return "risk_total_exposure"
     if reason.startswith("Cluster exposure limit reached"):
@@ -98,6 +107,10 @@ def _risk_reason_label(reason_code: str) -> str:
     labels = {
         "risk_total_exposure": "Total exposure limit reached",
         "risk_cluster_exposure": "Cluster exposure limit reached",
+        "risk_event_exposure": "Event exposure cap reached",
+        "risk_entity_exposure": "Entity exposure cap reached",
+        "risk_conversion_exposure": "Conversion group exposure cap reached",
+        "risk_inventory_toxicity": "Inventory toxicity threshold reached",
         "risk_rejected": "Risk rejected",
     }
     return labels.get(reason_code, reason_code.replace("_", " "))
@@ -640,20 +653,28 @@ async def build_execution_decision(
             if portfolio["cumulative_pnl"] > ZERO:
                 peak_bankroll = bankroll + portfolio["cumulative_pnl"]
 
-            risk_result = check_exposure(
-                open_positions=open_positions,
-                new_trade={
-                    "size_usd": fill_capped_size_usd,
-                    "market_question": market_question,
-                    "outcome_id": str(outcome_id),
-                },
-                bankroll=bankroll,
-                max_total_pct=Decimal(str(settings.max_total_exposure_pct)),
-                max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
-                drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
-                peak_bankroll=peak_bankroll,
-                cumulative_pnl=portfolio["cumulative_pnl"],
+            risk_result = await assess_paper_trade_risk(
+                session,
+                outcome_id=outcome_id,
+                market_id=market_id,
+                direction=ideal_ev["direction"],
+                proposed_notional_usd=fill_capped_size_usd,
             )
+            if risk_result is None:
+                risk_result = check_exposure(
+                    open_positions=open_positions,
+                    new_trade={
+                        "size_usd": fill_capped_size_usd,
+                        "market_question": market_question,
+                        "outcome_id": str(outcome_id),
+                    },
+                    bankroll=bankroll,
+                    max_total_pct=Decimal(str(settings.max_total_exposure_pct)),
+                    max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
+                    drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
+                    peak_bankroll=peak_bankroll,
+                    cumulative_pnl=portfolio["cumulative_pnl"],
+                )
             if not risk_result["approved"]:
                 logger.info(
                     "Paper trade rejected by risk check: %s (signal %s)",
@@ -975,20 +996,28 @@ async def build_execution_decision(
     if portfolio["cumulative_pnl"] > ZERO:
         peak_bankroll = bankroll + portfolio["cumulative_pnl"]
 
-    risk_result = check_exposure(
-        open_positions=open_positions,
-        new_trade={
-            "size_usd": fill_capped_size_usd,
-            "market_question": market_question,
-            "outcome_id": str(outcome_id),
-        },
-        bankroll=bankroll,
-        max_total_pct=Decimal(str(settings.max_total_exposure_pct)),
-        max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
-        drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
-        peak_bankroll=peak_bankroll,
-        cumulative_pnl=portfolio["cumulative_pnl"],
+    risk_result = await assess_paper_trade_risk(
+        session,
+        outcome_id=outcome_id,
+        market_id=market_id,
+        direction=ideal_ev["direction"],
+        proposed_notional_usd=fill_capped_size_usd,
     )
+    if risk_result is None:
+        risk_result = check_exposure(
+            open_positions=open_positions,
+            new_trade={
+                "size_usd": fill_capped_size_usd,
+                "market_question": market_question,
+                "outcome_id": str(outcome_id),
+            },
+            bankroll=bankroll,
+            max_total_pct=Decimal(str(settings.max_total_exposure_pct)),
+            max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
+            drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
+            peak_bankroll=peak_bankroll,
+            cumulative_pnl=portfolio["cumulative_pnl"],
+        )
     if not risk_result["approved"]:
         logger.info(
             "Paper trade rejected by risk check: %s (signal %s)",
@@ -1337,20 +1366,28 @@ async def _legacy_attempt_open_trade(
     if portfolio["cumulative_pnl"] > ZERO:
         peak_bankroll = bankroll + portfolio["cumulative_pnl"]
 
-    risk_result = check_exposure(
-        open_positions=open_positions,
-        new_trade={
-            "size_usd": sizing["recommended_size_usd"],
-            "market_question": market_question,
-            "outcome_id": str(outcome_id),
-        },
-        bankroll=bankroll,
-        max_total_pct=Decimal(str(settings.max_total_exposure_pct)),
-        max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
-        drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
-        peak_bankroll=peak_bankroll,
-        cumulative_pnl=portfolio["cumulative_pnl"],
+    risk_result = await assess_paper_trade_risk(
+        session,
+        outcome_id=outcome_id,
+        market_id=market_id,
+        direction=sizing["direction"],
+        proposed_notional_usd=sizing["recommended_size_usd"],
     )
+    if risk_result is None:
+        risk_result = check_exposure(
+            open_positions=open_positions,
+            new_trade={
+                "size_usd": sizing["recommended_size_usd"],
+                "market_question": market_question,
+                "outcome_id": str(outcome_id),
+            },
+            bankroll=bankroll,
+            max_total_pct=Decimal(str(settings.max_total_exposure_pct)),
+            max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
+            drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
+            peak_bankroll=peak_bankroll,
+            cumulative_pnl=portfolio["cumulative_pnl"],
+        )
 
     if not risk_result["approved"]:
         logger.info(

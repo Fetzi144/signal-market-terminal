@@ -132,6 +132,94 @@ const healthPayload = {
     skipped_group_count: 2,
     pending_approval_count: 1,
   },
+  polymarket_phase9: {
+    enabled: true,
+    fee_history_enabled: true,
+    reward_history_enabled: true,
+    quote_optimizer_enabled: true,
+    quote_optimizer_max_notional: 25,
+    quote_optimizer_max_age_seconds: 180,
+    quote_optimizer_require_rewards_data: false,
+    quote_optimizer_require_fee_data: true,
+    last_fee_sync_at: "2026-04-13T10:05:40Z",
+    last_reward_sync_at: "2026-04-13T10:05:41Z",
+    last_snapshot_at: "2026-04-13T10:05:42Z",
+    last_recommendation_at: "2026-04-13T10:05:43Z",
+    fee_history_rows: 18,
+    reward_history_rows: 9,
+    economics_snapshot_rows: 5,
+    quote_recommendation_rows: 3,
+    reward_state_counts: { active: 4, missing: 3, expired: 2 },
+    recent_reason_counts_24h: { advisory_only_output: 5, missing_reward_config: 2 },
+    fee_freshness_seconds: 60,
+    reward_freshness_seconds: 59,
+  },
+  polymarket_phase10: {
+    enabled: true,
+    on_startup: false,
+    interval_seconds: 300,
+    portfolio_optimizer_enabled: true,
+    portfolio_optimizer_interval_seconds: 300,
+    advisory_only: true,
+    live_disabled_by_default: true,
+    last_successful_graph_build_at: "2026-04-13T10:05:44Z",
+    last_successful_exposure_snapshot_at: "2026-04-13T10:05:45Z",
+    last_successful_optimizer_run_at: "2026-04-13T10:05:46Z",
+    last_graph_build_status: "completed",
+    last_exposure_snapshot_status: "completed",
+    last_optimizer_status: "completed",
+    top_concentrated_exposures: [
+      {
+        node_key: "event:polymarket:evt-phase10",
+        node_type: "event",
+        label: "Election Risk",
+        gross_notional_usd: 92.5,
+        net_notional_usd: 70.0,
+        hedged_fraction: 0.24,
+      },
+    ],
+    recent_block_reason_counts_24h: { inventory_toxicity_exceeded: 2, event_cap_exceeded: 1 },
+    maker_budget_used_usd: 41.0,
+    maker_budget_usd: 50.0,
+    taker_budget_used_usd: 22.5,
+    taker_budget_usd: 150.0,
+    maker_budget_utilization: 0.82,
+    taker_budget_utilization: 0.15,
+  },
+  polymarket_phase11: {
+    enabled: true,
+    live_disabled_by_default: true,
+    default_window_minutes: 60,
+    passive_fill_timeout_seconds: 15,
+    last_replay_run: { started_at: "2026-04-13T10:05:50Z" },
+    last_successful_policy_comparison: { started_at: "2026-04-13T10:05:55Z" },
+    recent_scenario_count_24h: 3,
+    recent_coverage_limited_run_count_24h: 1,
+    recent_failed_run_count_24h: 0,
+    recent_variant_summary: {
+      exec_policy: { net_pnl: 12.25, fill_rate: 0.66, slippage_bps: 4.2 },
+    },
+  },
+  polymarket_phase12: {
+    pilot_enabled: false,
+    live_trading_enabled: false,
+    pilot_armed: false,
+    pilot_paused: false,
+    active_pilot_family: null,
+    manual_approval_required: true,
+    approval_queue_count: 2,
+    heartbeat_status: "idle",
+    user_stream_connected: false,
+    recent_incident_count_24h: 1,
+    live_shadow_summary: {
+      recent_count_24h: 2,
+      average_gap_bps_24h: 6.5,
+      worst_gap_bps_24h: 11.4,
+      breach_count_24h: 0,
+    },
+    last_reconcile_success_at: "2026-04-13T10:05:10Z",
+    kill_switch_enabled: false,
+  },
   ingestion: [
     {
       run_type: "market_discovery",
@@ -258,6 +346,28 @@ const ingestPayload = {
     recent_invalid_candidates_24h: 3,
     recent_skip_decisions_24h: 1,
     recent_avg_est_net_ev_bps: 17.25,
+  },
+  maker_economics: {
+    enabled: true,
+    fee_history_enabled: true,
+    reward_history_enabled: true,
+    quote_optimizer_enabled: true,
+    quote_optimizer_max_notional: 25,
+    quote_optimizer_max_age_seconds: 180,
+    quote_optimizer_require_rewards_data: false,
+    quote_optimizer_require_fee_data: true,
+    last_fee_sync_at: "2026-04-13T10:05:40Z",
+    last_reward_sync_at: "2026-04-13T10:05:41Z",
+    last_snapshot_at: "2026-04-13T10:05:42Z",
+    last_recommendation_at: "2026-04-13T10:05:43Z",
+    fee_history_rows: 18,
+    reward_history_rows: 9,
+    economics_snapshot_rows: 5,
+    quote_recommendation_rows: 3,
+    reward_state_counts: { active: 4, missing: 3, expired: 2 },
+    recent_reason_counts_24h: { advisory_only_output: 5, missing_reward_config: 2 },
+    fee_freshness_seconds: 60,
+    reward_freshness_seconds: 59,
   },
   structure_engine: {
     enabled: true,
@@ -555,11 +665,22 @@ describe("Health", () => {
     expect(screen.getByText("Phase 6 Execution Policy")).toBeInTheDocument();
     expect(screen.getByText("Phase 7A OMS/EMS Foundation")).toBeInTheDocument();
     expect(screen.getByText("Phase 8B Validation, Controls, and Paper Routing")).toBeInTheDocument();
-    expect(screen.getByText(/Live disabled/)).toBeInTheDocument();
+    expect(screen.getByText("Phase 9 Maker Economics")).toBeInTheDocument();
+    expect(screen.getByText("Phase 10 Risk Graph and Portfolio Optimizer")).toBeInTheDocument();
+    expect(screen.getByText("Phase 11 Replay Simulator and Backtest Expansion")).toBeInTheDocument();
+    expect(screen.getByText("Phase 12 Live Pilot and Control Plane")).toBeInTheDocument();
+    expect(screen.getAllByText(/Live disabled/).length).toBeGreaterThan(0);
     expect(screen.getByText(/cross_now:2/)).toBeInTheDocument();
     expect(screen.getAllByText(/neg_risk_direct_vs_basket:2/).length).toBeGreaterThan(0);
     expect(screen.getByText(/cross_venue_link_expired:1/)).toBeInTheDocument();
+    expect(screen.getByText("Fee Rows")).toBeInTheDocument();
+    expect(screen.getByText("Reward Rows")).toBeInTheDocument();
+    expect(screen.getByText(/advisory_only_output:5/)).toBeInTheDocument();
+    expect(screen.getByText(/active:4/)).toBeInTheDocument();
+    expect(screen.getByText(/inventory_toxicity_exceeded:2/)).toBeInTheDocument();
     expect(screen.getByText("Pending Approval")).toBeInTheDocument();
+    expect(screen.getByText("Gap Breaches")).toBeInTheDocument();
+    expect(screen.getByText("Shadow Evaluation")).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 

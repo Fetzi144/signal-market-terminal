@@ -24,6 +24,19 @@ from app.models.polymarket_live_execution import (
     PolymarketLiveState,
     PolymarketUserEventRaw,
 )
+from app.models.polymarket_pilot import (
+    PolymarketControlPlaneIncident,
+    PolymarketLiveShadowEvaluation,
+    PolymarketPilotApprovalEvent,
+    PolymarketPilotConfig,
+    PolymarketPilotRun,
+)
+from app.models.polymarket_maker import (
+    PolymarketMakerEconomicsSnapshot,
+    PolymarketMarketRewardConfigHistory,
+    PolymarketQuoteRecommendation,
+    PolymarketTokenFeeRateHistory,
+)
 from app.models.polymarket_metadata import (
     PolymarketAssetDim,
     PolymarketEventDim,
@@ -50,6 +63,22 @@ from app.models.polymarket_raw import (
 from app.models.polymarket_reconstruction import (
     PolymarketBookReconIncident,
     PolymarketBookReconState,
+)
+from app.models.polymarket_replay import (
+    PolymarketReplayDecisionTrace,
+    PolymarketReplayFill,
+    PolymarketReplayMetric,
+    PolymarketReplayOrder,
+    PolymarketReplayRun,
+    PolymarketReplayScenario,
+)
+from app.models.polymarket_risk import (
+    InventoryControlSnapshot,
+    PortfolioExposureSnapshot,
+    PortfolioOptimizerRecommendation,
+    RiskGraphEdge,
+    RiskGraphNode,
+    RiskGraphRun,
 )
 from app.models.portfolio import Position, Trade
 from app.models.polymarket_stream import (
@@ -96,6 +125,15 @@ __all__ = [
     "LiveFill",
     "CapitalReservation",
     "PolymarketLiveState",
+    "PolymarketPilotConfig",
+    "PolymarketPilotRun",
+    "PolymarketPilotApprovalEvent",
+    "PolymarketControlPlaneIncident",
+    "PolymarketLiveShadowEvaluation",
+    "PolymarketTokenFeeRateHistory",
+    "PolymarketMarketRewardConfigHistory",
+    "PolymarketMakerEconomicsSnapshot",
+    "PolymarketQuoteRecommendation",
     "Position",
     "Trade",
     "PolymarketMarketEvent",
@@ -123,6 +161,18 @@ __all__ = [
     "PolymarketOpenInterestHistory",
     "PolymarketBookReconState",
     "PolymarketBookReconIncident",
+    "PolymarketReplayRun",
+    "PolymarketReplayScenario",
+    "PolymarketReplayOrder",
+    "PolymarketReplayFill",
+    "PolymarketReplayMetric",
+    "PolymarketReplayDecisionTrace",
+    "RiskGraphNode",
+    "RiskGraphEdge",
+    "RiskGraphRun",
+    "PortfolioExposureSnapshot",
+    "PortfolioOptimizerRecommendation",
+    "InventoryControlSnapshot",
     "PushSubscription",
     "SchedulerLease",
     "WalletProfile",

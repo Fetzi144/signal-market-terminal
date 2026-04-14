@@ -256,6 +256,69 @@ polymarket_book_recon_assets_degraded = Gauge(
     ["status"],
 )
 
+# Polymarket Phase 10 risk graph / portfolio optimizer
+polymarket_risk_graph_build_runs = Counter(
+    "smt_polymarket_risk_graph_build_runs_total",
+    "Total Phase 10 risk graph build runs",
+    ["status"],
+)
+
+polymarket_risk_graph_build_failures = Counter(
+    "smt_polymarket_risk_graph_build_failures_total",
+    "Total failed Phase 10 risk graph build runs",
+)
+
+polymarket_risk_exposure_snapshot_runs = Counter(
+    "smt_polymarket_risk_exposure_snapshot_runs_total",
+    "Total Phase 10 exposure snapshot runs",
+    ["status"],
+)
+
+polymarket_risk_exposure_snapshot_failures = Counter(
+    "smt_polymarket_risk_exposure_snapshot_failures_total",
+    "Total failed Phase 10 exposure snapshot runs",
+)
+
+polymarket_risk_optimizer_runs = Counter(
+    "smt_polymarket_risk_optimizer_runs_total",
+    "Total Phase 10 portfolio optimizer runs",
+    ["status"],
+)
+
+polymarket_risk_optimizer_failures = Counter(
+    "smt_polymarket_risk_optimizer_failures_total",
+    "Total failed Phase 10 portfolio optimizer runs",
+)
+
+polymarket_risk_concentration = Gauge(
+    "smt_polymarket_risk_concentration",
+    "Current Phase 10 unhedged concentration by bucket",
+    ["bucket_type", "node_key"],
+)
+
+polymarket_risk_optimizer_recommendations = Counter(
+    "smt_polymarket_risk_optimizer_recommendations_total",
+    "Total Phase 10 optimizer recommendations",
+    ["recommendation_type", "reason_code"],
+)
+
+polymarket_risk_no_quote_recommendations = Counter(
+    "smt_polymarket_risk_no_quote_recommendations_total",
+    "Total Phase 10 no-quote recommendations",
+)
+
+polymarket_risk_last_successful_timestamp = Gauge(
+    "smt_polymarket_risk_last_successful_timestamp",
+    "Unix timestamp of the most recent successful Phase 10 run by type",
+    ["run_type"],
+)
+
+polymarket_risk_inventory_budget_utilization = Gauge(
+    "smt_polymarket_risk_inventory_budget_utilization",
+    "Current Phase 10 inventory budget utilization fraction",
+    ["bucket"],
+)
+
 # Polymarket Phase 5 microstructure / derived research
 polymarket_feature_runs = Counter(
     "smt_polymarket_feature_runs_total",
@@ -415,6 +478,64 @@ polymarket_live_last_reconcile_success_timestamp = Gauge(
     "Unix timestamp of the most recent successful Polymarket live reconcile run",
 )
 
+# Polymarket Phase 12 live pilot / control plane
+polymarket_pilot_runs_total = Counter(
+    "smt_polymarket_pilot_runs_total",
+    "Total Phase 12 pilot run state transitions",
+    ["status", "reason"],
+)
+
+polymarket_pilot_failures_total = Counter(
+    "smt_polymarket_pilot_failures_total",
+    "Total Phase 12 pilot failures or abortive transitions",
+    ["reason"],
+)
+
+polymarket_pilot_manual_approvals_total = Counter(
+    "smt_polymarket_pilot_manual_approvals_total",
+    "Total Phase 12 pilot approval queue actions",
+    ["action"],
+)
+
+polymarket_control_plane_incidents_total = Counter(
+    "smt_polymarket_control_plane_incidents_total",
+    "Total Phase 12 control-plane incidents",
+    ["incident_type", "severity"],
+)
+
+polymarket_heartbeat_healthy = Gauge(
+    "smt_polymarket_heartbeat_healthy",
+    "Current Phase 12 heartbeat health (1=healthy, 0=degraded or idle)",
+)
+
+polymarket_restart_pauses_total = Counter(
+    "smt_polymarket_restart_pauses_total",
+    "Total Phase 12 restart-window pauses triggered by venue signals",
+)
+
+polymarket_live_submissions_blocked_by_pilot_total = Counter(
+    "smt_polymarket_live_submissions_blocked_by_pilot_total",
+    "Total Phase 12 live submissions blocked by pilot control-plane rules",
+    ["reason"],
+)
+
+polymarket_live_shadow_evaluations_total = Counter(
+    "smt_polymarket_live_shadow_evaluations_total",
+    "Total Phase 12 live-vs-shadow evaluations persisted",
+    ["variant_name", "coverage_limited"],
+)
+
+polymarket_shadow_gap_breaches_total = Counter(
+    "smt_polymarket_shadow_gap_breaches_total",
+    "Total Phase 12 shadow-gap breach incidents",
+    ["variant_name"],
+)
+
+polymarket_live_last_successful_fill_timestamp = Gauge(
+    "smt_polymarket_live_last_successful_fill_timestamp",
+    "Unix timestamp of the most recent successful non-dry-run live fill",
+)
+
 # Polymarket Phase 8A structural edge engine
 polymarket_structure_runs = Counter(
     "smt_polymarket_structure_runs_total",
@@ -528,4 +649,114 @@ polymarket_structure_paper_route_attempts = Counter(
     "smt_polymarket_structure_paper_route_attempts_total",
     "Total structure paper-route attempts",
     ["status"],
+)
+
+# Polymarket Phase 9 maker economics
+polymarket_maker_fee_history_rows = Counter(
+    "smt_polymarket_maker_fee_history_rows_total",
+    "Total Polymarket token fee-history rows inserted",
+    ["source_kind"],
+)
+
+polymarket_maker_reward_history_rows = Counter(
+    "smt_polymarket_maker_reward_history_rows_total",
+    "Total Polymarket reward-history rows inserted",
+    ["reward_status"],
+)
+
+polymarket_maker_last_fee_sync_timestamp = Gauge(
+    "smt_polymarket_maker_last_fee_sync_timestamp",
+    "Unix timestamp of the most recent Polymarket fee-history observation",
+)
+
+polymarket_maker_last_reward_sync_timestamp = Gauge(
+    "smt_polymarket_maker_last_reward_sync_timestamp",
+    "Unix timestamp of the most recent Polymarket reward-history observation",
+)
+
+polymarket_maker_reward_states = Gauge(
+    "smt_polymarket_maker_reward_states",
+    "Current Polymarket reward-state counts by status",
+    ["reward_status"],
+)
+
+polymarket_maker_economics_snapshots = Counter(
+    "smt_polymarket_maker_economics_snapshots_total",
+    "Total Polymarket maker-economics snapshots persisted",
+    ["status", "preferred_action"],
+)
+
+polymarket_maker_economics_reason_codes = Counter(
+    "smt_polymarket_maker_economics_reason_codes_total",
+    "Total Polymarket maker-economics reason codes observed",
+    ["reason_code"],
+)
+
+polymarket_maker_last_snapshot_timestamp = Gauge(
+    "smt_polymarket_maker_last_snapshot_timestamp",
+    "Unix timestamp of the most recent Polymarket maker-economics snapshot",
+)
+
+polymarket_quote_recommendations = Counter(
+    "smt_polymarket_quote_recommendations_total",
+    "Total Polymarket quote recommendations persisted",
+    ["status", "comparison_winner"],
+)
+
+polymarket_quote_recommendation_reason_codes = Counter(
+    "smt_polymarket_quote_recommendation_reason_codes_total",
+    "Total Polymarket quote-recommendation reason codes observed",
+    ["reason_code"],
+)
+
+polymarket_quote_optimizer_last_recommendation_timestamp = Gauge(
+    "smt_polymarket_quote_optimizer_last_recommendation_timestamp",
+    "Unix timestamp of the most recent Polymarket quote recommendation",
+)
+
+# Polymarket Phase 11 replay simulator / backtest expansion
+polymarket_replay_runs_total = Counter(
+    "smt_polymarket_replay_runs_total",
+    "Total Phase 11 replay or backtest runs",
+    ["run_type", "status"],
+)
+
+polymarket_replay_scenarios_total = Counter(
+    "smt_polymarket_replay_scenarios_total",
+    "Total Phase 11 replay scenarios processed",
+    ["scenario_type", "status"],
+)
+
+polymarket_replay_fills_total = Counter(
+    "smt_polymarket_replay_fills_total",
+    "Total Phase 11 replay fills produced",
+    ["fill_source_kind", "variant_name"],
+)
+
+polymarket_replay_policy_comparison_runs = Counter(
+    "smt_polymarket_replay_policy_comparison_runs_total",
+    "Total Phase 11 policy-comparison replay runs",
+    ["status"],
+)
+
+polymarket_replay_variant_net_pnl = Gauge(
+    "smt_polymarket_replay_variant_net_pnl",
+    "Latest Phase 11 run-level replay net PnL by variant",
+    ["variant_name"],
+)
+
+polymarket_replay_variant_fill_rate = Gauge(
+    "smt_polymarket_replay_variant_fill_rate",
+    "Latest Phase 11 run-level replay fill rate by variant",
+    ["variant_name"],
+)
+
+polymarket_replay_last_successful_timestamp = Gauge(
+    "smt_polymarket_replay_last_successful_timestamp",
+    "Unix timestamp of the most recent successful Phase 11 replay run",
+)
+
+polymarket_replay_coverage_limited_runs = Gauge(
+    "smt_polymarket_replay_coverage_limited_runs",
+    "Coverage-limited scenario count from the most recent Phase 11 replay run",
 )

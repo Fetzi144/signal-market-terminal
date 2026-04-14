@@ -118,6 +118,39 @@ class Settings(BaseSettings):
     polymarket_structure_min_depth_per_leg: float = 1.0
     polymarket_structure_plan_max_age_seconds: int = 180
     polymarket_structure_link_review_required: bool = False
+    polymarket_fee_history_enabled: bool = True
+    polymarket_reward_history_enabled: bool = True
+    polymarket_maker_economics_enabled: bool = True
+    polymarket_quote_optimizer_enabled: bool = True
+    polymarket_quote_optimizer_max_notional: float = 25.0
+    polymarket_quote_optimizer_max_age_seconds: int = 180
+    polymarket_quote_optimizer_require_rewards_data: bool = False
+    polymarket_quote_optimizer_require_fee_data: bool = True
+    polymarket_risk_graph_enabled: bool = False
+    polymarket_risk_graph_on_startup: bool = True
+    polymarket_risk_graph_interval_seconds: int = 300
+    polymarket_portfolio_optimizer_enabled: bool = False
+    polymarket_portfolio_optimizer_interval_seconds: int = 300
+    polymarket_max_event_exposure_usd: float = 250.0
+    polymarket_max_entity_exposure_usd: float = 150.0
+    polymarket_max_conversion_group_exposure_usd: float = 125.0
+    polymarket_maker_inventory_budget_usd: float = 100.0
+    polymarket_taker_inventory_budget_usd: float = 150.0
+    polymarket_risk_graph_include_paper_positions: bool = True
+    polymarket_risk_graph_include_live_orders: bool = True
+    polymarket_risk_graph_include_reservations: bool = True
+    polymarket_no_quote_toxicity_threshold: float = 0.85
+    polymarket_cross_venue_hedge_haircut_bps: float = 250.0
+    polymarket_replay_enabled: bool = False
+    polymarket_replay_on_startup: bool = False
+    polymarket_replay_interval_seconds: int = 1800
+    polymarket_replay_default_window_minutes: int = 30
+    polymarket_replay_max_scenarios_per_run: int = 100
+    polymarket_replay_enable_structure: bool = True
+    polymarket_replay_enable_maker: bool = True
+    polymarket_replay_enable_risk_adjustments: bool = True
+    polymarket_replay_require_complete_book_coverage: bool = True
+    polymarket_replay_passive_fill_timeout_seconds: int = 30
     polymarket_live_trading_enabled: bool = False
     polymarket_live_dry_run: bool = True
     polymarket_live_manual_approval_required: bool = True
@@ -131,6 +164,17 @@ class Settings(BaseSettings):
     polymarket_allowlist_markets: str = ""
     polymarket_allowlist_categories: str = ""
     polymarket_max_outstanding_notional_usd: float = 0.0
+    polymarket_pilot_enabled: bool = False
+    polymarket_pilot_default_strategy_family: str = "exec_policy"
+    polymarket_pilot_require_manual_approval: bool = True
+    polymarket_pilot_max_daily_notional_usd: float = 100.0
+    polymarket_pilot_max_open_orders: int = 1
+    polymarket_pilot_approval_ttl_seconds: int = 300
+    polymarket_pilot_shadow_gap_breach_bps: float = 50.0
+    polymarket_pilot_pause_on_shadow_gap_breach: bool = True
+    polymarket_heartbeat_enabled: bool = True
+    polymarket_heartbeat_interval_seconds: int = 30
+    polymarket_restart_pause_enabled: bool = True
     polymarket_clob_host: str = "https://clob.polymarket.com"
     polymarket_chain_id: int = 137
     polymarket_api_key: str = ""
@@ -349,8 +393,14 @@ class Settings(BaseSettings):
         "polymarket_structure_max_groups_per_run",
         "polymarket_structure_cross_venue_max_staleness_seconds",
         "polymarket_structure_plan_max_age_seconds",
+        "polymarket_replay_default_window_minutes",
+        "polymarket_replay_max_scenarios_per_run",
+        "polymarket_replay_passive_fill_timeout_seconds",
         "polymarket_live_decision_max_age_seconds",
         "polymarket_reconcile_interval_seconds",
+        "polymarket_pilot_max_open_orders",
+        "polymarket_pilot_approval_ttl_seconds",
+        "polymarket_heartbeat_interval_seconds",
         "polymarket_chain_id",
         "polymarket_signature_type",
     )
@@ -365,6 +415,14 @@ class Settings(BaseSettings):
         "polymarket_execution_policy_min_net_ev_bps",
         "polymarket_structure_min_net_edge_bps",
         "polymarket_structure_max_leg_slippage_bps",
+        "polymarket_max_event_exposure_usd",
+        "polymarket_max_entity_exposure_usd",
+        "polymarket_max_conversion_group_exposure_usd",
+        "polymarket_maker_inventory_budget_usd",
+        "polymarket_taker_inventory_budget_usd",
+        "polymarket_cross_venue_hedge_haircut_bps",
+        "polymarket_pilot_max_daily_notional_usd",
+        "polymarket_pilot_shadow_gap_breach_bps",
     )
     @classmethod
     def polymarket_execution_policy_thresholds_must_be_non_negative(cls, v: float) -> float:
@@ -385,11 +443,21 @@ class Settings(BaseSettings):
         "polymarket_book_recon_resync_cooldown_seconds",
         "polymarket_features_interval_seconds",
         "polymarket_structure_interval_seconds",
+        "polymarket_risk_graph_interval_seconds",
+        "polymarket_portfolio_optimizer_interval_seconds",
+        "polymarket_replay_interval_seconds",
     )
     @classmethod
     def polymarket_intervals_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Polymarket interval must be >= 1 second")
+        return v
+
+    @field_validator("polymarket_no_quote_toxicity_threshold")
+    @classmethod
+    def polymarket_no_quote_toxicity_threshold_bounds(cls, v: float) -> float:
+        if v <= 0 or v > 1:
+            raise ValueError("polymarket_no_quote_toxicity_threshold must be > 0 and <= 1")
         return v
 
     @field_validator("polymarket_feature_buckets_ms", "polymarket_label_horizons_ms")

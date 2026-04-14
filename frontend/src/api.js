@@ -105,6 +105,42 @@ export function getPolymarketMetaSyncRuns({ page = 1, pageSize = 20 } = {}) {
   return fetchJson(`${API_BASE}/ingest/polymarket/meta-sync/runs?${params}`);
 }
 
+export function getPolymarketMakerEconomicsStatus() {
+  return fetchJson(`${API_BASE}/ingest/polymarket/maker-economics/status`);
+}
+
+export function getPolymarketCurrentFeeState({ assetId, conditionId, asOf, limit = 50 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (assetId) params.set("asset_id", assetId);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (asOf) params.set("as_of", asOf);
+  return fetchJson(`${API_BASE}/ingest/polymarket/maker-economics/fees/current?${params}`);
+}
+
+export function getPolymarketFeeHistory({ assetId, conditionId, start, end, limit = 100 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (assetId) params.set("asset_id", assetId);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/maker-economics/fees/history?${params}`);
+}
+
+export function getPolymarketCurrentRewardState({ conditionId, asOf, limit = 50 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (conditionId) params.set("condition_id", conditionId);
+  if (asOf) params.set("as_of", asOf);
+  return fetchJson(`${API_BASE}/ingest/polymarket/maker-economics/rewards/current?${params}`);
+}
+
+export function getPolymarketRewardHistory({ conditionId, start, end, limit = 100 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (conditionId) params.set("condition_id", conditionId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/maker-economics/rewards/history?${params}`);
+}
+
 export function getPolymarketWatchAssets({ page = 1, pageSize = 20 } = {}) {
   const params = new URLSearchParams({ page, page_size: pageSize });
   return fetchJson(`${API_BASE}/ingest/polymarket/watch-assets?${params}`);
@@ -194,6 +230,13 @@ export function triggerPolymarketStructureOpportunityScan(body = { reason: "manu
   });
 }
 
+export function triggerPolymarketReplay(body = { reason: "manual", run_type: "policy_compare" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/replay/trigger`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export function validatePolymarketStructureOpportunities(body = { reason: "manual" }) {
   return requestJson(`${API_BASE}/ingest/polymarket/structure/opportunities/validate`, {
     method: "POST",
@@ -230,6 +273,62 @@ export function getPolymarketStructureOpportunities({
 
 export function getPolymarketStructureOpportunity(id) {
   return fetchJson(`${API_BASE}/ingest/polymarket/structure/opportunities/${id}`);
+}
+
+export function getPolymarketStructureLatestMakerEconomics(id) {
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/opportunities/${id}/maker-economics/latest`);
+}
+
+export function runPolymarketStructureMakerEconomics(id, body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/opportunities/${id}/maker-economics`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getPolymarketStructureMakerEconomicsSnapshots({
+  opportunityId,
+  conditionId,
+  assetId,
+  status,
+  start,
+  end,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (opportunityId) params.set("opportunity_id", opportunityId);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  if (status) params.set("status", status);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/maker-economics/snapshots?${params}`);
+}
+
+export function getPolymarketStructureLatestQuoteRecommendation(id) {
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/opportunities/${id}/quote-recommendations/latest`);
+}
+
+export function runPolymarketStructureQuoteRecommendation(id, body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/opportunities/${id}/quote-recommendations`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getPolymarketStructureQuoteRecommendations({
+  opportunityId,
+  conditionId,
+  assetId,
+  status,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (opportunityId) params.set("opportunity_id", opportunityId);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  if (status) params.set("status", status);
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/quote-recommendations?${params}`);
 }
 
 export function getPolymarketStructureValidations({
@@ -300,6 +399,244 @@ export function getPolymarketStructureCrossVenueLinks({
   if (reviewStatus) params.set("review_status", reviewStatus);
   if (confidenceMin !== undefined && confidenceMin !== "") params.set("confidence_min", confidenceMin);
   return fetchJson(`${API_BASE}/ingest/polymarket/structure/cross-venue-links?${params}`);
+}
+
+export function getPolymarketLiveStatus({ probeGateway = false } = {}) {
+  const params = new URLSearchParams();
+  if (probeGateway) params.set("probe_gateway", "true");
+  const query = params.toString();
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/status${query ? `?${query}` : ""}`);
+}
+
+export function getPolymarketPilotConsoleSummary() {
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/console-summary`);
+}
+
+export function getPolymarketPilotConfigs({ strategyFamily, active, limit = 20 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (active !== undefined && active !== "") params.set("active", active);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/pilot/configs?${params}`);
+}
+
+export function createPolymarketPilotConfig(body) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/configs`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function updatePolymarketPilotConfig(id, body) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/configs/${id}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function armPolymarketPilot(body) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/arm`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function disarmPolymarketPilot(body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/disarm`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function pausePolymarketPilot(body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/pause`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function resumePolymarketPilot(body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/resume`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getPolymarketPilotStatus() {
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/pilot/status`);
+}
+
+export function getPolymarketPilotRuns({ status, limit = 20 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (status) params.set("status", status);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/pilot/runs?${params}`);
+}
+
+export function getPolymarketApprovalQueue({
+  strategyFamily,
+  approvalState,
+  status,
+  conditionId,
+  assetId,
+  limit = 50,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (approvalState) params.set("approval_state", approvalState);
+  if (status) params.set("status", status);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/approvals?${params}`);
+}
+
+export function getPolymarketControlPlaneIncidents({
+  incidentType,
+  conditionId,
+  assetId,
+  start,
+  end,
+  limit = 50,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (incidentType) params.set("incident_type", incidentType);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/incidents?${params}`);
+}
+
+export function getPolymarketShadowEvaluations({
+  variantName,
+  conditionId,
+  assetId,
+  start,
+  end,
+  limit = 50,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (variantName) params.set("variant_name", variantName);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/shadow-evaluations?${params}`);
+}
+
+export function getPolymarketLiveOrders({
+  assetId,
+  conditionId,
+  status,
+  strategyFamily,
+  approvalState,
+  clientOrderId,
+  venueOrderId,
+  start,
+  end,
+  limit = 50,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (assetId) params.set("asset_id", assetId);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (status) params.set("status", status);
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (approvalState) params.set("approval_state", approvalState);
+  if (clientOrderId) params.set("client_order_id", clientOrderId);
+  if (venueOrderId) params.set("venue_order_id", venueOrderId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/orders?${params}`);
+}
+
+export function getPolymarketLiveOrderEvents({
+  assetId,
+  conditionId,
+  status,
+  strategyFamily,
+  approvalState,
+  clientOrderId,
+  venueOrderId,
+  start,
+  end,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (assetId) params.set("asset_id", assetId);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (status) params.set("status", status);
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (approvalState) params.set("approval_state", approvalState);
+  if (clientOrderId) params.set("client_order_id", clientOrderId);
+  if (venueOrderId) params.set("venue_order_id", venueOrderId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/orders/events?${params}`);
+}
+
+export function getPolymarketLiveFills({
+  assetId,
+  conditionId,
+  status,
+  strategyFamily,
+  approvalState,
+  clientOrderId,
+  venueOrderId,
+  start,
+  end,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (assetId) params.set("asset_id", assetId);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (status) params.set("status", status);
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (approvalState) params.set("approval_state", approvalState);
+  if (clientOrderId) params.set("client_order_id", clientOrderId);
+  if (venueOrderId) params.set("venue_order_id", venueOrderId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/fills?${params}`);
+}
+
+export function approvePolymarketLiveOrder(liveOrderId, body) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/orders/${liveOrderId}/approve`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function rejectPolymarketLiveOrder(liveOrderId, body) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/orders/${liveOrderId}/reject`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function submitPolymarketLiveOrder(liveOrderId, body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/orders/${liveOrderId}/submit`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function cancelPolymarketLiveOrder(liveOrderId, body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/orders/${liveOrderId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function setPolymarketLiveKillSwitch(enabled) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/kill-switch`, {
+    method: "POST",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function getPolymarketMarketTape({ conditionId, assetId, limit = 25 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/tape?${params}`);
 }
 
 export function getChartData(marketId, range = "24h") {

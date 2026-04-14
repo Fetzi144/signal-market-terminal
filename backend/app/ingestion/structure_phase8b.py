@@ -24,6 +24,7 @@ from app.ingestion.polymarket_execution_policy import (
     _resolve_taker_fee_rate,
     _to_decimal,
 )
+from app.ingestion.polymarket_risk_graph import assess_structure_plan_risk
 from app.metrics import (
     polymarket_structure_current_opportunities,
     polymarket_structure_informational_only_opportunities,
@@ -1366,6 +1367,9 @@ async def _structure_risk_check(
     plan: MarketStructurePaperPlan,
     exclude_plan_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
+    graph_result = await assess_structure_plan_risk(session, plan=plan)
+    if graph_result is not None:
+        return graph_result
     open_positions = await _list_open_structure_exposure_positions(session, exclude_plan_id=exclude_plan_id)
     bankroll = Decimal(str(settings.default_bankroll))
     resolved_trades = (

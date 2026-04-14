@@ -223,9 +223,16 @@ def serialize_live_order(order: LiveOrder) -> dict[str, Any]:
         "avg_fill_price": _serialize_decimal(order.avg_fill_price),
         "status": order.status,
         "dry_run": order.dry_run,
+        "strategy_family": order.strategy_family,
+        "pilot_config_id": order.pilot_config_id,
+        "pilot_run_id": str(order.pilot_run_id) if order.pilot_run_id is not None else None,
         "manual_approval_required": order.manual_approval_required,
+        "approval_state": order.approval_state,
+        "approval_requested_at": order.approval_requested_at,
+        "approval_expires_at": order.approval_expires_at,
         "approved_by": order.approved_by,
         "approved_at": order.approved_at,
+        "blocked_reason_code": order.blocked_reason_code,
         "kill_switch_blocked": order.kill_switch_blocked,
         "allowlist_blocked": order.allowlist_blocked,
         "validation_error": order.validation_error,
@@ -307,8 +314,12 @@ async def list_live_orders(
     asset_id: str | None = None,
     condition_id: str | None = None,
     status: str | None = None,
+    strategy_family: str | None = None,
+    approval_state: str | None = None,
     client_order_id: str | None = None,
     venue_order_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     query = select(LiveOrder).order_by(LiveOrder.created_at.desc())
@@ -318,10 +329,18 @@ async def list_live_orders(
         query = query.where(LiveOrder.condition_id == condition_id)
     if status:
         query = query.where(LiveOrder.status == status)
+    if strategy_family:
+        query = query.where(LiveOrder.strategy_family == strategy_family)
+    if approval_state:
+        query = query.where(LiveOrder.approval_state == approval_state)
     if client_order_id:
         query = query.where(LiveOrder.client_order_id == client_order_id)
     if venue_order_id:
         query = query.where(LiveOrder.venue_order_id == venue_order_id)
+    if start is not None:
+        query = query.where(LiveOrder.created_at >= _ensure_utc(start))
+    if end is not None:
+        query = query.where(LiveOrder.created_at <= _ensure_utc(end))
     result = await session.execute(query.limit(limit))
     return [serialize_live_order(row) for row in result.scalars().all()]
 
@@ -332,8 +351,12 @@ async def list_live_order_events(
     asset_id: str | None = None,
     condition_id: str | None = None,
     status: str | None = None,
+    strategy_family: str | None = None,
+    approval_state: str | None = None,
     client_order_id: str | None = None,
     venue_order_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     query = (
@@ -347,10 +370,18 @@ async def list_live_order_events(
         query = query.where(LiveOrder.condition_id == condition_id)
     if status:
         query = query.where(LiveOrder.status == status)
+    if strategy_family:
+        query = query.where(LiveOrder.strategy_family == strategy_family)
+    if approval_state:
+        query = query.where(LiveOrder.approval_state == approval_state)
     if client_order_id:
         query = query.where(LiveOrder.client_order_id == client_order_id)
     if venue_order_id:
         query = query.where(LiveOrder.venue_order_id == venue_order_id)
+    if start is not None:
+        query = query.where(LiveOrderEvent.observed_at_local >= _ensure_utc(start))
+    if end is not None:
+        query = query.where(LiveOrderEvent.observed_at_local <= _ensure_utc(end))
     result = await session.execute(query.limit(limit))
     return [serialize_live_order_event(row) for row in result.scalars().all()]
 
@@ -361,8 +392,12 @@ async def list_live_fills(
     asset_id: str | None = None,
     condition_id: str | None = None,
     status: str | None = None,
+    strategy_family: str | None = None,
+    approval_state: str | None = None,
     client_order_id: str | None = None,
     venue_order_id: str | None = None,
+    start: datetime | None = None,
+    end: datetime | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     query = select(LiveFill).order_by(LiveFill.observed_at_local.desc(), LiveFill.id.desc())
@@ -372,12 +407,20 @@ async def list_live_fills(
         query = query.where(LiveFill.condition_id == condition_id)
     if status:
         query = query.where(LiveFill.fill_status == status)
-    if client_order_id or venue_order_id:
+    if client_order_id or venue_order_id or strategy_family or approval_state:
         query = query.join(LiveOrder, LiveOrder.id == LiveFill.live_order_id)
         if client_order_id:
             query = query.where(LiveOrder.client_order_id == client_order_id)
         if venue_order_id:
             query = query.where(LiveOrder.venue_order_id == venue_order_id)
+        if strategy_family:
+            query = query.where(LiveOrder.strategy_family == strategy_family)
+        if approval_state:
+            query = query.where(LiveOrder.approval_state == approval_state)
+    if start is not None:
+        query = query.where(LiveFill.observed_at_local >= _ensure_utc(start))
+    if end is not None:
+        query = query.where(LiveFill.observed_at_local <= _ensure_utc(end))
     result = await session.execute(query.limit(limit))
     return [serialize_live_fill(row) for row in result.scalars().all()]
 
@@ -428,6 +471,8 @@ async def compute_outstanding_reservations(session: AsyncSession) -> Decimal:
 
 
 async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
+    from app.execution.polymarket_control_plane import get_active_pilot_config, get_open_pilot_run
+
     state = await fetch_live_state_row(session)
     outstanding_reservations = await compute_outstanding_reservations(session)
     outstanding_live_orders = int(
@@ -450,6 +495,8 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
         )
     )
     kill_switch = effective_kill_switch_enabled(state)
+    active_pilot = await get_active_pilot_config(session)
+    active_pilot_run = await get_open_pilot_run(session, pilot_config_id=active_pilot.id) if active_pilot is not None else None
     polymarket_live_kill_switch.set(1 if kill_switch else 0)
     if state is not None and state.last_user_stream_message_at is not None:
         polymarket_live_last_user_stream_message_timestamp.set(state.last_user_stream_message_at.timestamp())
@@ -483,6 +530,10 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
         "last_reconcile_success_at": state.last_reconcile_success_at if state is not None else None,
         "last_reconcile_error": state.last_reconcile_error if state is not None else None,
         "last_reconcile_error_at": state.last_reconcile_error_at if state is not None else None,
+        "heartbeat_healthy": state.heartbeat_healthy if state is not None else None,
+        "heartbeat_last_checked_at": state.heartbeat_last_checked_at if state is not None else None,
+        "heartbeat_last_success_at": state.heartbeat_last_success_at if state is not None else None,
+        "heartbeat_last_error": state.heartbeat_last_error if state is not None else None,
         "outstanding_live_orders": outstanding_live_orders,
         "outstanding_reservations": float(outstanding_reservations),
         "recent_fills_24h": recent_fills_24h,
@@ -490,5 +541,10 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
             settings.polymarket_live_trading_enabled
             and not settings.polymarket_live_dry_run
             and not kill_switch
+            and active_pilot is not None
+            and active_pilot.armed
+            and active_pilot.live_enabled
+            and active_pilot_run is not None
+            and active_pilot_run.status != "paused"
         ),
     }

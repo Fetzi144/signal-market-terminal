@@ -134,22 +134,44 @@ def make_outcome(session, market_id, **kwargs):
 
 def make_price_snapshot(session, outcome_id, price, captured_at=None, **kwargs):
     from app.models.snapshot import PriceSnapshot
+    from app.models.market import Outcome
     if captured_at is None:
         captured_at = datetime.now(timezone.utc)
+    sync_session = getattr(session, "sync_session", session)
+    outcome = next(
+        (
+            obj
+            for obj in sync_session.identity_map.values()
+            if isinstance(obj, Outcome) and obj.id == outcome_id
+        ),
+        None,
+    )
     s = PriceSnapshot(
         outcome_id=outcome_id,
         price=Decimal(str(price)),
         captured_at=captured_at,
         **kwargs,
     )
+    if outcome is not None:
+        s.outcome = outcome
     session.add(s)
     return s
 
 
 def make_orderbook_snapshot(session, outcome_id, spread, depth_bid=None, depth_ask=None, captured_at=None, **kwargs):
     from app.models.snapshot import OrderbookSnapshot
+    from app.models.market import Outcome
     if captured_at is None:
         captured_at = datetime.now(timezone.utc)
+    sync_session = getattr(session, "sync_session", session)
+    outcome = next(
+        (
+            obj
+            for obj in sync_session.identity_map.values()
+            if isinstance(obj, Outcome) and obj.id == outcome_id
+        ),
+        None,
+    )
     s = OrderbookSnapshot(
         outcome_id=outcome_id,
         bids=kwargs.pop("bids", []),
@@ -160,13 +182,25 @@ def make_orderbook_snapshot(session, outcome_id, spread, depth_bid=None, depth_a
         captured_at=captured_at,
         **kwargs,
     )
+    if outcome is not None:
+        s.outcome = outcome
     session.add(s)
     return s
 
 
 def make_signal(session, market_id, outcome_id, **kwargs):
     from app.models.signal import Signal
+    from app.models.market import Outcome
     now = datetime.now(timezone.utc)
+    sync_session = getattr(session, "sync_session", session)
+    outcome = next(
+        (
+            obj
+            for obj in sync_session.identity_map.values()
+            if isinstance(obj, Outcome) and obj.id == outcome_id
+        ),
+        None,
+    )
     defaults = dict(
         id=uuid.uuid4(),
         signal_type="price_move",
@@ -183,6 +217,8 @@ def make_signal(session, market_id, outcome_id, **kwargs):
     )
     defaults.update(kwargs)
     s = Signal(**defaults)
+    if outcome is not None:
+        s.outcome = outcome
     session.add(s)
     return s
 

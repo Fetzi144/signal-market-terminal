@@ -9,6 +9,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db import get_db, get_session_factory
+from app.ingestion.polymarket_maker_economics import (
+    evaluate_structure_maker_economics,
+    generate_quote_recommendation,
+    get_latest_maker_economics_snapshot,
+    get_latest_quote_recommendation,
+    list_maker_economics_snapshots,
+    list_quote_recommendations,
+)
 from app.ingestion.structure_engine import (
     fetch_market_structure_status,
     list_market_structure_runs,
@@ -171,6 +179,10 @@ class StructurePlanRejectRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=512)
 
 
+class StructureMakerRequest(BaseModel):
+    as_of: datetime | None = None
+
+
 @router.get("/status", response_model=StructureStatusOut)
 async def get_market_structure_status(db: AsyncSession = Depends(get_db)):
     return await fetch_market_structure_status(db)
@@ -287,6 +299,45 @@ async def get_market_structure_opportunity_detail_view(
     return detail
 
 
+@router.get("/opportunities/{opportunity_id}/maker-economics/latest")
+async def get_market_structure_opportunity_maker_economics_latest(
+    opportunity_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    detail = await get_latest_maker_economics_snapshot(db, opportunity_id=opportunity_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Maker economics snapshot not found")
+    return detail
+
+
+@router.post("/opportunities/{opportunity_id}/maker-economics")
+async def run_market_structure_opportunity_maker_economics(
+    opportunity_id: int,
+    body: StructureMakerRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await evaluate_structure_maker_economics(db, opportunity_id=opportunity_id, as_of=body.as_of)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/opportunities/{opportunity_id}/quote-recommendations")
+async def run_market_structure_opportunity_quote_recommendation(
+    opportunity_id: int,
+    body: StructureMakerRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        return await generate_quote_recommendation(db, opportunity_id=opportunity_id, as_of=body.as_of)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.get("/legs", response_model=StructureQueryOut)
 async def get_market_structure_opportunity_legs(
     opportunity_id: int | None = Query(default=None),
@@ -307,6 +358,61 @@ async def get_market_structure_opportunity_legs(
         limit=limit,
     )
     return StructureQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/maker-economics/snapshots", response_model=StructureQueryOut)
+async def get_market_structure_maker_economics_snapshots(
+    opportunity_id: int | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_maker_economics_snapshots(
+        db,
+        opportunity_id=opportunity_id,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        status=status,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return StructureQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/quote-recommendations", response_model=StructureQueryOut)
+async def get_market_structure_quote_recommendations(
+    opportunity_id: int | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_quote_recommendations(
+        db,
+        opportunity_id=opportunity_id,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        status=status,
+        limit=limit,
+    )
+    return StructureQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/opportunities/{opportunity_id}/quote-recommendations/latest")
+async def get_market_structure_opportunity_quote_recommendation_latest(
+    opportunity_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    detail = await get_latest_quote_recommendation(db, opportunity_id=opportunity_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Quote recommendation not found")
+    return detail
 
 
 @router.post("/groups/build", response_model=StructureRunOut)

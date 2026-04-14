@@ -1,4 +1,5 @@
 """Health and observability endpoint."""
+from typing import Any
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -9,11 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
+from app.execution.polymarket_control_plane import compute_live_shadow_summary, fetch_pilot_status
 from app.execution.polymarket_live_state import fetch_polymarket_live_status
 from app.ingestion.polymarket_book_reconstruction import fetch_polymarket_book_recon_status
 from app.ingestion.polymarket_execution_policy import fetch_polymarket_execution_policy_status
+from app.ingestion.polymarket_maker_economics import fetch_polymarket_maker_status
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
 from app.ingestion.polymarket_microstructure import fetch_polymarket_feature_status
+from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
+from app.ingestion.polymarket_risk_graph import fetch_polymarket_risk_graph_status
 from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
 from app.ingestion.structure_engine import fetch_market_structure_status
 from app.models.ingestion import IngestionRun
@@ -179,6 +184,99 @@ class PolymarketPhase8AStatus(BaseModel):
     pending_approval_count: int
 
 
+class PolymarketPhase9Status(BaseModel):
+    enabled: bool
+    fee_history_enabled: bool
+    reward_history_enabled: bool
+    quote_optimizer_enabled: bool
+    quote_optimizer_max_notional: float
+    quote_optimizer_max_age_seconds: int
+    quote_optimizer_require_rewards_data: bool
+    quote_optimizer_require_fee_data: bool
+    last_fee_sync_at: datetime | None = None
+    last_reward_sync_at: datetime | None = None
+    last_snapshot_at: datetime | None = None
+    last_recommendation_at: datetime | None = None
+    fee_history_rows: int
+    reward_history_rows: int
+    economics_snapshot_rows: int
+    quote_recommendation_rows: int
+    reward_state_counts: dict[str, int]
+    recent_reason_counts_24h: dict[str, int]
+    fee_freshness_seconds: int | None = None
+    reward_freshness_seconds: int | None = None
+
+
+class PolymarketPhase10ExposureBucket(BaseModel):
+    node_key: str
+    node_type: str
+    label: str | None = None
+    gross_notional_usd: float | None = None
+    net_notional_usd: float | None = None
+    hedged_fraction: float | None = None
+
+
+class PolymarketPhase10Status(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    portfolio_optimizer_enabled: bool
+    portfolio_optimizer_interval_seconds: int
+    advisory_only: bool
+    live_disabled_by_default: bool
+    last_successful_graph_build_at: datetime | None = None
+    last_successful_exposure_snapshot_at: datetime | None = None
+    last_successful_optimizer_run_at: datetime | None = None
+    last_graph_build_status: str | None = None
+    last_exposure_snapshot_status: str | None = None
+    last_optimizer_status: str | None = None
+    top_concentrated_exposures: list[PolymarketPhase10ExposureBucket]
+    recent_block_reason_counts_24h: dict[str, int]
+    maker_budget_used_usd: float | None = None
+    maker_budget_usd: float | None = None
+    taker_budget_used_usd: float | None = None
+    taker_budget_usd: float | None = None
+    maker_budget_utilization: float
+    taker_budget_utilization: float
+
+
+class PolymarketPhase11Status(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    default_window_minutes: int
+    max_scenarios_per_run: int
+    structure_enabled: bool
+    maker_enabled: bool
+    risk_adjustments_enabled: bool
+    require_complete_book_coverage: bool
+    passive_fill_timeout_seconds: int
+    advisory_only: bool
+    live_disabled_by_default: bool
+    last_replay_run: dict[str, Any] | None = None
+    last_successful_policy_comparison: dict[str, Any] | None = None
+    recent_scenario_count_24h: int
+    recent_coverage_limited_run_count_24h: int
+    recent_failed_run_count_24h: int
+    recent_variant_summary: dict[str, dict[str, Any]]
+
+
+class PolymarketPhase12Status(BaseModel):
+    pilot_enabled: bool
+    live_trading_enabled: bool
+    pilot_armed: bool
+    pilot_paused: bool
+    active_pilot_family: str | None = None
+    manual_approval_required: bool
+    approval_queue_count: int
+    heartbeat_status: str
+    user_stream_connected: bool
+    recent_incident_count_24h: int
+    live_shadow_summary: dict[str, Any]
+    last_reconcile_success_at: datetime | None = None
+    kill_switch_enabled: bool
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -195,6 +293,10 @@ class HealthOut(BaseModel):
     polymarket_phase6: PolymarketPhase6Status
     polymarket_phase7a: PolymarketPhase7AStatus
     polymarket_phase8a: PolymarketPhase8AStatus
+    polymarket_phase9: PolymarketPhase9Status
+    polymarket_phase10: PolymarketPhase10Status
+    polymarket_phase11: PolymarketPhase11Status
+    polymarket_phase12: PolymarketPhase12Status
 
 
 @router.get("/health", response_model=HealthOut)
@@ -243,6 +345,11 @@ async def health(db: AsyncSession = Depends(get_db)):
     polymarket_phase6 = await fetch_polymarket_execution_policy_status(db)
     polymarket_phase7a = await fetch_polymarket_live_status(db)
     polymarket_phase8a = await fetch_market_structure_status(db)
+    polymarket_phase9 = await fetch_polymarket_maker_status(db)
+    polymarket_phase10 = await fetch_polymarket_risk_graph_status(db)
+    polymarket_phase11 = await fetch_polymarket_replay_status(db)
+    polymarket_phase12_pilot = await fetch_pilot_status(db)
+    polymarket_phase12_shadow = await compute_live_shadow_summary(db)
 
     return HealthOut(
         status="ok",
@@ -416,4 +523,93 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "pending_approval_count",
             )
         }),
+        polymarket_phase9=PolymarketPhase9Status(**{
+            key: polymarket_phase9[key]
+            for key in (
+                "enabled",
+                "fee_history_enabled",
+                "reward_history_enabled",
+                "quote_optimizer_enabled",
+                "quote_optimizer_max_notional",
+                "quote_optimizer_max_age_seconds",
+                "quote_optimizer_require_rewards_data",
+                "quote_optimizer_require_fee_data",
+                "last_fee_sync_at",
+                "last_reward_sync_at",
+                "last_snapshot_at",
+                "last_recommendation_at",
+                "fee_history_rows",
+                "reward_history_rows",
+                "economics_snapshot_rows",
+                "quote_recommendation_rows",
+                "reward_state_counts",
+                "recent_reason_counts_24h",
+                "fee_freshness_seconds",
+                "reward_freshness_seconds",
+            )
+        }),
+        polymarket_phase10=PolymarketPhase10Status(**{
+            key: polymarket_phase10[key]
+            for key in (
+                "enabled",
+                "on_startup",
+                "interval_seconds",
+                "portfolio_optimizer_enabled",
+                "portfolio_optimizer_interval_seconds",
+                "advisory_only",
+                "live_disabled_by_default",
+                "last_successful_graph_build_at",
+                "last_successful_exposure_snapshot_at",
+                "last_successful_optimizer_run_at",
+                "last_graph_build_status",
+                "last_exposure_snapshot_status",
+                "last_optimizer_status",
+                "top_concentrated_exposures",
+                "recent_block_reason_counts_24h",
+                "maker_budget_used_usd",
+                "maker_budget_usd",
+                "taker_budget_used_usd",
+                "taker_budget_usd",
+                "maker_budget_utilization",
+                "taker_budget_utilization",
+            )
+        }),
+        polymarket_phase11=PolymarketPhase11Status(**{
+            key: polymarket_phase11[key]
+            for key in (
+                "enabled",
+                "on_startup",
+                "interval_seconds",
+                "default_window_minutes",
+                "max_scenarios_per_run",
+                "structure_enabled",
+                "maker_enabled",
+                "risk_adjustments_enabled",
+                "require_complete_book_coverage",
+                "passive_fill_timeout_seconds",
+                "advisory_only",
+                "live_disabled_by_default",
+                "last_replay_run",
+                "last_successful_policy_comparison",
+                "recent_scenario_count_24h",
+                "recent_coverage_limited_run_count_24h",
+                "recent_failed_run_count_24h",
+                "recent_variant_summary",
+            )
+        }),
+        polymarket_phase12=PolymarketPhase12Status(
+            pilot_enabled=polymarket_phase12_pilot["pilot_enabled"],
+            live_trading_enabled=polymarket_phase7a["enabled"],
+            pilot_armed=bool(polymarket_phase12_pilot["active_pilot"] and polymarket_phase12_pilot["active_pilot"]["armed"]),
+            pilot_paused=bool(polymarket_phase12_pilot["active_run"] and polymarket_phase12_pilot["active_run"]["status"] == "paused"),
+            active_pilot_family=polymarket_phase12_pilot["active_pilot"]["strategy_family"] if polymarket_phase12_pilot["active_pilot"] is not None else None,
+            manual_approval_required=polymarket_phase12_pilot["manual_approval_required"],
+            approval_queue_count=polymarket_phase12_pilot["approval_queue_count"],
+            heartbeat_status=polymarket_phase12_pilot["heartbeat_status"],
+            user_stream_connected=polymarket_phase7a["user_stream_connected"],
+            recent_incident_count_24h=polymarket_phase12_pilot["recent_incident_count_24h"],
+            live_shadow_summary=polymarket_phase12_shadow,
+            last_reconcile_success_at=polymarket_phase7a["last_reconcile_success_at"],
+            kill_switch_enabled=polymarket_phase12_pilot["kill_switch_enabled"],
+        ),
     )

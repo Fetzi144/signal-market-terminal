@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.config import settings
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
+from app.models.signal import Signal
 from app.paper_trading.engine import (
     attempt_open_trade,
     get_metrics,
@@ -40,6 +41,17 @@ def _make_paper_trade(session, signal_id, outcome_id, market_id, **kwargs):
     )
     defaults.update(kwargs)
     t = PaperTrade(**defaults)
+    sync_session = getattr(session, "sync_session", session)
+    signal = next(
+        (
+            obj
+            for obj in sync_session.identity_map.values()
+            if isinstance(obj, Signal) and obj.id == signal_id
+        ),
+        None,
+    )
+    if signal is not None:
+        t.signal = signal
     session.add(t)
     return t
 

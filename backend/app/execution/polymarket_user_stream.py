@@ -10,6 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.execution.polymarket_control_plane import (
+    get_active_pilot_config,
+    get_open_pilot_run,
+    record_control_plane_incident,
+)
 from app.execution.polymarket_gateway import GatewayUnavailableError, PolymarketGateway
 from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
 from app.execution.polymarket_live_state import (
@@ -21,6 +26,24 @@ from app.metrics import polymarket_user_stream_reconnects
 from app.models.polymarket_live_execution import LiveOrder, PolymarketUserEventRaw
 
 logger = logging.getLogger(__name__)
+
+
+async def _record_disconnect_incident(
+    session: AsyncSession,
+    *,
+    reason: str,
+) -> None:
+    config = await get_active_pilot_config(session)
+    if config is None:
+        return
+    run = await get_open_pilot_run(session, pilot_config_id=config.id)
+    await record_control_plane_incident(
+        session,
+        severity="warning",
+        incident_type="user_stream_disconnect",
+        details={"reason": reason},
+        pilot_run=run,
+    )
 
 
 class PolymarketUserStreamService:
@@ -115,6 +138,7 @@ class PolymarketUserStreamService:
                         connected=False,
                         error=str(exc),
                     )
+                    await _record_disconnect_incident(session, reason=str(exc))
                     await session.commit()
                 await asyncio.sleep(reconnect_delay)
                 continue
@@ -156,6 +180,7 @@ class PolymarketUserStreamService:
                         session_id=stream_session_id,
                         error="recv_timeout",
                     )
+                    await _record_disconnect_incident(session, reason="recv_timeout")
                     await session.commit()
                 reconnect_delay = min(
                     reconnect_delay * 2,
@@ -171,6 +196,7 @@ class PolymarketUserStreamService:
                         session_id=stream_session_id,
                         error=str(exc),
                     )
+                    await _record_disconnect_incident(session, reason=str(exc))
                     await session.commit()
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(

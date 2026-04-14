@@ -1,6 +1,7 @@
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -8,6 +9,14 @@ import respx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.ingestion.polymarket_maker_economics import (
+    insert_reward_history_if_changed,
+    insert_token_fee_history_if_changed,
+    lookup_current_reward_state,
+    lookup_current_token_fee_state,
+    lookup_reward_history,
+    lookup_token_fee_history,
+)
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
 from app.ingestion.polymarket_stream import PolymarketStreamService, ensure_watch_registry_bootstrapped
 from app.models.polymarket_metadata import (
@@ -92,6 +101,20 @@ def _gamma_market_payload(*, include_params=True):
     return payload
 
 
+def _reward_payload(*, status="active", reward_daily_rate="1.25"):
+    return {
+        "condition_id": "cond-1",
+        "status": status,
+        "reward_program_id": "program-1",
+        "reward_daily_rate": reward_daily_rate,
+        "min_incentive_size": "1",
+        "max_incentive_spread": "0.05",
+        "start_date": "2026-04-13T09:00:00Z",
+        "end_date": "2026-04-14T09:00:00Z",
+        "rewards_config": [{"rate": reward_daily_rate, "pool": "base"}],
+    }
+
+
 @pytest.mark.asyncio
 async def test_gamma_sync_bootstrap_creates_registry_and_is_idempotent(engine):
     session_factory = _session_factory(engine)
@@ -110,6 +133,15 @@ async def test_gamma_sync_bootstrap_creates_registry_and_is_idempotent(engine):
         router.get("https://gamma-api.polymarket.com/markets/keyset").mock(
             return_value=httpx.Response(200, json={"markets": [_gamma_market_payload()]})
         )
+        router.get("https://clob.polymarket.com/fee-rate/token-yes").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-no").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/rewards/markets/current").mock(
+            return_value=httpx.Response(200, json={"markets": [_reward_payload()], "next_cursor": None})
+        )
         first_run = await service.sync_metadata(reason="manual")
 
     with respx.mock(assert_all_called=True) as router:
@@ -118,6 +150,15 @@ async def test_gamma_sync_bootstrap_creates_registry_and_is_idempotent(engine):
         )
         router.get("https://gamma-api.polymarket.com/markets/keyset").mock(
             return_value=httpx.Response(200, json={"markets": [_gamma_market_payload()]})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-yes").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-no").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/rewards/markets/current").mock(
+            return_value=httpx.Response(200, json={"markets": [_reward_payload()], "next_cursor": None})
         )
         second_run = await service.sync_metadata(reason="manual")
     await service.close()
@@ -250,6 +291,15 @@ async def test_missing_watched_asset_metadata_is_seeded_from_books(engine):
         router.get("https://gamma-api.polymarket.com/markets/keyset").mock(
             return_value=httpx.Response(200, json={"markets": [_gamma_market_payload(include_params=False)]})
         )
+        router.get("https://clob.polymarket.com/fee-rate/token-yes").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-no").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/rewards/markets/current").mock(
+            return_value=httpx.Response(200, json={"markets": [_reward_payload()], "next_cursor": None})
+        )
         router.post("https://clob.polymarket.com/books").mock(
             return_value=httpx.Response(
                 200,
@@ -287,6 +337,184 @@ async def test_missing_watched_asset_metadata_is_seeded_from_books(engine):
 
 
 @pytest.mark.asyncio
+async def test_maker_history_lookup_supports_effective_time_queries(engine):
+    session_factory = _session_factory(engine)
+    observed_at = datetime(2026, 4, 13, 10, 0, tzinfo=timezone.utc)
+    effective_old = observed_at - timedelta(minutes=30)
+    effective_new = observed_at + timedelta(minutes=30)
+
+    async with session_factory() as session:
+        event_dim = PolymarketEventDim(
+            gamma_event_id="evt-history",
+            event_slug="maker-history",
+            title="Maker History",
+            active=True,
+            closed=False,
+            archived=False,
+            neg_risk=False,
+            last_gamma_sync_at=observed_at,
+            source_payload_json={},
+        )
+        session.add(event_dim)
+        await session.flush()
+
+        market_dim = PolymarketMarketDim(
+            gamma_market_id="mkt-history",
+            condition_id="cond-history",
+            market_slug="maker-history",
+            question="History market?",
+            description="History market",
+            event_dim_id=event_dim.id,
+            enable_order_book=True,
+            active=True,
+            closed=False,
+            archived=False,
+            accepting_orders=True,
+            resolved=False,
+            resolution_state="open",
+            fees_enabled=True,
+            fee_schedule_json={"rate": "0.02"},
+            maker_base_fee=Decimal("0.0000"),
+            taker_base_fee=Decimal("0.0200"),
+            last_gamma_sync_at=observed_at,
+            source_payload_json={},
+        )
+        session.add(market_dim)
+        await session.flush()
+
+        asset_dim = PolymarketAssetDim(
+            asset_id="token-history",
+            condition_id=market_dim.condition_id,
+            market_dim_id=market_dim.id,
+            outcome_name="Yes",
+            outcome_index=0,
+            active=True,
+            last_gamma_sync_at=observed_at,
+            source_payload_json={},
+        )
+        session.add(asset_dim)
+        await session.flush()
+
+        assert await insert_token_fee_history_if_changed(
+            session,
+            market_dim=market_dim,
+            asset_dim=asset_dim,
+            condition_id=market_dim.condition_id,
+            asset_id=asset_dim.asset_id,
+            source_kind="test_fee",
+            effective_at_exchange=effective_old,
+            observed_at_local=observed_at,
+            sync_run_id=None,
+            fees_enabled=True,
+            maker_fee_rate=Decimal("0.0000"),
+            taker_fee_rate=Decimal("0.0200"),
+            token_base_fee_rate=Decimal("6.0000"),
+            fee_schedule_json={"rate": "0.02"},
+        ) is True
+        assert await insert_token_fee_history_if_changed(
+            session,
+            market_dim=market_dim,
+            asset_dim=asset_dim,
+            condition_id=market_dim.condition_id,
+            asset_id=asset_dim.asset_id,
+            source_kind="test_fee",
+            effective_at_exchange=effective_new,
+            observed_at_local=observed_at + timedelta(minutes=1),
+            sync_run_id=None,
+            fees_enabled=True,
+            maker_fee_rate=Decimal("0.0005"),
+            taker_fee_rate=Decimal("0.0180"),
+            token_base_fee_rate=Decimal("5.5000"),
+            fee_schedule_json={"rate": "0.018"},
+        ) is True
+        assert await insert_reward_history_if_changed(
+            session,
+            market_dim=market_dim,
+            condition_id=market_dim.condition_id,
+            source_kind="test_reward",
+            effective_at_exchange=effective_old,
+            observed_at_local=observed_at,
+            sync_run_id=None,
+            reward_status="active",
+            reward_program_id="program-old",
+            reward_daily_rate=Decimal("1.2500"),
+            min_incentive_size=Decimal("1.0000"),
+            max_incentive_spread=Decimal("0.0500"),
+            start_at_exchange=effective_old,
+            end_at_exchange=effective_new,
+            rewards_config_json=[{"rate": "1.25"}],
+        ) is True
+        assert await insert_reward_history_if_changed(
+            session,
+            market_dim=market_dim,
+            condition_id=market_dim.condition_id,
+            source_kind="test_reward",
+            effective_at_exchange=effective_new,
+            observed_at_local=observed_at + timedelta(minutes=1),
+            sync_run_id=None,
+            reward_status="expired",
+            reward_program_id="program-new",
+            reward_daily_rate=Decimal("0.5000"),
+            min_incentive_size=Decimal("2.0000"),
+            max_incentive_spread=Decimal("0.0200"),
+            start_at_exchange=effective_new,
+            end_at_exchange=effective_new + timedelta(hours=1),
+            rewards_config_json=[{"rate": "0.50"}],
+        ) is True
+        await session.commit()
+
+        fee_history = await lookup_token_fee_history(
+            session,
+            asset_id="token-history",
+            condition_id="cond-history",
+            start=None,
+            end=None,
+            limit=10,
+        )
+        current_fee_old = await lookup_current_token_fee_state(
+            session,
+            asset_id="token-history",
+            condition_id="cond-history",
+            as_of=effective_old + timedelta(minutes=1),
+            limit=10,
+        )
+        current_fee_new = await lookup_current_token_fee_state(
+            session,
+            asset_id="token-history",
+            condition_id="cond-history",
+            as_of=effective_new + timedelta(minutes=1),
+            limit=10,
+        )
+        reward_history = await lookup_reward_history(
+            session,
+            condition_id="cond-history",
+            start=None,
+            end=None,
+            limit=10,
+        )
+        current_reward_old = await lookup_current_reward_state(
+            session,
+            condition_id="cond-history",
+            as_of=effective_old + timedelta(minutes=1),
+            limit=10,
+        )
+        current_reward_new = await lookup_current_reward_state(
+            session,
+            condition_id="cond-history",
+            as_of=effective_new + timedelta(minutes=1),
+            limit=10,
+        )
+
+    assert len(fee_history) == 2
+    assert current_fee_old[0]["taker_fee_rate"] == "0.02000000"
+    assert current_fee_new[0]["taker_fee_rate"] == "0.01800000"
+    assert current_fee_new[0]["token_base_fee_rate"] == "5.50000000"
+    assert len(reward_history) == 2
+    assert current_reward_old[0]["reward_status"] == "active"
+    assert current_reward_new[0]["reward_status"] == "expired"
+
+
+@pytest.mark.asyncio
 async def test_metadata_sync_api_lookup_and_health_serialization(client):
     with respx.mock(assert_all_called=True) as router:
         router.get("https://gamma-api.polymarket.com/events/keyset").mock(
@@ -295,10 +523,21 @@ async def test_metadata_sync_api_lookup_and_health_serialization(client):
         router.get("https://gamma-api.polymarket.com/markets/keyset").mock(
             return_value=httpx.Response(200, json={"markets": [_gamma_market_payload()]})
         )
+        router.get("https://clob.polymarket.com/fee-rate/token-yes").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-no").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/rewards/markets/current").mock(
+            return_value=httpx.Response(200, json={"markets": [_reward_payload()], "next_cursor": None})
+        )
         response = await client.post("/api/v1/ingest/polymarket/meta-sync", json={"reason": "manual"})
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
+    assert response.json()["details_json"]["fee_rows_inserted"] == 2
+    assert response.json()["details_json"]["reward_rows_inserted"] == 1
 
     status_response = await client.get("/api/v1/ingest/polymarket/meta-sync/status")
     assert status_response.status_code == 200
@@ -320,10 +559,36 @@ async def test_metadata_sync_api_lookup_and_health_serialization(client):
     assert history_lookup.status_code == 200
     assert history_lookup.json()["rows"]
 
+    fee_status = await client.get("/api/v1/ingest/polymarket/maker-economics/status")
+    assert fee_status.status_code == 200
+    assert fee_status.json()["fee_history_rows"] == 2
+    assert fee_status.json()["reward_history_rows"] == 1
+
+    current_fee = await client.get("/api/v1/ingest/polymarket/maker-economics/fees/current?asset_id=token-yes")
+    assert current_fee.status_code == 200
+    assert current_fee.json()["rows"][0]["asset_id"] == "token-yes"
+    assert current_fee.json()["rows"][0]["token_base_fee_rate"] == "6.00000000"
+
+    fee_history = await client.get("/api/v1/ingest/polymarket/maker-economics/fees/history?asset_id=token-yes")
+    assert fee_history.status_code == 200
+    assert fee_history.json()["rows"]
+
+    current_reward = await client.get("/api/v1/ingest/polymarket/maker-economics/rewards/current?condition_id=cond-1")
+    assert current_reward.status_code == 200
+    assert current_reward.json()["rows"][0]["reward_status"] == "active"
+
+    reward_history = await client.get("/api/v1/ingest/polymarket/maker-economics/rewards/history?condition_id=cond-1")
+    assert reward_history.status_code == 200
+    assert reward_history.json()["rows"]
+
     ingest_status = await client.get("/api/v1/ingest/polymarket/status")
     assert ingest_status.status_code == 200
     assert ingest_status.json()["metadata_sync"]["last_run_status"] == "completed"
+    assert ingest_status.json()["maker_economics"]["fee_history_rows"] == 2
+    assert ingest_status.json()["maker_economics"]["reward_history_rows"] == 1
 
     health = await client.get("/api/v1/health")
     assert health.status_code == 200
     assert health.json()["polymarket_phase2"]["last_run_status"] == "completed"
+    assert health.json()["polymarket_phase9"]["fee_history_rows"] == 2
+    assert health.json()["polymarket_phase9"]["reward_state_counts"]["active"] == 1

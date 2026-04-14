@@ -9,6 +9,7 @@ import {
   triggerPolymarketFeatureMaterialization,
   triggerPolymarketOiPoll,
   triggerPolymarketRawProjector,
+  triggerPolymarketReplay,
   triggerPolymarketResync,
   triggerPolymarketStructureGroupBuild,
   triggerPolymarketStructureOpportunityScan,
@@ -39,6 +40,7 @@ export default function Health() {
   const [isFeatureMaterializing, setIsFeatureMaterializing] = useState(false);
   const [isStructureBuilding, setIsStructureBuilding] = useState(false);
   const [isStructureScanning, setIsStructureScanning] = useState(false);
+  const [isReplaying, setIsReplaying] = useState(false);
   const [updatingWatchAssetId, setUpdatingWatchAssetId] = useState(null);
   const intervalRef = useRef(null);
 
@@ -215,6 +217,19 @@ export default function Health() {
     }
   };
 
+  const handleReplayRun = async () => {
+    try {
+      setIsReplaying(true);
+      setActionError(null);
+      await triggerPolymarketReplay({ reason: "manual", run_type: "policy_compare" });
+      await fetchData();
+    } catch (e) {
+      setActionError(e.message);
+    } finally {
+      setIsReplaying(false);
+    }
+  };
+
   if ((!health || !streamStatus) && !error) {
     return (
       <div>
@@ -245,6 +260,10 @@ export default function Health() {
   const featureStatus = streamStatus?.features || health?.polymarket_phase5 || null;
   const executionPolicy = streamStatus?.execution_policy || health?.polymarket_phase6 || null;
   const liveExecution = health?.polymarket_phase7a || null;
+  const makerEconomics = streamStatus?.maker_economics || health?.polymarket_phase9 || null;
+  const riskGraph = health?.polymarket_phase10 || null;
+  const replayStatus = health?.polymarket_phase11 || null;
+  const phase12Status = health?.polymarket_phase12 || null;
   const structureStatus = health?.polymarket_phase8a || streamStatus?.structure_engine || null;
 
   return (
@@ -736,6 +755,241 @@ export default function Health() {
           </div>
         </div>
 
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 9 Maker Economics</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {makerEconomics?.enabled ? "Enabled" : "Disabled"} | Fee sync {formatShortDateTime(makerEconomics?.last_fee_sync_at)} | Reward sync {formatShortDateTime(makerEconomics?.last_reward_sync_at)}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard label="Fee Rows" value={makerEconomics?.fee_history_rows ?? 0} />
+            <StatCard label="Reward Rows" value={makerEconomics?.reward_history_rows ?? 0} />
+            <StatCard label="Snapshots" value={makerEconomics?.economics_snapshot_rows ?? 0} />
+            <StatCard label="Recommendations" value={makerEconomics?.quote_recommendation_rows ?? 0} />
+            <StatCard label="Fee Freshness" value={makerEconomics?.fee_freshness_seconds != null ? `${makerEconomics.fee_freshness_seconds}s` : "-"} />
+            <StatCard label="Reward Freshness" value={makerEconomics?.reward_freshness_seconds != null ? `${makerEconomics.reward_freshness_seconds}s` : "-"} />
+            <StatCard label="Max Quote Notional" value={makerEconomics?.quote_optimizer_max_notional != null ? Number(makerEconomics.quote_optimizer_max_notional).toFixed(2) : "-"} />
+            <StatCard label="Max Input Age" value={makerEconomics?.quote_optimizer_max_age_seconds != null ? `${makerEconomics.quote_optimizer_max_age_seconds}s` : "-"} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Reward States</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {formatActionMix(makerEconomics?.reward_state_counts)}
+              </div>
+            </div>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Recent Reason Codes</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {formatActionMix(makerEconomics?.recent_reason_counts_24h)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 10 Risk Graph and Portfolio Optimizer</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {riskGraph?.enabled ? "Enabled" : "Disabled"} | Advisory only | Live disabled {riskGraph?.live_disabled_by_default ? "yes" : "no"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard label="Last Graph Build" value={formatShortDateTime(riskGraph?.last_successful_graph_build_at)} />
+            <StatCard label="Last Snapshot" value={formatShortDateTime(riskGraph?.last_successful_exposure_snapshot_at)} />
+            <StatCard label="Last Optimizer" value={formatShortDateTime(riskGraph?.last_successful_optimizer_run_at)} />
+            <StatCard label="Graph Status" value={riskGraph?.last_graph_build_status || "-"} />
+            <StatCard label="Snapshot Status" value={riskGraph?.last_exposure_snapshot_status || "-"} />
+            <StatCard label="Optimizer Status" value={riskGraph?.last_optimizer_status || "-"} />
+            <StatCard
+              label="Maker Budget"
+              value={riskGraph?.maker_budget_usd != null ? `${Number(riskGraph.maker_budget_used_usd || 0).toFixed(2)} / ${Number(riskGraph.maker_budget_usd).toFixed(2)}` : "-"}
+            />
+            <StatCard
+              label="Taker Budget"
+              value={riskGraph?.taker_budget_usd != null ? `${Number(riskGraph.taker_budget_used_usd || 0).toFixed(2)} / ${Number(riskGraph.taker_budget_usd).toFixed(2)}` : "-"}
+            />
+            <StatCard
+              label="Maker Utilization"
+              value={riskGraph?.maker_budget_utilization != null ? `${Math.round(riskGraph.maker_budget_utilization * 100)}%` : "-"}
+            />
+            <StatCard
+              label="Taker Utilization"
+              value={riskGraph?.taker_budget_utilization != null ? `${Math.round(riskGraph.taker_budget_utilization * 100)}%` : "-"}
+            />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Top Concentrated Buckets</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {riskGraph?.top_concentrated_exposures?.length
+                  ? riskGraph.top_concentrated_exposures.map((row) => `${row.node_type}:${row.label || row.node_key}`).join(" | ")
+                  : "-"}
+              </div>
+            </div>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Recent Blocks / No-Quote</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {formatActionMix(riskGraph?.recent_block_reason_counts_24h)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 11 Replay Simulator and Backtest Expansion</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {replayStatus?.enabled ? "Enabled" : "Disabled"} | Advisory only | Live disabled {replayStatus?.live_disabled_by_default ? "yes" : "no"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard label="Last Replay" value={formatShortDateTime(replayStatus?.last_replay_run?.started_at)} />
+            <StatCard label="Last Policy Compare" value={formatShortDateTime(replayStatus?.last_successful_policy_comparison?.started_at)} />
+            <StatCard label="Scenarios (24h)" value={replayStatus?.recent_scenario_count_24h ?? 0} />
+            <StatCard label="Coverage-Limited Runs" value={replayStatus?.recent_coverage_limited_run_count_24h ?? 0} />
+            <StatCard label="Failed Runs" value={replayStatus?.recent_failed_run_count_24h ?? 0} />
+            <StatCard
+              label="Window / Timeout"
+              value={replayStatus ? `${replayStatus.default_window_minutes}m / ${replayStatus.passive_fill_timeout_seconds}s` : "-"}
+            />
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            {(Object.entries(replayStatus?.recent_variant_summary || {})).length === 0 ? (
+              <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12, fontSize: 12, color: "var(--text-dim)" }}>
+                No replay policy comparison metrics yet.
+              </div>
+            ) : (
+              Object.entries(replayStatus?.recent_variant_summary || {}).map(([variantName, metric]) => (
+                <div key={variantName} style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>{variantName}</div>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                    {formatReplayVariantSummary(metric)}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={handleReplayRun}
+              disabled={isReplaying || !replayStatus?.enabled}
+              style={{
+                ...secondaryButtonStyle,
+                opacity: isReplaying || !replayStatus?.enabled ? 0.65 : 1,
+                cursor: isReplaying ? "wait" : (!replayStatus?.enabled ? "not-allowed" : "pointer"),
+              }}
+            >
+              {isReplaying ? "Replaying..." : "Run Replay"}
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 12 Live Pilot and Control Plane</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {phase12Status?.live_trading_enabled ? "Live enabled" : "Live disabled"} | {phase12Status?.pilot_armed ? "Armed" : "Disarmed"} | {phase12Status?.manual_approval_required ? "Manual approval" : "Approval bypassed"}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+              marginBottom: 12,
+            }}
+          >
+            <StatCard label="Pilot Enabled" value={phase12Status?.pilot_enabled ? "Yes" : "No"} />
+            <StatCard label="Pilot Paused" value={phase12Status?.pilot_paused ? "Yes" : "No"} />
+            <StatCard label="Active Family" value={phase12Status?.active_pilot_family || "none"} />
+            <StatCard label="Approval Queue" value={phase12Status?.approval_queue_count ?? 0} />
+            <StatCard label="Heartbeat" value={phase12Status?.heartbeat_status || "-"} />
+            <StatCard label="User Stream" value={phase12Status?.user_stream_connected ? "Connected" : "Disconnected"} />
+            <StatCard label="Incidents (24h)" value={phase12Status?.recent_incident_count_24h ?? 0} />
+            <StatCard label="Kill Switch" value={phase12Status?.kill_switch_enabled ? "On" : "Off"} />
+            <StatCard label="Last Reconcile" value={formatShortDateTime(phase12Status?.last_reconcile_success_at)} />
+            <StatCard label="Avg Gap" value={formatBps(phase12Status?.live_shadow_summary?.average_gap_bps_24h)} />
+            <StatCard label="Worst Gap" value={formatBps(phase12Status?.live_shadow_summary?.worst_gap_bps_24h)} />
+            <StatCard label="Gap Breaches" value={phase12Status?.live_shadow_summary?.breach_count_24h ?? 0} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Pilot Semantics</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                One narrow pilot family only. Live submission stays fail-closed until the pilot is explicitly armed and each eligible live intent is approved.
+              </div>
+            </div>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Shadow Evaluation</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {phase12Status?.live_shadow_summary?.recent_count_24h ?? 0} comparisons in the last 24h with conservative coverage limits carried forward from replay provenance.
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
           <TablePanel
             title="Recent Incidents"
@@ -1055,6 +1309,19 @@ function formatActionMix(value) {
   return Object.entries(value)
     .map(([action, count]) => `${action}:${count}`)
     .join(" | ");
+}
+
+function formatBps(value) {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return `${Number(value).toFixed(1)} bps`;
+}
+
+function formatReplayVariantSummary(metric) {
+  if (!metric) return "-";
+  const netPnl = metric.net_pnl != null ? Number(metric.net_pnl).toFixed(4) : "-";
+  const fillRate = metric.fill_rate != null ? `${Math.round(Number(metric.fill_rate) * 100)}%` : "-";
+  const slippage = metric.slippage_bps != null ? `${Number(metric.slippage_bps).toFixed(1)} bps` : "-";
+  return `Net ${netPnl} | Fill ${fillRate} | Slip ${slippage}`;
 }
 
 const panelStyle = {
