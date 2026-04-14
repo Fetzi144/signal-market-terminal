@@ -125,3 +125,11 @@ class TestDefaults:
         assert s.shadow_execution_max_staleness_seconds == 180
         assert s.shadow_execution_max_forward_seconds == 30
         assert s.shadow_execution_min_fill_pct == 0.20
+        assert s.polymarket_execution_policy_enabled is False
+        assert s.polymarket_execution_policy_require_live_book is True
+        assert s.polymarket_execution_policy_default_horizon_ms == 1000
+        assert s.polymarket_execution_policy_passive_lookback_hours == 24
+        assert s.polymarket_execution_policy_passive_min_label_rows == 20
+        assert s.polymarket_execution_policy_max_cross_slippage_bps == 150.0
+        assert s.polymarket_execution_policy_step_ahead_enabled is True
+        assert s.polymarket_execution_policy_min_net_ev_bps == 0.0

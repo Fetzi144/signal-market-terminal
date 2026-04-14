@@ -3,6 +3,7 @@ from app.models.execution_decision import ExecutionDecision
 from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
 from app.models.paper_trade import PaperTrade
+from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
 from app.models.polymarket_metadata import (
     PolymarketAssetDim,
     PolymarketEventDim,
@@ -58,6 +59,7 @@ __all__ = [
     "BacktestRun",
     "BacktestSignal",
     "ExecutionDecision",
+    "PolymarketExecutionActionCandidate",
     "Position",
     "Trade",
     "PolymarketMarketEvent",

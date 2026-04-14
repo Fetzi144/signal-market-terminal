@@ -41,6 +41,22 @@ const healthPayload = {
   unresolved_signals: 7,
   recent_alerts_24h: 3,
   alert_threshold: 0.82,
+  polymarket_phase6: {
+    enabled: true,
+    require_live_book: true,
+    default_horizon_ms: 1000,
+    passive_lookback_hours: 24,
+    passive_min_label_rows: 20,
+    step_ahead_enabled: true,
+    max_cross_slippage_bps: 150.0,
+    min_net_ev_bps: 0.0,
+    last_successful_decision_at: "2026-04-13T10:05:00Z",
+    recent_decisions_24h: 5,
+    recent_action_mix: { cross_now: 2, post_best: 1, step_ahead: 1, skip: 1 },
+    recent_invalid_candidates_24h: 3,
+    recent_skip_decisions_24h: 1,
+    recent_avg_est_net_ev_bps: 17.25,
+  },
   ingestion: [
     {
       run_type: "market_discovery",
@@ -151,6 +167,22 @@ const ingestPayload = {
     recent_label_rows_24h: 18,
     incomplete_bucket_count_24h: 2,
     recent_runs: [],
+  },
+  execution_policy: {
+    enabled: true,
+    require_live_book: true,
+    default_horizon_ms: 1000,
+    passive_lookback_hours: 24,
+    passive_min_label_rows: 20,
+    step_ahead_enabled: true,
+    max_cross_slippage_bps: 150.0,
+    min_net_ev_bps: 0.0,
+    last_successful_decision_at: "2026-04-13T10:05:00Z",
+    recent_decisions_24h: 5,
+    recent_action_mix: { cross_now: 2, post_best: 1, step_ahead: 1, skip: 1 },
+    recent_invalid_candidates_24h: 3,
+    recent_skip_decisions_24h: 1,
+    recent_avg_est_net_ev_bps: 17.25,
   },
   recent_incidents: [
     {
@@ -360,6 +392,8 @@ describe("Health", () => {
     expect(screen.getByText("Phase 3 Raw Storage")).toBeInTheDocument();
     expect(screen.getByText("Phase 4 Book Reconstruction")).toBeInTheDocument();
     expect(screen.getByText("Phase 5 Derived Research")).toBeInTheDocument();
+    expect(screen.getByText("Phase 6 Execution Policy")).toBeInTheDocument();
+    expect(screen.getByText(/cross_now:2/)).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 

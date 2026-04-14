@@ -82,6 +82,14 @@ class Settings(BaseSettings):
     polymarket_feature_buckets_ms: str = "100,1000"
     polymarket_label_horizons_ms: str = "250,1000,5000"
     polymarket_features_max_watched_assets: int = 50
+    polymarket_execution_policy_enabled: bool = False
+    polymarket_execution_policy_require_live_book: bool = True
+    polymarket_execution_policy_default_horizon_ms: int = 1000
+    polymarket_execution_policy_passive_lookback_hours: int = 24
+    polymarket_execution_policy_passive_min_label_rows: int = 20
+    polymarket_execution_policy_max_cross_slippage_bps: float = 150.0
+    polymarket_execution_policy_step_ahead_enabled: bool = True
+    polymarket_execution_policy_min_net_ev_bps: float = 0.0
 
     # Multi-Timeframe Analysis
     # Timeframes per detector type (comma-separated). Default is single timeframe.
@@ -282,11 +290,24 @@ class Settings(BaseSettings):
         "polymarket_book_recon_bootstrap_lookback_hours",
         "polymarket_features_lookback_hours",
         "polymarket_features_max_watched_assets",
+        "polymarket_execution_policy_default_horizon_ms",
+        "polymarket_execution_policy_passive_lookback_hours",
+        "polymarket_execution_policy_passive_min_label_rows",
     )
     @classmethod
     def limits_must_be_positive(cls, v: int) -> int:
         if v < 1:
             raise ValueError("Limit must be >= 1")
+        return v
+
+    @field_validator(
+        "polymarket_execution_policy_max_cross_slippage_bps",
+        "polymarket_execution_policy_min_net_ev_bps",
+    )
+    @classmethod
+    def polymarket_execution_policy_thresholds_must_be_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("Execution policy threshold must be >= 0")
         return v
 
     @field_validator(

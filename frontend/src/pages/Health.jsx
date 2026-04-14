@@ -213,6 +213,7 @@ export default function Health() {
   const rawStorage = streamStatus?.raw_storage || null;
   const bookReconstruction = streamStatus?.book_reconstruction || health?.polymarket_phase4 || null;
   const featureStatus = streamStatus?.features || health?.polymarket_phase5 || null;
+  const executionPolicy = streamStatus?.execution_policy || health?.polymarket_phase6 || null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -547,6 +548,47 @@ export default function Health() {
           </div>
         </div>
 
+        <div
+          style={{
+            background: "rgba(255, 255, 255, 0.02)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: 14,
+            marginBottom: 16,
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 6 Execution Policy</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              {executionPolicy?.enabled ? "Enabled" : "Disabled"} | Last decision {formatShortDateTime(executionPolicy?.last_successful_decision_at)}
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <StatCard label="Recent Decisions (24h)" value={executionPolicy?.recent_decisions_24h ?? 0} />
+            <StatCard
+              label="Action Mix"
+              value={formatActionMix(executionPolicy?.recent_action_mix)}
+            />
+            <StatCard label="Invalid Candidates" value={executionPolicy?.recent_invalid_candidates_24h ?? 0} />
+            <StatCard label="Skip Decisions" value={executionPolicy?.recent_skip_decisions_24h ?? 0} />
+            <StatCard
+              label="Avg Net EV"
+              value={executionPolicy?.recent_avg_est_net_ev_bps != null ? `${Number(executionPolicy.recent_avg_est_net_ev_bps).toFixed(1)} bps` : "-"}
+            />
+            <StatCard
+              label="Horizon / Labels"
+              value={executionPolicy ? `${executionPolicy.default_horizon_ms}ms / ${executionPolicy.passive_min_label_rows}` : "-"}
+            />
+          </div>
+        </div>
+
+
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16 }}>
           <TablePanel
             title="Recent Incidents"
@@ -859,6 +901,13 @@ function shortId(value) {
   const text = String(value);
   if (text.length <= 12) return text;
   return `${text.slice(0, 8)}...${text.slice(-4)}`;
+}
+
+function formatActionMix(value) {
+  if (!value || Object.keys(value).length === 0) return "-";
+  return Object.entries(value)
+    .map(([action, count]) => `${action}:${count}`)
+    .join(" | ");
 }
 
 const panelStyle = {

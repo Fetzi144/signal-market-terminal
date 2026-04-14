@@ -295,3 +295,48 @@ polymarket_incomplete_bucket_count = Gauge(
     "smt_polymarket_incomplete_bucket_count",
     "Current count of incomplete Polymarket derived feature buckets",
 )
+
+# Polymarket Phase 6 execution policy
+polymarket_execution_action_candidates_evaluated = Counter(
+    "smt_polymarket_execution_action_candidates_evaluated_total",
+    "Total Polymarket execution action candidates evaluated",
+    ["action_type"],
+)
+
+polymarket_execution_chosen_decisions = Counter(
+    "smt_polymarket_execution_chosen_decisions_total",
+    "Total Polymarket execution policy decisions chosen",
+)
+
+polymarket_execution_chosen_actions = Counter(
+    "smt_polymarket_execution_chosen_actions_total",
+    "Total Polymarket execution policy decisions by chosen action type",
+    ["action_type"],
+)
+
+polymarket_execution_invalid_candidates = Counter(
+    "smt_polymarket_execution_invalid_candidates_total",
+    "Total invalid Polymarket execution action candidates",
+    ["action_type", "reason"],
+)
+
+polymarket_execution_skip_decisions = Counter(
+    "smt_polymarket_execution_skip_decisions_total",
+    "Total Polymarket execution policy skip decisions",
+)
+
+polymarket_execution_decision_failures = Counter(
+    "smt_polymarket_execution_decision_failures_total",
+    "Total Polymarket execution policy evaluation failures",
+)
+
+polymarket_execution_last_success_timestamp = Gauge(
+    "smt_polymarket_execution_last_success_timestamp",
+    "Unix timestamp of the most recent successful Polymarket execution policy evaluation",
+)
+
+polymarket_execution_estimated_slippage_bps = Histogram(
+    "smt_polymarket_execution_estimated_slippage_bps",
+    "Estimated slippage versus touch or midpoint for Polymarket execution actions in basis points",
+    ["action_type"],
+)

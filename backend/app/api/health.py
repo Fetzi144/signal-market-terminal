@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import get_db
 from app.ingestion.polymarket_book_reconstruction import fetch_polymarket_book_recon_status
+from app.ingestion.polymarket_execution_policy import fetch_polymarket_execution_policy_status
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
 from app.ingestion.polymarket_microstructure import fetch_polymarket_feature_status
 from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
@@ -86,6 +87,23 @@ class PolymarketPhase5Status(BaseModel):
     incomplete_bucket_count_24h: int
 
 
+class PolymarketPhase6Status(BaseModel):
+    enabled: bool
+    require_live_book: bool
+    default_horizon_ms: int
+    passive_lookback_hours: int
+    passive_min_label_rows: int
+    step_ahead_enabled: bool
+    max_cross_slippage_bps: float
+    min_net_ev_bps: float
+    last_successful_decision_at: datetime | None = None
+    recent_decisions_24h: int
+    recent_action_mix: dict[str, int]
+    recent_invalid_candidates_24h: int
+    recent_skip_decisions_24h: int
+    recent_avg_est_net_ev_bps: float | None = None
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -99,6 +117,7 @@ class HealthOut(BaseModel):
     polymarket_phase3: PolymarketPhase3Status
     polymarket_phase4: PolymarketPhase4Status
     polymarket_phase5: PolymarketPhase5Status
+    polymarket_phase6: PolymarketPhase6Status
 
 
 @router.get("/health", response_model=HealthOut)
@@ -144,6 +163,7 @@ async def health(db: AsyncSession = Depends(get_db)):
     polymarket_phase3 = await fetch_polymarket_raw_storage_status(db)
     polymarket_phase4 = await fetch_polymarket_book_recon_status(db)
     polymarket_phase5 = await fetch_polymarket_feature_status(db)
+    polymarket_phase6 = await fetch_polymarket_execution_policy_status(db)
 
     return HealthOut(
         status="ok",
@@ -219,6 +239,25 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "recent_feature_rows_24h",
                 "recent_label_rows_24h",
                 "incomplete_bucket_count_24h",
+            )
+        }),
+        polymarket_phase6=PolymarketPhase6Status(**{
+            key: polymarket_phase6[key]
+            for key in (
+                "enabled",
+                "require_live_book",
+                "default_horizon_ms",
+                "passive_lookback_hours",
+                "passive_min_label_rows",
+                "step_ahead_enabled",
+                "max_cross_slippage_bps",
+                "min_net_ev_bps",
+                "last_successful_decision_at",
+                "recent_decisions_24h",
+                "recent_action_mix",
+                "recent_invalid_candidates_24h",
+                "recent_skip_decisions_24h",
+                "recent_avg_est_net_ev_bps",
             )
         }),
     )

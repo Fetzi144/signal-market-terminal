@@ -21,6 +21,14 @@ from app.ingestion.polymarket_book_reconstruction import (
     trigger_manual_polymarket_book_recon_catchup,
     trigger_manual_polymarket_book_recon_resync,
 )
+from app.ingestion.polymarket_execution_policy import (
+    evaluate_polymarket_execution_policy_dry_run,
+    fetch_polymarket_execution_action_mix,
+    fetch_polymarket_execution_invalidation_reasons,
+    fetch_polymarket_execution_policy_status,
+    lookup_polymarket_execution_action_candidates,
+    lookup_polymarket_execution_decisions,
+)
 from app.ingestion.polymarket_metadata import (
     fetch_polymarket_meta_sync_status,
     list_polymarket_meta_sync_runs,
@@ -171,6 +179,23 @@ class PolymarketFeatureStatusOut(BaseModel):
     recent_label_rows_24h: int
     incomplete_bucket_count_24h: int
     recent_runs: list[PolymarketFeatureRunOut]
+
+
+class PolymarketExecutionPolicyStatusOut(BaseModel):
+    enabled: bool
+    require_live_book: bool
+    default_horizon_ms: int
+    passive_lookback_hours: int
+    passive_min_label_rows: int
+    step_ahead_enabled: bool
+    max_cross_slippage_bps: float
+    min_net_ev_bps: float
+    last_successful_decision_at: datetime | None = None
+    recent_decisions_24h: int
+    recent_action_mix: dict[str, int]
+    recent_invalid_candidates_24h: int
+    recent_skip_decisions_24h: int
+    recent_avg_est_net_ev_bps: float | None = None
 
 
 class PolymarketRawStorageStatusOut(BaseModel):
@@ -357,6 +382,7 @@ class PolymarketIngestStatusOut(BaseModel):
     raw_storage: PolymarketRawStorageStatusOut
     book_reconstruction: PolymarketBookReconStatusOut
     features: PolymarketFeatureStatusOut
+    execution_policy: PolymarketExecutionPolicyStatusOut
 
 
 class PolymarketManualResyncRequest(BaseModel):
@@ -493,6 +519,21 @@ class PolymarketHistoryQueryOut(BaseModel):
     limit: int
 
 
+class PolymarketExecutionPolicyDryRunRequest(BaseModel):
+    signal_id: uuid.UUID
+
+
+class PolymarketExecutionPolicyDryRunOut(BaseModel):
+    applicable: bool
+    policy_version: str | None = None
+    reason: str | None = None
+    signal_id: str | None = None
+    context: dict[str, Any] | None = None
+    chosen_reason: str | None = None
+    chosen_candidate: dict[str, Any] | None = None
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class PolymarketBookReconStateQueryOut(BaseModel):
     rows: list[PolymarketBookReconStateOut]
     limit: int
@@ -556,6 +597,7 @@ async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
     status["raw_storage"] = await fetch_polymarket_raw_storage_status(db)
     status["book_reconstruction"] = await fetch_polymarket_book_recon_status(db)
     status["features"] = await fetch_polymarket_feature_status(db)
+    status["execution_policy"] = await fetch_polymarket_execution_policy_status(db)
     return status
 
 
@@ -1009,6 +1051,112 @@ async def get_polymarket_passive_fill_label_rows(
         limit=limit,
     )
     return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/execution-policy/status", response_model=PolymarketExecutionPolicyStatusOut)
+async def get_polymarket_execution_policy_status(
+    db: AsyncSession = Depends(get_db),
+):
+    return await fetch_polymarket_execution_policy_status(db)
+
+
+@router.get("/execution-policy/action-candidates", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_execution_action_candidates(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    action_type: str | None = Query(default=None),
+    valid: bool | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_execution_action_candidates(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        action_type=action_type,
+        valid=valid,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/execution-policy/decisions", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_execution_decisions(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    signal_id: uuid.UUID | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await lookup_polymarket_execution_decisions(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        signal_id=signal_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/execution-policy/invalidation-reasons", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_execution_invalidation_reasons(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await fetch_polymarket_execution_invalidation_reasons(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/execution-policy/action-mix", response_model=PolymarketHistoryQueryOut)
+async def get_polymarket_execution_action_mix(
+    asset_id: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await fetch_polymarket_execution_action_mix(
+        db,
+        asset_id=asset_id,
+        condition_id=condition_id,
+        start=start,
+        end=end,
+    )
+    return PolymarketHistoryQueryOut(rows=rows, limit=len(rows))
+
+
+@router.post("/execution-policy/dry-run", response_model=PolymarketExecutionPolicyDryRunOut)
+async def run_polymarket_execution_policy_dry_run(
+    body: PolymarketExecutionPolicyDryRunRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        result = await evaluate_polymarket_execution_policy_dry_run(
+            db,
+            signal_id=body.signal_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PolymarketExecutionPolicyDryRunOut(**result)
 
 
 @router.get("/raw/status", response_model=PolymarketRawStorageStatusOut)

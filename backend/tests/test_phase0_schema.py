@@ -7,6 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
+from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
 from app.models.signal import Signal
 from app.models.strategy_run import StrategyRun
 from tests.conftest import make_market, make_outcome, make_signal
@@ -57,6 +58,19 @@ async def test_phase0_model_schema_matches_build_sheet(session):
     assert execution_columns.net_expected_pnl_usd.nullable is True
     assert execution_columns.fill_status.nullable is True
     assert execution_columns.details.nullable is False
+    assert execution_columns.chosen_action_type.nullable is True
+    assert execution_columns.chosen_order_type_hint.nullable is True
+    assert execution_columns.chosen_target_price.nullable is True
+    assert execution_columns.chosen_target_size.nullable is True
+    assert execution_columns.chosen_est_fillable_size.nullable is True
+    assert execution_columns.chosen_est_fill_probability.nullable is True
+    assert execution_columns.chosen_est_net_ev_bps.nullable is True
+    assert execution_columns.chosen_est_net_ev_total.nullable is True
+    assert execution_columns.chosen_est_fee.nullable is True
+    assert execution_columns.chosen_est_slippage.nullable is True
+    assert execution_columns.chosen_policy_version.nullable is True
+    assert execution_columns.chosen_action_candidate_id.nullable is True
+    assert execution_columns.decision_reason_json.nullable is True
 
     execution_indexes = {
         index.name: tuple(column.name for column in index.columns)
@@ -68,6 +82,7 @@ async def test_phase0_model_schema_matches_build_sheet(session):
     )
     assert execution_indexes["ix_execution_decisions_reason_code"] == ("reason_code",)
     assert execution_indexes["ix_execution_decisions_fill_status"] == ("fill_status",)
+    assert execution_indexes["ix_execution_decisions_chosen_action_type"] == ("chosen_action_type",)
 
     execution_uniques = {
         tuple(column.name for column in constraint.columns)
@@ -94,6 +109,27 @@ async def test_phase0_model_schema_matches_build_sheet(session):
         if getattr(constraint, "name", None) == "uq_paper_trades_execution_decision_id"
     }
     assert ("execution_decision_id",) in paper_uniques
+
+    action_columns = PolymarketExecutionActionCandidate.__table__.c
+    assert action_columns.condition_id.nullable is False
+    assert action_columns.asset_id.nullable is False
+    assert action_columns.side.nullable is False
+    assert action_columns.action_type.nullable is False
+    assert action_columns.target_size.nullable is False
+    assert action_columns.valid.nullable is False
+    assert action_columns.decided_at.nullable is False
+
+    action_indexes = {
+        index.name: tuple(column.name for column in index.columns)
+        for index in PolymarketExecutionActionCandidate.__table__.indexes
+    }
+    assert action_indexes["ix_pm_execution_action_candidates_asset_decided"] == ("asset_id", "decided_at")
+    assert action_indexes["ix_pm_execution_action_candidates_condition_decided"] == ("condition_id", "decided_at")
+    assert action_indexes["ix_pm_execution_action_candidates_execution_decision_id"] == ("execution_decision_id",)
+    assert action_indexes["ix_pm_execution_action_candidates_signal_id"] == ("signal_id",)
+    assert action_indexes["ix_pm_execution_action_candidates_action_type"] == ("action_type",)
+    assert action_indexes["ix_pm_execution_action_candidates_valid"] == ("valid",)
+    assert action_indexes["ix_pm_execution_action_candidates_invalid_reason"] == ("invalid_reason",)
 
     assert session.bind is not None
 

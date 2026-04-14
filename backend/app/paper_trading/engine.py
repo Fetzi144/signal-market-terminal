@@ -16,6 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.default_strategy import default_strategy_skip_label
+from app.ingestion.polymarket_execution_policy import (
+    evaluate_polymarket_execution_policy,
+    persist_polymarket_execution_policy_result,
+)
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
 from app.models.snapshot import OrderbookSnapshot
@@ -33,6 +37,8 @@ REASON_LABELS = {
     "already_recorded": "Already recorded in run",
     "already_open": "Already open",
     "size_zero": "Recommended size is zero",
+    "execution_policy_skip": "Execution policy chose skip",
+    "execution_policy_failure": "Execution policy evaluation failed",
     "execution_missing_orderbook_context": "Missing orderbook context",
     "execution_stale_orderbook_context": "Stale orderbook context",
     "execution_no_fill": "No fill available",
@@ -235,6 +241,19 @@ async def build_execution_decision(
         risk_result: dict | None = None,
         approved_size_usd: Decimal | None = None,
         shares: Decimal | None = None,
+        chosen_action_type: str | None = None,
+        chosen_order_type_hint: str | None = None,
+        chosen_target_price: Decimal | None = None,
+        chosen_target_size: Decimal | None = None,
+        chosen_est_fillable_size: Decimal | None = None,
+        chosen_est_fill_probability: Decimal | None = None,
+        chosen_est_net_ev_bps: Decimal | None = None,
+        chosen_est_net_ev_total: Decimal | None = None,
+        chosen_est_fee: Decimal | None = None,
+        chosen_est_slippage: Decimal | None = None,
+        chosen_policy_version: str | None = None,
+        decision_reason_json: dict | None = None,
+        polymarket_policy_result=None,
     ) -> ExecutionDecisionBuildResult:
         label = reason_label or _reason_label(reason_code)
         execution_decision = None
@@ -257,6 +276,18 @@ async def build_execution_decision(
                     "shares": shares,
                     "risk_result": risk_result,
                     "diagnostics": diagnostics,
+                    "chosen_action_type": chosen_action_type,
+                    "chosen_order_type_hint": chosen_order_type_hint,
+                    "chosen_target_price": chosen_target_price,
+                    "chosen_target_size": chosen_target_size,
+                    "chosen_est_fillable_size": chosen_est_fillable_size,
+                    "chosen_est_fill_probability": chosen_est_fill_probability,
+                    "chosen_est_net_ev_bps": chosen_est_net_ev_bps,
+                    "chosen_est_net_ev_total": chosen_est_net_ev_total,
+                    "chosen_est_fee": chosen_est_fee,
+                    "chosen_est_slippage": chosen_est_slippage,
+                    "chosen_policy_version": chosen_policy_version,
+                    "decision_reason_json": decision_reason_json,
                 }
             )
             execution_decision = ExecutionDecision(
@@ -279,10 +310,28 @@ async def build_execution_decision(
                 liquidity_constrained=liquidity_constrained,
                 fill_status=fill_status,
                 reason_code=reason_code,
+                chosen_action_type=chosen_action_type,
+                chosen_order_type_hint=chosen_order_type_hint,
+                chosen_target_price=chosen_target_price,
+                chosen_target_size=chosen_target_size,
+                chosen_est_fillable_size=chosen_est_fillable_size,
+                chosen_est_fill_probability=chosen_est_fill_probability,
+                chosen_est_net_ev_bps=chosen_est_net_ev_bps,
+                chosen_est_net_ev_total=chosen_est_net_ev_total,
+                chosen_est_fee=chosen_est_fee,
+                chosen_est_slippage=chosen_est_slippage,
+                chosen_policy_version=chosen_policy_version,
+                decision_reason_json=_json_safe(decision_reason_json),
                 details=details_payload,
             )
             session.add(execution_decision)
             await session.flush()
+            if polymarket_policy_result is not None:
+                await persist_polymarket_execution_policy_result(
+                    session,
+                    result=polymarket_policy_result,
+                    execution_decision=execution_decision,
+                )
 
         return ExecutionDecisionBuildResult(
             execution_decision=execution_decision,
@@ -415,6 +464,334 @@ async def build_execution_decision(
             ideal_ev=ideal_ev,
             provisional_sizing=provisional_sizing,
         )
+
+    if settings.polymarket_execution_policy_enabled:
+        try:
+            policy_result = await evaluate_polymarket_execution_policy(
+                session,
+                signal_id=signal_id,
+                outcome_id=outcome_id,
+                market_id=market_id,
+                direction=ideal_ev["direction"],
+                estimated_probability=estimated_probability,
+                market_price=market_price,
+                decision_at=decision_at,
+                baseline_target_size=provisional_sizing["recommended_size_usd"],
+                bankroll=bankroll,
+            )
+        except Exception as exc:
+            logger.exception("Polymarket execution policy evaluation failed for signal %s", signal_id)
+            return await finish(
+                decision="skipped",
+                reason_code="execution_policy_failure",
+                detail=str(exc),
+                diagnostics={
+                    "direction": ideal_ev["direction"],
+                    "recommended_size_usd": str(provisional_sizing["recommended_size_usd"]),
+                },
+                direction=ideal_ev["direction"],
+                ideal_entry_price=ideal_ev["entry_price"],
+                requested_size_usd=provisional_sizing["recommended_size_usd"],
+                net_ev_per_share=ideal_ev["ev_per_share"],
+                ideal_ev=ideal_ev,
+                provisional_sizing=provisional_sizing,
+            )
+
+        if policy_result.applicable and policy_result.chosen_candidate is not None:
+            chosen = policy_result.chosen_candidate
+            chosen_fee = (chosen.est_taker_fee or ZERO) + (chosen.est_maker_fee or ZERO)
+            chosen_slippage = chosen.est_slippage_cost or ZERO
+            decision_reason_json = policy_result.choice_payload()
+            shadow_execution = policy_result.shadow_execution()
+            shadow_details = shadow_execution["details"]
+            executable_entry_price = chosen.est_avg_entry_price
+            fillable_size_usd = chosen.est_fillable_size or ZERO
+            fill_probability = chosen.est_fill_probability or ZERO
+            executable_ev = {
+                "direction": ideal_ev["direction"],
+                "entry_price": executable_entry_price,
+                "ev_per_share": chosen.est_net_ev_per_share,
+                "edge_pct": (
+                    str(((chosen.est_net_ev_bps or ZERO) / Decimal("10000")).quantize(Decimal("0.00000001")))
+                    if chosen.est_net_ev_bps is not None
+                    else None
+                ),
+            }
+            executable_sizing = (
+                kelly_size_for_trade(
+                    direction=ideal_ev["direction"],
+                    estimated_probability=estimated_probability,
+                    entry_price=executable_entry_price,
+                    bankroll=bankroll,
+                    kelly_fraction=Decimal(str(settings.kelly_multiplier)),
+                    max_position_pct=Decimal(str(settings.max_single_position_pct)),
+                )
+                if executable_entry_price is not None and executable_entry_price > ZERO
+                else {
+                    "direction": ideal_ev["direction"],
+                    "entry_price": executable_entry_price,
+                    "kelly_full": ZERO,
+                    "kelly_used": ZERO,
+                    "recommended_size_usd": ZERO,
+                }
+            )
+
+            if chosen.action_type == "skip":
+                return await finish(
+                    decision="skipped",
+                    reason_code="execution_policy_skip",
+                    detail=f"Execution policy chose skip ({policy_result.chosen_reason})",
+                    diagnostics={
+                        "direction": ideal_ev["direction"],
+                        "chosen_action_type": chosen.action_type,
+                        "chosen_order_type_hint": chosen.order_type_hint,
+                        "chosen_reason": policy_result.chosen_reason,
+                        "decision_reason_json": decision_reason_json,
+                    },
+                    direction=ideal_ev["direction"],
+                    ideal_entry_price=ideal_ev["entry_price"],
+                    executable_entry_price=executable_entry_price,
+                    requested_size_usd=chosen.target_size,
+                    fillable_size_usd=fillable_size_usd,
+                    fill_probability=fill_probability,
+                    net_ev_per_share=chosen.est_net_ev_per_share,
+                    net_expected_pnl_usd=chosen.est_net_ev_total,
+                    missing_orderbook_context=bool(shadow_details.get("missing_orderbook_context")),
+                    stale_orderbook_context=bool(shadow_details.get("stale_orderbook_context")),
+                    liquidity_constrained=bool(shadow_details.get("liquidity_constrained")),
+                    fill_status=shadow_details.get("fill_status"),
+                    ideal_ev=ideal_ev,
+                    provisional_sizing=provisional_sizing,
+                    shadow_execution=shadow_execution,
+                    executable_ev=executable_ev,
+                    executable_sizing=executable_sizing,
+                    fill_capped_size_usd=fillable_size_usd,
+                    chosen_action_type=chosen.action_type,
+                    chosen_order_type_hint=chosen.order_type_hint,
+                    chosen_target_price=chosen.est_avg_entry_price,
+                    chosen_target_size=chosen.target_size,
+                    chosen_est_fillable_size=chosen.est_fillable_size,
+                    chosen_est_fill_probability=chosen.est_fill_probability,
+                    chosen_est_net_ev_bps=chosen.est_net_ev_bps,
+                    chosen_est_net_ev_total=chosen.est_net_ev_total,
+                    chosen_est_fee=chosen_fee,
+                    chosen_est_slippage=chosen_slippage,
+                    chosen_policy_version=policy_result.policy_version,
+                    decision_reason_json=decision_reason_json,
+                    polymarket_policy_result=policy_result,
+                )
+
+            fill_capped_size_usd = min(executable_sizing["recommended_size_usd"], fillable_size_usd).quantize(Decimal("0.01"))
+            if executable_entry_price is None or executable_entry_price <= ZERO or fill_capped_size_usd <= ZERO:
+                return await finish(
+                    decision="skipped",
+                    reason_code="execution_size_zero_after_fill_cap",
+                    detail="Executable size became zero after applying the fill cap",
+                    diagnostics={
+                        "direction": ideal_ev["direction"],
+                        "chosen_action_type": chosen.action_type,
+                        "chosen_reason": policy_result.chosen_reason,
+                        "executable_entry_price": str(executable_entry_price) if executable_entry_price is not None else None,
+                        "fillable_size_usd": str(fillable_size_usd),
+                    },
+                    direction=ideal_ev["direction"],
+                    ideal_entry_price=ideal_ev["entry_price"],
+                    executable_entry_price=executable_entry_price,
+                    requested_size_usd=chosen.target_size,
+                    fillable_size_usd=fillable_size_usd,
+                    fill_probability=fill_probability,
+                    net_ev_per_share=chosen.est_net_ev_per_share,
+                    net_expected_pnl_usd=chosen.est_net_ev_total,
+                    missing_orderbook_context=bool(shadow_details.get("missing_orderbook_context")),
+                    stale_orderbook_context=bool(shadow_details.get("stale_orderbook_context")),
+                    liquidity_constrained=bool(shadow_details.get("liquidity_constrained")),
+                    fill_status=shadow_details.get("fill_status"),
+                    ideal_ev=ideal_ev,
+                    provisional_sizing=provisional_sizing,
+                    shadow_execution=shadow_execution,
+                    executable_ev=executable_ev,
+                    executable_sizing=executable_sizing,
+                    fill_capped_size_usd=fill_capped_size_usd,
+                    chosen_action_type=chosen.action_type,
+                    chosen_order_type_hint=chosen.order_type_hint,
+                    chosen_target_price=chosen.est_avg_entry_price,
+                    chosen_target_size=chosen.target_size,
+                    chosen_est_fillable_size=chosen.est_fillable_size,
+                    chosen_est_fill_probability=chosen.est_fill_probability,
+                    chosen_est_net_ev_bps=chosen.est_net_ev_bps,
+                    chosen_est_net_ev_total=chosen.est_net_ev_total,
+                    chosen_est_fee=chosen_fee,
+                    chosen_est_slippage=chosen_slippage,
+                    chosen_policy_version=policy_result.policy_version,
+                    decision_reason_json=decision_reason_json,
+                    polymarket_policy_result=policy_result,
+                )
+
+            portfolio = await _get_portfolio_state(session, strategy_run_id=strategy_run_id)
+            open_positions = [
+                {
+                    "size_usd": t.size_usd,
+                    "market_question": (t.details or {}).get("market_question", ""),
+                    "outcome_id": str(t.outcome_id),
+                }
+                for t in portfolio["open_trades"]
+            ]
+            peak_bankroll = bankroll
+            if portfolio["cumulative_pnl"] > ZERO:
+                peak_bankroll = bankroll + portfolio["cumulative_pnl"]
+
+            risk_result = check_exposure(
+                open_positions=open_positions,
+                new_trade={
+                    "size_usd": fill_capped_size_usd,
+                    "market_question": market_question,
+                    "outcome_id": str(outcome_id),
+                },
+                bankroll=bankroll,
+                max_total_pct=Decimal(str(settings.max_total_exposure_pct)),
+                max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
+                drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
+                peak_bankroll=peak_bankroll,
+                cumulative_pnl=portfolio["cumulative_pnl"],
+            )
+            if not risk_result["approved"]:
+                logger.info(
+                    "Paper trade rejected by risk check: %s (signal %s)",
+                    risk_result["reason"], signal_id,
+                )
+                reason_code = _risk_reason_code(risk_result["reason"])
+                return await finish(
+                    decision="skipped",
+                    reason_code=reason_code,
+                    detail=risk_result["reason"],
+                    diagnostics={
+                        "direction": ideal_ev["direction"],
+                        "chosen_action_type": chosen.action_type,
+                        "chosen_order_type_hint": chosen.order_type_hint,
+                        "chosen_reason": policy_result.chosen_reason,
+                        "recommended_size_usd": str(executable_sizing["recommended_size_usd"]),
+                        "fillable_size_usd": str(fillable_size_usd),
+                        "fill_capped_size_usd": str(fill_capped_size_usd),
+                        "approved_size_usd": str(risk_result["approved_size_usd"]),
+                        "risk_reason": risk_result["reason"],
+                        "drawdown_active": risk_result["drawdown_active"],
+                    },
+                    direction=ideal_ev["direction"],
+                    ideal_entry_price=ideal_ev["entry_price"],
+                    executable_entry_price=executable_entry_price,
+                    requested_size_usd=chosen.target_size,
+                    fillable_size_usd=fillable_size_usd,
+                    fill_probability=fill_probability,
+                    net_ev_per_share=chosen.est_net_ev_per_share,
+                    net_expected_pnl_usd=_net_expected_pnl_usd(
+                        chosen.est_net_ev_per_share,
+                        fill_capped_size_usd,
+                        executable_entry_price,
+                    ),
+                    missing_orderbook_context=bool(shadow_details.get("missing_orderbook_context")),
+                    stale_orderbook_context=bool(shadow_details.get("stale_orderbook_context")),
+                    liquidity_constrained=bool(shadow_details.get("liquidity_constrained")),
+                    fill_status=shadow_details.get("fill_status"),
+                    ideal_ev=ideal_ev,
+                    provisional_sizing=provisional_sizing,
+                    shadow_execution=shadow_execution,
+                    executable_ev=executable_ev,
+                    executable_sizing=executable_sizing,
+                    fill_capped_size_usd=fill_capped_size_usd,
+                    risk_result=risk_result,
+                    chosen_action_type=chosen.action_type,
+                    chosen_order_type_hint=chosen.order_type_hint,
+                    chosen_target_price=chosen.est_avg_entry_price,
+                    chosen_target_size=chosen.target_size,
+                    chosen_est_fillable_size=chosen.est_fillable_size,
+                    chosen_est_fill_probability=chosen.est_fill_probability,
+                    chosen_est_net_ev_bps=chosen.est_net_ev_bps,
+                    chosen_est_net_ev_total=chosen.est_net_ev_total,
+                    chosen_est_fee=chosen_fee,
+                    chosen_est_slippage=chosen_slippage,
+                    chosen_policy_version=policy_result.policy_version,
+                    decision_reason_json=decision_reason_json,
+                    polymarket_policy_result=policy_result,
+                )
+
+            approved_size_usd = risk_result["approved_size_usd"]
+            shares = (
+                (approved_size_usd / executable_entry_price).quantize(Decimal("0.0001"))
+                if executable_entry_price > ZERO
+                else ZERO
+            )
+            return await finish(
+                decision="opened",
+                reason_code="opened",
+                diagnostics={
+                    "direction": ideal_ev["direction"],
+                    "ideal_entry_price": str(ideal_ev["entry_price"]),
+                    "ideal_ev_per_share": str(ideal_ev["ev_per_share"]),
+                    "executable_entry_price": str(executable_entry_price),
+                    "ev_per_share": str(chosen.est_net_ev_per_share),
+                    "edge_pct": (
+                        str(((chosen.est_net_ev_bps or ZERO) / Decimal("10000")).quantize(Decimal("0.00000001")))
+                        if chosen.est_net_ev_bps is not None
+                        else None
+                    ),
+                    "kelly_full": str(executable_sizing["kelly_full"]),
+                    "kelly_used": str(executable_sizing["kelly_used"]),
+                    "recommended_size_usd": str(executable_sizing["recommended_size_usd"]),
+                    "fillable_size_usd": str(fillable_size_usd),
+                    "fill_capped_size_usd": str(fill_capped_size_usd),
+                    "approved_size_usd": str(approved_size_usd),
+                    "drawdown_active": risk_result["drawdown_active"],
+                    "shadow_entry_price": str(executable_entry_price),
+                    "liquidity_constrained": shadow_details.get("liquidity_constrained"),
+                    "missing_orderbook_context": shadow_details.get("missing_orderbook_context"),
+                    "stale_orderbook_context": shadow_details.get("stale_orderbook_context"),
+                    "shadow_fill_status": shadow_details.get("fill_status"),
+                    "shadow_fill_pct": shadow_details.get("fill_pct"),
+                    "chosen_action_type": chosen.action_type,
+                    "chosen_order_type_hint": chosen.order_type_hint,
+                    "chosen_reason": policy_result.chosen_reason,
+                    "decision_reason_json": decision_reason_json,
+                },
+                action=chosen.action_type,
+                direction=ideal_ev["direction"],
+                ideal_entry_price=ideal_ev["entry_price"],
+                executable_entry_price=executable_entry_price,
+                requested_size_usd=chosen.target_size,
+                fillable_size_usd=fillable_size_usd,
+                fill_probability=fill_probability,
+                net_ev_per_share=chosen.est_net_ev_per_share,
+                net_expected_pnl_usd=_net_expected_pnl_usd(
+                    chosen.est_net_ev_per_share,
+                    approved_size_usd,
+                    executable_entry_price,
+                ),
+                missing_orderbook_context=bool(shadow_details.get("missing_orderbook_context")),
+                stale_orderbook_context=bool(shadow_details.get("stale_orderbook_context")),
+                liquidity_constrained=bool(shadow_details.get("liquidity_constrained")),
+                fill_status=shadow_details.get("fill_status"),
+                ideal_ev=ideal_ev,
+                provisional_sizing=provisional_sizing,
+                shadow_execution=shadow_execution,
+                executable_ev=executable_ev,
+                executable_sizing=executable_sizing,
+                fill_capped_size_usd=fill_capped_size_usd,
+                risk_result=risk_result,
+                approved_size_usd=approved_size_usd,
+                shares=shares,
+                chosen_action_type=chosen.action_type,
+                chosen_order_type_hint=chosen.order_type_hint,
+                chosen_target_price=chosen.est_avg_entry_price,
+                chosen_target_size=chosen.target_size,
+                chosen_est_fillable_size=chosen.est_fillable_size,
+                chosen_est_fill_probability=chosen.est_fill_probability,
+                chosen_est_net_ev_bps=chosen.est_net_ev_bps,
+                chosen_est_net_ev_total=chosen.est_net_ev_total,
+                chosen_est_fee=chosen_fee,
+                chosen_est_slippage=chosen_slippage,
+                chosen_policy_version=policy_result.policy_version,
+                decision_reason_json=decision_reason_json,
+                polymarket_policy_result=policy_result,
+            )
 
     shadow_execution = await _build_shadow_execution(
         session=session,
@@ -795,6 +1172,10 @@ async def attempt_open_trade(
             "ideal_ev_per_share": decision_result.diagnostics["ideal_ev_per_share"],
             "risk_result": "approved" if not decision_result.diagnostics["drawdown_active"] else "approved (drawdown-reduced)",
             "drawdown_active": decision_result.diagnostics["drawdown_active"],
+            "chosen_action_type": decision_result.diagnostics.get("chosen_action_type"),
+            "chosen_order_type_hint": decision_result.diagnostics.get("chosen_order_type_hint"),
+            "chosen_reason": decision_result.diagnostics.get("chosen_reason"),
+            "decision_reason_json": decision_result.diagnostics.get("decision_reason_json"),
             "strategy_run_id": str(strategy_run_id) if strategy_run_id else None,
             "execution_decision_id": (
                 str(decision_result.execution_decision.id)

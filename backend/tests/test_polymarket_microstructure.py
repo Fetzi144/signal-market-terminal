@@ -335,7 +335,7 @@ async def test_microstructure_materialization_is_deterministic(engine, monkeypat
 @pytest.mark.asyncio
 async def test_microstructure_operator_apis_and_health_surface(client, engine, monkeypatch):
     session_factory = _session_factory(engine)
-    base = datetime(2026, 4, 13, 11, 0, 0, tzinfo=timezone.utc)
+    base = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=5)
     monkeypatch.setattr(settings, "polymarket_features_enabled", True)
     monkeypatch.setattr(settings, "polymarket_feature_buckets_ms", "100,1000")
     monkeypatch.setattr(settings, "polymarket_label_horizons_ms", "250,1000")
