@@ -461,3 +461,71 @@ polymarket_structure_last_successful_scan_timestamp = Gauge(
     "smt_polymarket_structure_last_successful_scan_timestamp",
     "Unix timestamp of the most recent successful structural opportunity scan",
 )
+
+polymarket_structure_last_successful_run_timestamp = Gauge(
+    "smt_polymarket_structure_last_successful_run_timestamp",
+    "Unix timestamp of the most recent successful structural engine run by run type",
+    ["run_type"],
+)
+
+polymarket_structure_run_duration_seconds = Histogram(
+    "smt_polymarket_structure_run_duration_seconds",
+    "Duration of structural engine runs by run type",
+    ["run_type", "status"],
+)
+
+polymarket_structure_lock_conflicts = Counter(
+    "smt_polymarket_structure_lock_conflicts_total",
+    "Total structural engine runs blocked by the single-run lease",
+    ["run_type"],
+)
+
+polymarket_structure_validation_results = Counter(
+    "smt_polymarket_structure_validation_results_total",
+    "Total structural opportunity validations by classification",
+    ["classification"],
+)
+
+polymarket_structure_validation_reason_codes = Counter(
+    "smt_polymarket_structure_validation_reason_codes_total",
+    "Total structural validation reason codes observed",
+    ["classification", "reason_code"],
+)
+
+polymarket_structure_current_opportunities = Gauge(
+    "smt_polymarket_structure_current_opportunities",
+    "Current structural opportunities by type and classification in the recent window",
+    ["opportunity_type", "classification"],
+)
+
+polymarket_structure_stale_cross_venue_links = Gauge(
+    "smt_polymarket_structure_stale_cross_venue_links",
+    "Current count of stale or expired cross-venue links",
+)
+
+polymarket_structure_skipped_groups = Gauge(
+    "smt_polymarket_structure_skipped_groups",
+    "Current count of structure groups skipped during the most recent cycle",
+)
+
+polymarket_structure_informational_only_opportunities = Gauge(
+    "smt_polymarket_structure_informational_only_opportunities",
+    "Current count of informational-only structure opportunities in the recent window",
+)
+
+polymarket_structure_pending_approvals = Gauge(
+    "smt_polymarket_structure_pending_approvals",
+    "Current count of structure paper plans waiting for operator approval",
+)
+
+polymarket_structure_paper_plans = Counter(
+    "smt_polymarket_structure_paper_plans_total",
+    "Total structure paper plans created",
+    ["status"],
+)
+
+polymarket_structure_paper_route_attempts = Counter(
+    "smt_polymarket_structure_paper_route_attempts_total",
+    "Total structure paper-route attempts",
+    ["status"],
+)

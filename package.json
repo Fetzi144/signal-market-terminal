@@ -1,0 +1,13 @@
+{
+  "name": "signal-market-terminal",
+  "private": true,
+  "version": "0.4.0",
+  "scripts": {
+    "frontend:install": "npm --prefix frontend install",
+    "frontend:ci": "npm --prefix frontend ci",
+    "frontend:test": "npm --prefix frontend test",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:validate": "npm run frontend:test && npm run frontend:build",
+    "secrets:scan": "python scripts/scan_secrets.py"
+  }
+}

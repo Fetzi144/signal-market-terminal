@@ -35,3 +35,6 @@ frontend/.env.local
 
 # Logs
 *.log
+
+# Local scratch databases
+backend/tmp_*.db

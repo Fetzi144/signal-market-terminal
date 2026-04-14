@@ -109,6 +109,15 @@ class Settings(BaseSettings):
     polymarket_structure_max_groups_per_run: int = 250
     polymarket_structure_cross_venue_max_staleness_seconds: int = 180
     polymarket_structure_max_leg_slippage_bps: float = 150.0
+    polymarket_structure_run_lock_enabled: bool = True
+    polymarket_structure_retention_days: int = 30
+    polymarket_structure_validation_enabled: bool = True
+    polymarket_structure_paper_routing_enabled: bool = False
+    polymarket_structure_paper_require_manual_approval: bool = True
+    polymarket_structure_max_notional_per_plan: float = 100.0
+    polymarket_structure_min_depth_per_leg: float = 1.0
+    polymarket_structure_plan_max_age_seconds: int = 180
+    polymarket_structure_link_review_required: bool = False
     polymarket_live_trading_enabled: bool = False
     polymarket_live_dry_run: bool = True
     polymarket_live_manual_approval_required: bool = True
@@ -255,11 +264,11 @@ class Settings(BaseSettings):
             raise ValueError("Retention must be >= 1 day")
         return v
 
-    @field_validator("polymarket_raw_retention_days")
+    @field_validator("polymarket_raw_retention_days", "polymarket_structure_retention_days")
     @classmethod
     def polymarket_raw_retention_must_be_positive(cls, v: int) -> int:
         if v < 1:
-            raise ValueError("polymarket_raw_retention_days must be >= 1 day")
+            raise ValueError("Retention must be >= 1 day")
         return v
 
     @field_validator(
@@ -268,6 +277,8 @@ class Settings(BaseSettings):
         "deadline_near_price_threshold_pct",
         "min_volume_24h", "connector_timeout_seconds",
         "shadow_execution_min_fill_pct",
+        "polymarket_structure_max_notional_per_plan",
+        "polymarket_structure_min_depth_per_leg",
         "polymarket_stream_reconnect_base_seconds",
         "polymarket_stream_reconnect_max_seconds",
         "polymarket_user_stream_reconnect_base_seconds",
@@ -337,6 +348,7 @@ class Settings(BaseSettings):
         "polymarket_execution_policy_passive_min_label_rows",
         "polymarket_structure_max_groups_per_run",
         "polymarket_structure_cross_venue_max_staleness_seconds",
+        "polymarket_structure_plan_max_age_seconds",
         "polymarket_live_decision_max_age_seconds",
         "polymarket_reconcile_interval_seconds",
         "polymarket_chain_id",

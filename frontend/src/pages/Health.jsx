@@ -666,9 +666,9 @@ export default function Health() {
           }}
         >
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 8A Structural Edge Engine</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 8B Validation, Controls, and Paper Routing</div>
             <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
-              {structureStatus?.enabled ? "Enabled" : "Disabled"} | Last scan {formatShortDateTime(structureStatus?.last_successful_scan_at)}
+              {structureStatus?.enabled ? "Enabled" : "Disabled"} | Last scan {formatShortDateTime(structureStatus?.last_successful_scan_at)} | Last validation {formatShortDateTime(structureStatus?.last_successful_validation_at)}
             </div>
           </div>
           <div
@@ -681,10 +681,34 @@ export default function Health() {
           >
             <StatCard label="Last Group Build" value={formatShortDateTime(structureStatus?.last_successful_group_build_at)} />
             <StatCard label="Last Scan" value={formatShortDateTime(structureStatus?.last_successful_scan_at)} />
+            <StatCard label="Last Validation" value={formatShortDateTime(structureStatus?.last_successful_validation_at)} />
+            <StatCard label="Last Paper Plan" value={formatShortDateTime(structureStatus?.last_successful_paper_plan_at)} />
+            <StatCard label="Last Paper Route" value={formatShortDateTime(structureStatus?.last_successful_paper_route_at)} />
+            <StatCard label="Last Prune" value={formatShortDateTime(structureStatus?.last_successful_retention_prune_at)} />
             <StatCard label="Actionable" value={formatActionMix(structureStatus?.recent_actionable_by_type)} />
             <StatCard label="Non-Executable" value={structureStatus?.recent_non_executable_count ?? 0} />
             <StatCard label="Augmented / Info" value={structureStatus?.informational_augmented_group_count ?? 0} />
             <StatCard label="Groups" value={formatActionMix(structureStatus?.active_group_counts)} />
+            <StatCard label="Executable" value={structureStatus?.executable_candidate_count ?? 0} />
+            <StatCard label="Informational" value={structureStatus?.informational_only_opportunity_count ?? 0} />
+            <StatCard label="Blocked" value={structureStatus?.blocked_opportunity_count ?? 0} />
+            <StatCard label="Pending Approval" value={structureStatus?.pending_approval_count ?? 0} />
+            <StatCard label="Stale Links" value={structureStatus?.stale_cross_venue_link_count ?? 0} />
+            <StatCard label="Skipped Groups" value={structureStatus?.skipped_group_count ?? 0} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 12 }}>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Opportunity Types</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {formatActionMix(structureStatus?.opportunity_counts_by_type)}
+              </div>
+            </div>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Validation Reasons</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {formatActionMix(structureStatus?.validation_reason_counts)}
+              </div>
+            </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button

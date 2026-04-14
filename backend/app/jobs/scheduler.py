@@ -3,18 +3,18 @@ import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 import logging
-import os
-import socket
-import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import delete, or_
-from sqlalchemy.dialects.postgresql import insert as postgresql_insert
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
 from app.db import async_session
-from app.models.scheduler_lease import SchedulerLease
+from app.jobs.lease import (
+    acquire_named_lease,
+    build_lease_owner_token,
+    lease_owner_label,
+    release_named_lease,
+    renew_named_lease,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,96 +30,37 @@ def _utcnow() -> datetime:
 
 
 def _scheduler_owner_label() -> str:
-    return f"{socket.gethostname()}:{os.getpid()}"
+    return lease_owner_label()
 
 
 def _build_scheduler_owner_token() -> str:
-    return f"{_scheduler_owner_label()}:{uuid.uuid4()}"
-
-
-async def _upsert_scheduler_lease(
-    owner_token: str,
-    *,
-    allow_takeover: bool,
-) -> bool:
-    now = _utcnow()
-    expires_at = now + timedelta(seconds=settings.scheduler_lease_seconds)
-
-    async with async_session() as session:
-        bind = session.sync_session.get_bind()
-        values = {
-            "scheduler_name": SCHEDULER_LEASE_NAME,
-            "owner_token": owner_token,
-            "acquired_at": now,
-            "heartbeat_at": now,
-            "expires_at": expires_at,
-        }
-        if bind.dialect.name == "postgresql":
-            stmt = postgresql_insert(SchedulerLease).values(values)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[SchedulerLease.scheduler_name],
-                set_=values,
-                where=(
-                    SchedulerLease.owner_token == owner_token
-                    if not allow_takeover
-                    else or_(
-                        SchedulerLease.owner_token == owner_token,
-                        SchedulerLease.expires_at < now,
-                    )
-                ),
-            )
-            await session.execute(stmt)
-        elif bind.dialect.name == "sqlite":
-            stmt = sqlite_insert(SchedulerLease).values(values)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[SchedulerLease.scheduler_name],
-                set_=values,
-                where=(
-                    SchedulerLease.owner_token == owner_token
-                    if not allow_takeover
-                    else or_(
-                        SchedulerLease.owner_token == owner_token,
-                        SchedulerLease.expires_at < now,
-                    )
-                ),
-            )
-            await session.execute(stmt)
-        else:
-            lease = await session.get(SchedulerLease, SCHEDULER_LEASE_NAME)
-            if lease is None:
-                session.add(SchedulerLease(**values))
-            elif lease.owner_token == owner_token or (allow_takeover and lease.expires_at < now):
-                lease.owner_token = owner_token
-                lease.acquired_at = now
-                lease.heartbeat_at = now
-                lease.expires_at = expires_at
-            else:
-                await session.rollback()
-                return False
-
-        await session.commit()
-        lease = await session.get(SchedulerLease, SCHEDULER_LEASE_NAME)
-        return lease is not None and lease.owner_token == owner_token
+    return build_lease_owner_token(lease_name=SCHEDULER_LEASE_NAME)
 
 
 async def _acquire_scheduler_ownership(owner_token: str) -> bool:
-    return await _upsert_scheduler_lease(owner_token, allow_takeover=True)
+    return await acquire_named_lease(
+        async_session,
+        lease_name=SCHEDULER_LEASE_NAME,
+        owner_token=owner_token,
+        lease_seconds=settings.scheduler_lease_seconds,
+    )
 
 
 async def _renew_scheduler_ownership(owner_token: str) -> bool:
-    return await _upsert_scheduler_lease(owner_token, allow_takeover=False)
+    return await renew_named_lease(
+        async_session,
+        lease_name=SCHEDULER_LEASE_NAME,
+        owner_token=owner_token,
+        lease_seconds=settings.scheduler_lease_seconds,
+    )
 
 
 async def _release_scheduler_ownership(owner_token: str) -> bool:
-    async with async_session() as session:
-        result = await session.execute(
-            delete(SchedulerLease).where(
-                SchedulerLease.scheduler_name == SCHEDULER_LEASE_NAME,
-                SchedulerLease.owner_token == owner_token,
-            )
-        )
-        await session.commit()
-        return bool(result.rowcount)
+    return await release_named_lease(
+        async_session,
+        lease_name=SCHEDULER_LEASE_NAME,
+        owner_token=owner_token,
+    )
 
 
 async def _stop_scheduler_after_ownership_loss(owner_token: str | None) -> None:

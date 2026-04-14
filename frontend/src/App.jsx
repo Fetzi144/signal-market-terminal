@@ -13,6 +13,7 @@ import Performance from "./pages/Performance";
 import PaperTrading from "./pages/PaperTrading";
 import Health from "./pages/Health";
 import Portfolio from "./pages/Portfolio";
+import Structures from "./pages/Structures";
 import PushNotificationToggle from "./components/PushNotificationToggle";
 
 function ThemeToggle() {
@@ -51,6 +52,7 @@ const NAV_LINKS = [
   { to: "/analytics", label: "Analytics" },
   { to: "/backtests", label: "Backtest" },
   { to: "/alerts", label: "Alerts" },
+  { to: "/structures", label: "Structures" },
   { to: "/health", label: "Health" },
 ];
 
@@ -146,6 +148,7 @@ export default function App() {
         <Route path="/backtests" element={<Backtest />} />
         <Route path="/backtests/:id" element={<BacktestResult />} />
         <Route path="/alerts" element={<Alerts />} />
+        <Route path="/structures" element={<Structures />} />
         <Route path="/health" element={<Health />} />
       </Routes>
     </div>

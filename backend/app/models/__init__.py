@@ -8,7 +8,11 @@ from app.models.market_structure import (
     MarketStructureGroupMember,
     MarketStructureOpportunity,
     MarketStructureOpportunityLeg,
+    MarketStructurePaperOrder,
+    MarketStructurePaperOrderEvent,
+    MarketStructurePaperPlan,
     MarketStructureRun,
+    MarketStructureValidation,
 )
 from app.models.paper_trade import PaperTrade
 from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
@@ -71,6 +75,10 @@ __all__ = [
     "MarketStructureRun",
     "MarketStructureOpportunity",
     "MarketStructureOpportunityLeg",
+    "MarketStructureValidation",
+    "MarketStructurePaperPlan",
+    "MarketStructurePaperOrder",
+    "MarketStructurePaperOrderEvent",
     "CrossVenueMarketLink",
     "PriceSnapshot",
     "OrderbookSnapshot",

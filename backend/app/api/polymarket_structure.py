@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -19,7 +19,19 @@ from app.ingestion.structure_engine import (
     lookup_market_structure_opportunity_legs,
     trigger_manual_structure_group_build,
     trigger_manual_structure_opportunity_scan,
+    trigger_manual_structure_paper_plan_create,
+    trigger_manual_structure_paper_plan_route,
+    trigger_manual_structure_validation,
     upsert_cross_venue_market_link,
+)
+from app.ingestion.structure_phase8b import (
+    approve_market_structure_paper_plan,
+    get_market_structure_opportunity_detail,
+    get_market_structure_paper_plan_detail,
+    list_market_structure_paper_plans,
+    list_market_structure_validations,
+    reject_market_structure_paper_plan,
+    serialize_structure_paper_plan,
 )
 
 router = APIRouter(prefix="/api/v1/ingest/polymarket/structure", tags=["ingest"])
@@ -50,17 +62,52 @@ class StructureStatusOut(BaseModel):
     max_groups_per_run: int
     cross_venue_max_staleness_seconds: int
     max_leg_slippage_bps: float
+    run_lock_enabled: bool
+    retention_days: int
+    validation_enabled: bool
+    paper_routing_enabled: bool
+    paper_require_manual_approval: bool
+    max_notional_per_plan: float
+    min_depth_per_leg: float
+    plan_max_age_seconds: int
+    link_review_required: bool
     last_successful_group_build_at: datetime | None = None
     last_successful_scan_at: datetime | None = None
+    last_successful_validation_at: datetime | None = None
+    last_successful_paper_plan_at: datetime | None = None
+    last_successful_paper_route_at: datetime | None = None
+    last_successful_retention_prune_at: datetime | None = None
     last_group_build_status: str | None = None
     last_group_build_started_at: datetime | None = None
+    last_group_build_duration_seconds: float | None = None
     last_scan_status: str | None = None
     last_scan_started_at: datetime | None = None
+    last_scan_duration_seconds: float | None = None
+    last_validation_status: str | None = None
+    last_validation_started_at: datetime | None = None
+    last_validation_duration_seconds: float | None = None
+    last_paper_plan_status: str | None = None
+    last_paper_plan_started_at: datetime | None = None
+    last_paper_plan_duration_seconds: float | None = None
+    last_paper_route_status: str | None = None
+    last_paper_route_started_at: datetime | None = None
+    last_paper_route_duration_seconds: float | None = None
+    last_retention_prune_status: str | None = None
+    last_retention_prune_started_at: datetime | None = None
+    last_retention_prune_duration_seconds: float | None = None
     recent_actionable_by_type: dict[str, int]
     recent_non_executable_count: int
     informational_augmented_group_count: int
     active_group_counts: dict[str, int]
     active_cross_venue_link_count: int
+    informational_only_opportunity_count: int
+    blocked_opportunity_count: int
+    executable_candidate_count: int
+    opportunity_counts_by_type: dict[str, int]
+    validation_reason_counts: dict[str, int]
+    stale_cross_venue_link_count: int
+    skipped_group_count: int
+    pending_approval_count: int
     recent_runs: list[StructureRunOut]
 
 
@@ -94,8 +141,34 @@ class CrossVenueLinkUpsertRequest(BaseModel):
     right_external_id: str | None = None
     right_symbol: str | None = None
     mapping_kind: str
+    provenance_source: str | None = None
+    owner: str | None = None
+    reviewed_by: str | None = None
+    review_status: str | None = None
+    confidence: float | None = None
+    notes: str | None = None
+    last_reviewed_at: datetime | None = None
+    expires_at: datetime | None = None
     active: bool = True
     details_json: dict[str, Any] | list[Any] | str | None = None
+
+
+class StructureValidationRequest(BaseModel):
+    reason: str = Field(default="manual", min_length=1, max_length=64)
+    opportunity_id: int | None = None
+    scan_run_id: uuid.UUID | None = None
+    limit: int | None = Field(default=None, ge=1, le=1000)
+
+
+class StructurePlanRequest(BaseModel):
+    actor: str = Field(default="operator", min_length=1, max_length=128)
+    validation_id: int | None = None
+    auto_created: bool = False
+
+
+class StructurePlanRejectRequest(BaseModel):
+    actor: str = Field(default="operator", min_length=1, max_length=128)
+    reason: str | None = Field(default=None, max_length=512)
 
 
 @router.get("/status", response_model=StructureStatusOut)
@@ -172,6 +245,13 @@ async def get_market_structure_opportunities(
     asset_id: str | None = Query(default=None),
     venue: str | None = Query(default=None),
     actionable: bool | None = Query(default=None),
+    classification: str | None = Query(default=None),
+    reason_code: str | None = Query(default=None),
+    edge_bucket: str | None = Query(default=None),
+    plan_status: str | None = Query(default=None),
+    review_status: str | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0, le=1),
+    executable_only: bool | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
@@ -184,9 +264,27 @@ async def get_market_structure_opportunities(
         asset_id=asset_id,
         venue=venue,
         actionable=actionable,
+        classification=classification,
+        reason_code=reason_code,
+        edge_bucket=edge_bucket,
+        plan_status=plan_status,
+        review_status=review_status,
+        confidence_min=confidence_min,
+        executable_only=executable_only,
         limit=limit,
     )
     return StructureQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/opportunities/{opportunity_id}")
+async def get_market_structure_opportunity_detail_view(
+    opportunity_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    detail = await get_market_structure_opportunity_detail(db, opportunity_id=opportunity_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Structure opportunity not found")
+    return detail
 
 
 @router.get("/legs", response_model=StructureQueryOut)
@@ -242,14 +340,56 @@ async def run_market_structure_opportunity_scan(
     return StructureRunOut(**result)
 
 
+@router.post("/opportunities/validate", response_model=StructureRunOut)
+async def run_market_structure_validation(
+    body: StructureValidationRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    result = await trigger_manual_structure_validation(
+        session_factory,
+        reason=body.reason,
+        opportunity_id=body.opportunity_id,
+        scan_run_id=body.scan_run_id,
+        limit=body.limit,
+    )
+    return StructureRunOut(**result)
+
+
+@router.get("/validations", response_model=StructureQueryOut)
+async def get_market_structure_validations_view(
+    opportunity_id: int | None = Query(default=None),
+    classification: str | None = Query(default=None),
+    evaluation_kind: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_market_structure_validations(
+        db,
+        opportunity_id=opportunity_id,
+        classification=classification,
+        evaluation_kind=evaluation_kind,
+        limit=limit,
+    )
+    return StructureQueryOut(rows=rows, limit=limit)
+
+
 @router.get("/cross-venue-links", response_model=StructureQueryOut)
 async def get_cross_venue_links(
     venue: str | None = Query(default=None),
     actionable: bool | None = Query(default=None),
+    review_status: str | None = Query(default=None),
+    confidence_min: float | None = Query(default=None, ge=0, le=1),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = await lookup_cross_venue_market_links(db, venue=venue, actionable=actionable, limit=limit)
+    rows = await lookup_cross_venue_market_links(
+        db,
+        venue=venue,
+        actionable=actionable,
+        review_status=review_status,
+        confidence_min=confidence_min,
+        limit=limit,
+    )
     return StructureQueryOut(rows=rows, limit=limit)
 
 
@@ -268,3 +408,103 @@ async def update_cross_venue_link(
     db: AsyncSession = Depends(get_db),
 ):
     return await upsert_cross_venue_market_link(db, link_id=link_id, payload=body.model_dump())
+
+
+@router.get("/paper-plans", response_model=StructureQueryOut)
+async def get_market_structure_paper_plans_view(
+    opportunity_id: int | None = Query(default=None),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_market_structure_paper_plans(
+        db,
+        opportunity_id=opportunity_id,
+        status=status,
+        limit=limit,
+    )
+    return StructureQueryOut(rows=rows, limit=limit)
+
+
+@router.get("/paper-plans/{plan_id}")
+async def get_market_structure_paper_plan_detail_view(
+    plan_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    detail = await get_market_structure_paper_plan_detail(db, plan_id=plan_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Structure paper plan not found")
+    return detail
+
+
+@router.post("/opportunities/{opportunity_id}/paper-plans")
+async def create_market_structure_paper_plan_view(
+    opportunity_id: int,
+    body: StructurePlanRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        return await trigger_manual_structure_paper_plan_create(
+            session_factory,
+            opportunity_id=opportunity_id,
+            validation_id=body.validation_id,
+            actor=body.actor,
+            auto_created=body.auto_created,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/paper-plans/{plan_id}/approve")
+async def approve_market_structure_paper_plan_view(
+    plan_id: uuid.UUID,
+    body: StructurePlanRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        plan = await approve_market_structure_paper_plan(db, plan_id=plan_id, actor=body.actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(plan)
+    return serialize_structure_paper_plan(plan)
+
+
+@router.post("/paper-plans/{plan_id}/reject")
+async def reject_market_structure_paper_plan_view(
+    plan_id: uuid.UUID,
+    body: StructurePlanRejectRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        plan = await reject_market_structure_paper_plan(
+            db,
+            plan_id=plan_id,
+            actor=body.actor,
+            reason=body.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    await db.refresh(plan)
+    return serialize_structure_paper_plan(plan)
+
+
+@router.post("/paper-plans/{plan_id}/route")
+async def route_market_structure_paper_plan_view(
+    plan_id: uuid.UUID,
+    body: StructurePlanRequest,
+    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
+):
+    try:
+        return await trigger_manual_structure_paper_plan_route(
+            session_factory,
+            plan_id=plan_id,
+            actor=body.actor,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -272,6 +272,14 @@ class CrossVenueMarketLink(Base):
     right_external_id: Mapped[str | None] = mapped_column(String(255))
     right_symbol: Mapped[str | None] = mapped_column(String(255))
     mapping_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    provenance_source: Mapped[str | None] = mapped_column(String(128))
+    owner: Mapped[str | None] = mapped_column(String(128))
+    reviewed_by: Mapped[str | None] = mapped_column(String(128))
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False, default="approved")
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    notes: Mapped[str | None] = mapped_column(Text)
+    last_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
@@ -289,4 +297,184 @@ class CrossVenueMarketLink(Base):
         Index("ix_cross_venue_market_links_right_condition", "right_condition_id"),
         Index("ix_cross_venue_market_links_left_outcome", "left_outcome_id"),
         Index("ix_cross_venue_market_links_right_outcome", "right_outcome_id"),
+        Index("ix_cross_venue_market_links_review_status", "review_status"),
+        Index("ix_cross_venue_market_links_expires_at", "expires_at"),
+        Index("ix_cross_venue_market_links_owner", "owner"),
+    )
+
+
+class MarketStructureValidation(Base):
+    __tablename__ = "market_structure_validations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    opportunity_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("market_structure_opportunities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_structure_runs.id", ondelete="SET NULL"),
+    )
+    evaluation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    classification: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason_codes_json: Mapped[list[str] | dict | None] = mapped_column(JSONB)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    detected_gross_edge_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    detected_net_edge_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    detected_gross_edge_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    detected_net_edge_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    current_gross_edge_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    current_net_edge_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    current_gross_edge_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    current_net_edge_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    gross_edge_decay_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    net_edge_decay_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    detected_age_seconds: Mapped[int | None] = mapped_column(Integer)
+    max_leg_age_seconds: Mapped[int | None] = mapped_column(Integer)
+    stale_leg_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    executable_leg_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_leg_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    summary_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_market_structure_validations_opportunity_created", "opportunity_id", "created_at"),
+        Index("ix_market_structure_validations_classification_created", "classification", "created_at"),
+        Index("ix_market_structure_validations_kind_created", "evaluation_kind", "created_at"),
+        Index("ix_market_structure_validations_run_id", "run_id"),
+    )
+
+
+class MarketStructurePaperPlan(Base):
+    __tablename__ = "market_structure_paper_plans"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    opportunity_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("market_structure_opportunities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    validation_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("market_structure_validations.id", ondelete="SET NULL"),
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_structure_runs.id", ondelete="SET NULL"),
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    auto_created: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    manual_approval_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    approved_by: Mapped[str | None] = mapped_column(String(128))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejected_by: Mapped[str | None] = mapped_column(String(128))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rejection_reason: Mapped[str | None] = mapped_column(Text)
+    routed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    package_size: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    plan_notional_total: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    reason_codes_json: Mapped[list[str] | dict | None] = mapped_column(JSONB)
+    summary_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        Index("ix_market_structure_paper_plans_opportunity_id", "opportunity_id"),
+        Index("ix_market_structure_paper_plans_status_created", "status", "created_at"),
+        Index("ix_market_structure_paper_plans_validation_id", "validation_id"),
+        Index(
+            "uq_market_structure_paper_plans_active_opportunity",
+            "opportunity_id",
+            unique=True,
+            sqlite_where=text("status IN ('approval_pending','routing_pending','routed','partial_failed')"),
+            postgresql_where=text("status IN ('approval_pending','routing_pending','routed','partial_failed')"),
+        ),
+    )
+
+
+class MarketStructurePaperOrder(Base):
+    __tablename__ = "market_structure_paper_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_structure_paper_plans.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    opportunity_leg_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("market_structure_opportunity_legs.id", ondelete="SET NULL"),
+    )
+    leg_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    venue: Mapped[str] = mapped_column(String(64), nullable=False)
+    market_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("markets.id", ondelete="SET NULL"),
+    )
+    outcome_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outcomes.id", ondelete="SET NULL"),
+    )
+    condition_id: Mapped[str | None] = mapped_column(String(255))
+    asset_id: Mapped[str | None] = mapped_column(String(255))
+    side: Mapped[str] = mapped_column(String(16), nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    action_type: Mapped[str | None] = mapped_column(String(32))
+    order_type_hint: Mapped[str | None] = mapped_column(String(32))
+    target_size: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    planned_entry_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    planned_notional: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    filled_size: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False, default=Decimal("0"))
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    fill_notional: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    error_reason: Mapped[str | None] = mapped_column(Text)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("plan_id", "leg_index", name="uq_market_structure_paper_orders_plan_leg"),
+        Index("ix_market_structure_paper_orders_plan_id", "plan_id"),
+        Index("ix_market_structure_paper_orders_status_created", "status", "created_at"),
+    )
+
+
+class MarketStructurePaperOrderEvent(Base):
+    __tablename__ = "market_structure_paper_order_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    plan_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_structure_paper_plans.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    paper_order_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("market_structure_paper_orders.id", ondelete="CASCADE"),
+    )
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str | None] = mapped_column(String(32))
+    message: Mapped[str | None] = mapped_column(Text)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+
+    __table_args__ = (
+        Index("ix_market_structure_paper_order_events_plan_observed", "plan_id", "observed_at"),
+        Index("ix_market_structure_paper_order_events_order_observed", "paper_order_id", "observed_at"),
+        Index("ix_market_structure_paper_order_events_type_observed", "event_type", "observed_at"),
     )

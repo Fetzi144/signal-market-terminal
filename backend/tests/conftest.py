@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import JSON
+from sqlalchemy import JSON, event
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -60,6 +60,12 @@ async def engine(tmp_path):
         f"sqlite+aiosqlite:///{database_path.as_posix()}",
         connect_args={"check_same_thread": False},
     )
+
+    @event.listens_for(eng.sync_engine, "connect")
+    def _enable_sqlite_foreign_keys(dbapi_connection, connection_record):  # noqa: ARG001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

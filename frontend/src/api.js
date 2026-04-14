@@ -194,6 +194,114 @@ export function triggerPolymarketStructureOpportunityScan(body = { reason: "manu
   });
 }
 
+export function validatePolymarketStructureOpportunities(body = { reason: "manual" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/opportunities/validate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getPolymarketStructureOpportunities({
+  groupType,
+  opportunityType,
+  eventSlug,
+  classification,
+  reasonCode,
+  edgeBucket,
+  planStatus,
+  reviewStatus,
+  confidenceMin,
+  executableOnly,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (groupType) params.set("group_type", groupType);
+  if (opportunityType) params.set("opportunity_type", opportunityType);
+  if (eventSlug) params.set("event_slug", eventSlug);
+  if (classification) params.set("classification", classification);
+  if (reasonCode) params.set("reason_code", reasonCode);
+  if (edgeBucket) params.set("edge_bucket", edgeBucket);
+  if (planStatus) params.set("plan_status", planStatus);
+  if (reviewStatus) params.set("review_status", reviewStatus);
+  if (confidenceMin !== undefined && confidenceMin !== "") params.set("confidence_min", confidenceMin);
+  if (executableOnly !== undefined && executableOnly !== "") params.set("executable_only", executableOnly);
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/opportunities?${params}`);
+}
+
+export function getPolymarketStructureOpportunity(id) {
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/opportunities/${id}`);
+}
+
+export function getPolymarketStructureValidations({
+  opportunityId,
+  classification,
+  evaluationKind,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (opportunityId) params.set("opportunity_id", opportunityId);
+  if (classification) params.set("classification", classification);
+  if (evaluationKind) params.set("evaluation_kind", evaluationKind);
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/validations?${params}`);
+}
+
+export function getPolymarketStructurePaperPlans({ opportunityId, status, limit = 100 } = {}) {
+  const params = new URLSearchParams({ limit });
+  if (opportunityId) params.set("opportunity_id", opportunityId);
+  if (status) params.set("status", status);
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/paper-plans?${params}`);
+}
+
+export function getPolymarketStructurePaperPlan(id) {
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/paper-plans/${id}`);
+}
+
+export function createPolymarketStructurePaperPlan(opportunityId, body = { actor: "operator" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/opportunities/${opportunityId}/paper-plans`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function approvePolymarketStructurePaperPlan(planId, body = { actor: "operator" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/paper-plans/${planId}/approve`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function rejectPolymarketStructurePaperPlan(
+  planId,
+  body = { actor: "operator", reason: "operator_rejected" },
+) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/paper-plans/${planId}/reject`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function routePolymarketStructurePaperPlan(planId, body = { actor: "operator" }) {
+  return requestJson(`${API_BASE}/ingest/polymarket/structure/paper-plans/${planId}/route`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getPolymarketStructureCrossVenueLinks({
+  venue,
+  actionable,
+  reviewStatus,
+  confidenceMin,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (venue) params.set("venue", venue);
+  if (actionable !== undefined && actionable !== "") params.set("actionable", actionable);
+  if (reviewStatus) params.set("review_status", reviewStatus);
+  if (confidenceMin !== undefined && confidenceMin !== "") params.set("confidence_min", confidenceMin);
+  return fetchJson(`${API_BASE}/ingest/polymarket/structure/cross-venue-links?${params}`);
+}
+
 export function getChartData(marketId, range = "24h") {
   return fetchJson(`${API_BASE}/markets/${marketId}/chart-data?range=${range}`);
 }

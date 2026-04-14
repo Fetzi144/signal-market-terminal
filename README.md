@@ -226,6 +226,17 @@ python -m pytest tests/ -v
 
 90+ tests covering connectors (Polymarket + Kalshi), ingestion, all 5 detectors, ranking, evaluation, alerting (webhook/telegram/logger), cleanup, circuit breaker, config validation, API endpoints, and integration.
 
+Canonical repo-root validation commands:
+
+```bash
+npm run frontend:install
+npm run frontend:validate
+npm run secrets:scan
+python -m pytest backend/tests/test_api.py backend/tests/test_structure_engine.py backend/tests/test_structure_phase8b_api.py -q
+```
+
+The root `package.json` intentionally owns the frontend workflow so CI and local development use the same entrypoints. Secret scanning is handled by `scripts/scan_secrets.py`, which scans tracked text files and supports a per-line allow marker of `secret-scan: allow` for reviewed false positives.
+
 ## Changelog
 
 ### v0.2.0

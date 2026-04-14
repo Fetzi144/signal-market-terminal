@@ -7,8 +7,22 @@ on:
     branches: [main, master, develop]
 
 jobs:
+  secrets:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Secret scan
+        run: python scripts/scan_secrets.py
+
   backend:
     runs-on: ubuntu-latest
+    needs: secrets
     defaults:
       run:
         working-directory: backend
@@ -33,9 +47,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: frontend
+    needs: secrets
 
     steps:
       - uses: actions/checkout@v4
@@ -46,11 +58,14 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
-        run: npm install
+      - name: Install frontend dependencies
+        run: npm run frontend:ci
+
+      - name: Test
+        run: npm run frontend:test
 
       - name: Build
-        run: npm run build
+        run: npm run frontend:build
 
   docker:
     runs-on: ubuntu-latest

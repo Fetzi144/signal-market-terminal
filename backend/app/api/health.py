@@ -131,15 +131,52 @@ class PolymarketPhase8AStatus(BaseModel):
     max_groups_per_run: int
     cross_venue_max_staleness_seconds: int
     max_leg_slippage_bps: float
+    run_lock_enabled: bool
+    retention_days: int
+    validation_enabled: bool
+    paper_routing_enabled: bool
+    paper_require_manual_approval: bool
+    max_notional_per_plan: float
+    min_depth_per_leg: float
+    plan_max_age_seconds: int
+    link_review_required: bool
     last_successful_group_build_at: datetime | None = None
     last_successful_scan_at: datetime | None = None
+    last_successful_validation_at: datetime | None = None
+    last_successful_paper_plan_at: datetime | None = None
+    last_successful_paper_route_at: datetime | None = None
+    last_successful_retention_prune_at: datetime | None = None
     last_group_build_status: str | None = None
+    last_group_build_started_at: datetime | None = None
+    last_group_build_duration_seconds: float | None = None
     last_scan_status: str | None = None
+    last_scan_started_at: datetime | None = None
+    last_scan_duration_seconds: float | None = None
+    last_validation_status: str | None = None
+    last_validation_started_at: datetime | None = None
+    last_validation_duration_seconds: float | None = None
+    last_paper_plan_status: str | None = None
+    last_paper_plan_started_at: datetime | None = None
+    last_paper_plan_duration_seconds: float | None = None
+    last_paper_route_status: str | None = None
+    last_paper_route_started_at: datetime | None = None
+    last_paper_route_duration_seconds: float | None = None
+    last_retention_prune_status: str | None = None
+    last_retention_prune_started_at: datetime | None = None
+    last_retention_prune_duration_seconds: float | None = None
     recent_actionable_by_type: dict[str, int]
     recent_non_executable_count: int
     informational_augmented_group_count: int
     active_group_counts: dict[str, int]
     active_cross_venue_link_count: int
+    informational_only_opportunity_count: int
+    blocked_opportunity_count: int
+    executable_candidate_count: int
+    opportunity_counts_by_type: dict[str, int]
+    validation_reason_counts: dict[str, int]
+    stale_cross_venue_link_count: int
+    skipped_group_count: int
+    pending_approval_count: int
 
 
 class HealthOut(BaseModel):
@@ -331,15 +368,52 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "max_groups_per_run",
                 "cross_venue_max_staleness_seconds",
                 "max_leg_slippage_bps",
+                "run_lock_enabled",
+                "retention_days",
+                "validation_enabled",
+                "paper_routing_enabled",
+                "paper_require_manual_approval",
+                "max_notional_per_plan",
+                "min_depth_per_leg",
+                "plan_max_age_seconds",
+                "link_review_required",
                 "last_successful_group_build_at",
                 "last_successful_scan_at",
+                "last_successful_validation_at",
+                "last_successful_paper_plan_at",
+                "last_successful_paper_route_at",
+                "last_successful_retention_prune_at",
                 "last_group_build_status",
+                "last_group_build_started_at",
+                "last_group_build_duration_seconds",
                 "last_scan_status",
+                "last_scan_started_at",
+                "last_scan_duration_seconds",
+                "last_validation_status",
+                "last_validation_started_at",
+                "last_validation_duration_seconds",
+                "last_paper_plan_status",
+                "last_paper_plan_started_at",
+                "last_paper_plan_duration_seconds",
+                "last_paper_route_status",
+                "last_paper_route_started_at",
+                "last_paper_route_duration_seconds",
+                "last_retention_prune_status",
+                "last_retention_prune_started_at",
+                "last_retention_prune_duration_seconds",
                 "recent_actionable_by_type",
                 "recent_non_executable_count",
                 "informational_augmented_group_count",
                 "active_group_counts",
                 "active_cross_venue_link_count",
+                "informational_only_opportunity_count",
+                "blocked_opportunity_count",
+                "executable_candidate_count",
+                "opportunity_counts_by_type",
+                "validation_reason_counts",
+                "stale_cross_venue_link_count",
+                "skipped_group_count",
+                "pending_approval_count",
             )
         }),
     )

@@ -5,7 +5,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import func, select
@@ -28,13 +28,28 @@ from app.ingestion.polymarket_execution_policy import (
     _resolve_taker_fee_rate,
     _to_decimal,
 )
+from app.ingestion.structure_phase8b import (
+    VALIDATION_EXECUTABLE,
+    create_market_structure_paper_plan,
+    evaluate_market_structure_opportunity,
+    fetch_market_structure_phase8b_summary,
+    lookup_market_structure_opportunities_with_validation,
+    refresh_structure_runtime_metrics,
+    route_market_structure_paper_plan,
+    serialize_cross_venue_link,
+    serialize_structure_paper_plan,
+)
+from app.jobs.lease import acquire_named_lease, build_lease_owner_token, release_named_lease
 from app.metrics import (
     polymarket_structure_actionable_opportunities,
     polymarket_structure_augmented_filters,
     polymarket_structure_groups_built,
+    polymarket_structure_last_successful_run_timestamp,
     polymarket_structure_last_successful_scan_timestamp,
+    polymarket_structure_lock_conflicts,
     polymarket_structure_non_executable_rejections,
     polymarket_structure_opportunities_detected,
+    polymarket_structure_run_duration_seconds,
     polymarket_structure_run_failures,
     polymarket_structure_runs,
 )
@@ -45,16 +60,18 @@ from app.models.market_structure import (
     MarketStructureGroupMember,
     MarketStructureOpportunity,
     MarketStructureOpportunityLeg,
+    MarketStructurePaperPlan,
     MarketStructureRun,
+    MarketStructureValidation,
 )
 from app.models.polymarket_metadata import PolymarketAssetDim, PolymarketEventDim, PolymarketMarketDim
-from app.models.polymarket_raw import PolymarketBookSnapshot
 from app.models.polymarket_reconstruction import PolymarketBookReconState
 from app.models.snapshot import OrderbookSnapshot
 
 logger = logging.getLogger(__name__)
 
 PACKAGE_SIZE_SHARES = Decimal("1")
+STRUCTURE_ENGINE_LEASE_NAME = "market_structure_engine"
 
 
 def _utcnow() -> datetime:
@@ -289,9 +306,94 @@ class LegPricing:
 class PolymarketStructureEngineService:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+        self._lease_owner_token = build_lease_owner_token(lease_name=STRUCTURE_ENGINE_LEASE_NAME)
 
     async def close(self) -> None:
         return None
+
+    def _lease_seconds(self) -> int:
+        return max(
+            60,
+            settings.polymarket_structure_interval_seconds * 2,
+            settings.polymarket_structure_plan_max_age_seconds,
+        )
+
+    async def _acquire_run_lock(self) -> bool:
+        if not settings.polymarket_structure_run_lock_enabled:
+            return True
+        return await acquire_named_lease(
+            self._session_factory,
+            lease_name=STRUCTURE_ENGINE_LEASE_NAME,
+            owner_token=self._lease_owner_token,
+            lease_seconds=self._lease_seconds(),
+        )
+
+    async def _release_run_lock(self) -> None:
+        if not settings.polymarket_structure_run_lock_enabled:
+            return
+        await release_named_lease(
+            self._session_factory,
+            lease_name=STRUCTURE_ENGINE_LEASE_NAME,
+            owner_token=self._lease_owner_token,
+        )
+
+    async def _record_blocked_run(
+        self,
+        *,
+        run_type: str,
+        reason: str,
+        scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            run = MarketStructureRun(
+                run_type=run_type,
+                reason=reason,
+                status="blocked",
+                completed_at=_utcnow(),
+                scope_json=_json_safe(scope),
+                details_json={"phase": "8b", "reason": "lock_unavailable", "scope": _json_safe(scope)},
+            )
+            session.add(run)
+            await session.commit()
+            polymarket_structure_runs.labels(run_type=run_type, status="blocked").inc()
+            polymarket_structure_lock_conflicts.labels(run_type=run_type).inc()
+            return _serialize_structure_run(run)
+
+    def _observe_run_success(self, run: MarketStructureRun) -> None:
+        if run.completed_at is None:
+            return
+        duration = max(0.0, (run.completed_at - run.started_at).total_seconds())
+        polymarket_structure_run_duration_seconds.labels(run_type=run.run_type, status=run.status).observe(duration)
+        polymarket_structure_last_successful_run_timestamp.labels(run_type=run.run_type).set(run.completed_at.timestamp())
+
+    async def run_cycle(self, *, reason: str) -> dict[str, Any]:
+        scope = {"reason": reason, "interval_seconds": settings.polymarket_structure_interval_seconds}
+        lock_acquired = await self._acquire_run_lock()
+        if not lock_acquired:
+            return await self._record_blocked_run(run_type="pipeline_cycle", reason=reason, scope=scope)
+        try:
+            group_run = await self._build_groups_impl(reason=reason)
+            scan_run = await self._scan_opportunities_impl(reason=reason)
+            validation_run = None
+            if settings.polymarket_structure_validation_enabled:
+                validation_run = await self._validate_opportunities_impl(reason=reason, scan_run_id=scan_run["id"])
+            paper_plan_run = None
+            paper_route_run = None
+            if settings.polymarket_structure_paper_routing_enabled:
+                paper_plan_run = await self._auto_create_paper_plans_impl(reason=reason)
+                if not settings.polymarket_structure_paper_require_manual_approval:
+                    paper_route_run = await self._route_pending_paper_plans_impl(reason=reason)
+            prune_run = await self._prune_retention_impl(reason=reason)
+            return {
+                "group_build": group_run,
+                "opportunity_scan": scan_run,
+                "validation": validation_run,
+                "paper_plan": paper_plan_run,
+                "paper_route": paper_route_run,
+                "retention_prune": prune_run,
+            }
+        finally:
+            await self._release_run_lock()
 
     async def run(self, stop_event: asyncio.Event) -> None:
         if not settings.polymarket_structure_engine_enabled:
@@ -300,10 +402,9 @@ class PolymarketStructureEngineService:
 
         if settings.polymarket_structure_on_startup:
             try:
-                await self.build_groups(reason="startup")
-                await self.scan_opportunities(reason="startup")
+                await self.run_cycle(reason="startup")
             except Exception:
-                logger.warning("Polymarket structure startup build/scan failed", exc_info=True)
+                logger.warning("Polymarket structure startup cycle failed", exc_info=True)
 
         while not stop_event.is_set():
             try:
@@ -313,12 +414,38 @@ class PolymarketStructureEngineService:
                 )
             except asyncio.TimeoutError:
                 try:
-                    await self.build_groups(reason="scheduled")
-                    await self.scan_opportunities(reason="scheduled")
+                    await self.run_cycle(reason="scheduled")
                 except Exception:
-                    logger.warning("Polymarket structure scheduled build/scan failed", exc_info=True)
+                    logger.warning("Polymarket structure scheduled cycle failed", exc_info=True)
 
     async def build_groups(
+        self,
+        *,
+        reason: str,
+        group_type: str | None = None,
+        event_slug: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        scope_limit = min(limit or settings.polymarket_structure_max_groups_per_run, settings.polymarket_structure_max_groups_per_run)
+        scope = {
+            "group_type": group_type,
+            "event_slug": event_slug,
+            "limit": scope_limit,
+        }
+        lock_acquired = await self._acquire_run_lock()
+        if not lock_acquired:
+            return await self._record_blocked_run(run_type="group_build", reason=reason, scope=scope)
+        try:
+            return await self._build_groups_impl(
+                reason=reason,
+                group_type=group_type,
+                event_slug=event_slug,
+                limit=limit,
+            )
+        finally:
+            await self._release_run_lock()
+
+    async def _build_groups_impl(
         self,
         *,
         reason: str,
@@ -369,13 +496,15 @@ class PolymarketStructureEngineService:
                 run.completed_at = _utcnow()
                 run.rows_inserted_json = _json_safe(rows_inserted)
                 run.details_json = {
-                    "phase": "8a",
+                    "phase": "8b",
                     "scope": _json_safe(scope),
                 }
                 await session.commit()
                 polymarket_structure_runs.labels(run_type="group_build", status="completed").inc()
+                self._observe_run_success(run)
                 if rows_inserted.get("augmented_groups_filtered", 0):
                     polymarket_structure_augmented_filters.inc(rows_inserted["augmented_groups_filtered"])
+                await refresh_structure_runtime_metrics(session)
                 return _serialize_structure_run(run)
             except Exception as exc:
                 run.status = "failed"
@@ -383,7 +512,7 @@ class PolymarketStructureEngineService:
                 run.error_count = 1
                 run.rows_inserted_json = _json_safe(rows_inserted)
                 run.details_json = {
-                    "phase": "8a",
+                    "phase": "8b",
                     "scope": _json_safe(scope),
                     "error": str(exc),
                 }
@@ -898,6 +1027,36 @@ class PolymarketStructureEngineService:
             "venue": venue,
             "limit": scope_limit,
         }
+        lock_acquired = await self._acquire_run_lock()
+        if not lock_acquired:
+            return await self._record_blocked_run(run_type="opportunity_scan", reason=reason, scope=scope)
+        try:
+            return await self._scan_opportunities_impl(
+                reason=reason,
+                group_type=group_type,
+                event_slug=event_slug,
+                venue=venue,
+                limit=limit,
+            )
+        finally:
+            await self._release_run_lock()
+
+    async def _scan_opportunities_impl(
+        self,
+        *,
+        reason: str,
+        group_type: str | None = None,
+        event_slug: str | None = None,
+        venue: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        scope_limit = min(limit or settings.polymarket_structure_max_groups_per_run, settings.polymarket_structure_max_groups_per_run)
+        scope = {
+            "group_type": group_type,
+            "event_slug": event_slug,
+            "venue": venue,
+            "limit": scope_limit,
+        }
         async with self._session_factory() as session:
             run = MarketStructureRun(
                 run_type="opportunity_scan",
@@ -968,10 +1127,12 @@ class PolymarketStructureEngineService:
                 run.status = "completed"
                 run.completed_at = _utcnow()
                 run.rows_inserted_json = _json_safe(rows_inserted)
-                run.details_json = {"phase": "8a", "scope": _json_safe(scope)}
+                run.details_json = {"phase": "8b", "scope": _json_safe(scope)}
                 await session.commit()
                 polymarket_structure_runs.labels(run_type="opportunity_scan", status="completed").inc()
                 polymarket_structure_last_successful_scan_timestamp.set(run.completed_at.timestamp())
+                self._observe_run_success(run)
+                await refresh_structure_runtime_metrics(session)
                 return _serialize_structure_run(run)
             except Exception as exc:
                 run.status = "failed"
@@ -979,13 +1140,273 @@ class PolymarketStructureEngineService:
                 run.error_count = 1
                 run.rows_inserted_json = _json_safe(rows_inserted)
                 run.details_json = {
-                    "phase": "8a",
+                    "phase": "8b",
                     "scope": _json_safe(scope),
                     "error": str(exc),
                 }
                 await session.commit()
                 polymarket_structure_runs.labels(run_type="opportunity_scan", status="failed").inc()
                 polymarket_structure_run_failures.labels(run_type="opportunity_scan").inc()
+                raise
+
+    async def validate_opportunities(
+        self,
+        *,
+        reason: str,
+        opportunity_id: int | None = None,
+        scan_run_id: uuid.UUID | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        scope = {
+            "opportunity_id": opportunity_id,
+            "scan_run_id": scan_run_id,
+            "limit": limit or settings.polymarket_structure_max_groups_per_run,
+        }
+        if not settings.polymarket_structure_validation_enabled:
+            return await self._record_blocked_run(run_type="opportunity_validation", reason=reason, scope={**scope, "reason": "validation_disabled"})
+        lock_acquired = await self._acquire_run_lock()
+        if not lock_acquired:
+            return await self._record_blocked_run(run_type="opportunity_validation", reason=reason, scope=scope)
+        try:
+            return await self._validate_opportunities_impl(
+                reason=reason,
+                opportunity_id=opportunity_id,
+                scan_run_id=scan_run_id,
+                limit=limit,
+            )
+        finally:
+            await self._release_run_lock()
+
+    async def _validate_opportunities_impl(
+        self,
+        *,
+        reason: str,
+        opportunity_id: int | None = None,
+        scan_run_id: uuid.UUID | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        scope_limit = min(limit or settings.polymarket_structure_max_groups_per_run, settings.polymarket_structure_max_groups_per_run)
+        scope = {
+            "opportunity_id": opportunity_id,
+            "scan_run_id": scan_run_id,
+            "limit": scope_limit,
+        }
+        async with self._session_factory() as session:
+            run = MarketStructureRun(
+                run_type="opportunity_validation",
+                reason=reason,
+                status="running",
+                scope_json=_json_safe(scope),
+            )
+            session.add(run)
+            await session.flush()
+            rows_inserted = {
+                "opportunities_validated": 0,
+                "executable_candidate_count": 0,
+                "informational_only_count": 0,
+                "blocked_count": 0,
+            }
+            try:
+                query = select(MarketStructureOpportunity)
+                if opportunity_id is not None:
+                    query = query.where(MarketStructureOpportunity.id == opportunity_id)
+                elif scan_run_id is not None:
+                    query = query.where(MarketStructureOpportunity.run_id == scan_run_id)
+                query = query.order_by(MarketStructureOpportunity.observed_at_local.desc(), MarketStructureOpportunity.id.desc()).limit(scope_limit)
+                opportunities = (await session.execute(query)).scalars().all()
+                for opportunity in opportunities:
+                    validation = await evaluate_market_structure_opportunity(
+                        session,
+                        opportunity=opportunity,
+                        run_id=run.id,
+                        evaluation_kind="scan" if scan_run_id is not None else "follow_up",
+                    )
+                    rows_inserted["opportunities_validated"] += 1
+                    rows_inserted[f"{validation.classification}_count"] = rows_inserted.get(f"{validation.classification}_count", 0) + 1
+                run.status = "completed"
+                run.completed_at = _utcnow()
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b", "scope": _json_safe(scope)}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="opportunity_validation", status="completed").inc()
+                self._observe_run_success(run)
+                await refresh_structure_runtime_metrics(session)
+                return _serialize_structure_run(run)
+            except Exception as exc:
+                run.status = "failed"
+                run.completed_at = _utcnow()
+                run.error_count = 1
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b", "scope": _json_safe(scope), "error": str(exc)}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="opportunity_validation", status="failed").inc()
+                polymarket_structure_run_failures.labels(run_type="opportunity_validation").inc()
+                raise
+
+    async def _auto_create_paper_plans_impl(self, *, reason: str) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            run = MarketStructureRun(
+                run_type="paper_plan",
+                reason=reason,
+                status="running",
+                scope_json=_json_safe({"auto_created": True}),
+            )
+            session.add(run)
+            await session.flush()
+            rows_inserted = {"plans_seen": 0, "plans_created": 0}
+            try:
+                validation_rows = (
+                    await session.execute(
+                        select(MarketStructureValidation)
+                        .where(MarketStructureValidation.classification == VALIDATION_EXECUTABLE)
+                        .order_by(MarketStructureValidation.created_at.desc(), MarketStructureValidation.id.desc())
+                        .limit(settings.polymarket_structure_max_groups_per_run)
+                    )
+                ).scalars().all()
+                seen_opportunities: set[int] = set()
+                for validation in validation_rows:
+                    if validation.opportunity_id in seen_opportunities:
+                        continue
+                    seen_opportunities.add(validation.opportunity_id)
+                    rows_inserted["plans_seen"] += 1
+                    plan = await create_market_structure_paper_plan(
+                        session,
+                        opportunity_id=validation.opportunity_id,
+                        validation_id=validation.id,
+                        actor="auto",
+                        auto_created=True,
+                        run_id=run.id,
+                    )
+                    if plan.run_id == run.id:
+                        rows_inserted["plans_created"] += 1
+                run.status = "completed"
+                run.completed_at = _utcnow()
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b"}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="paper_plan", status="completed").inc()
+                self._observe_run_success(run)
+                await refresh_structure_runtime_metrics(session)
+                return _serialize_structure_run(run)
+            except Exception as exc:
+                run.status = "failed"
+                run.completed_at = _utcnow()
+                run.error_count = 1
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b", "error": str(exc)}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="paper_plan", status="failed").inc()
+                polymarket_structure_run_failures.labels(run_type="paper_plan").inc()
+                raise
+
+    async def _route_pending_paper_plans_impl(self, *, reason: str) -> dict[str, Any]:
+        async with self._session_factory() as session:
+            run = MarketStructureRun(
+                run_type="paper_route",
+                reason=reason,
+                status="running",
+                scope_json=_json_safe({"auto_route": True}),
+            )
+            session.add(run)
+            await session.flush()
+            rows_inserted = {"plans_seen": 0, "plans_routed": 0, "plans_blocked": 0, "plans_partial_failed": 0}
+            try:
+                plan_rows = (
+                    await session.execute(
+                        select(MarketStructurePaperPlan)
+                        .where(MarketStructurePaperPlan.status == "routing_pending")
+                        .order_by(MarketStructurePaperPlan.created_at.asc())
+                        .limit(settings.polymarket_structure_max_groups_per_run)
+                    )
+                ).scalars().all()
+                for plan in plan_rows:
+                    rows_inserted["plans_seen"] += 1
+                    updated = await route_market_structure_paper_plan(
+                        session,
+                        plan_id=plan.id,
+                        actor="auto",
+                        run_id=run.id,
+                    )
+                    if updated.status == "routed":
+                        rows_inserted["plans_routed"] += 1
+                    elif updated.status == "partial_failed":
+                        rows_inserted["plans_partial_failed"] += 1
+                    else:
+                        rows_inserted["plans_blocked"] += 1
+                run.status = "completed"
+                run.completed_at = _utcnow()
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b"}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="paper_route", status="completed").inc()
+                self._observe_run_success(run)
+                await refresh_structure_runtime_metrics(session)
+                return _serialize_structure_run(run)
+            except Exception as exc:
+                run.status = "failed"
+                run.completed_at = _utcnow()
+                run.error_count = 1
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b", "error": str(exc)}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="paper_route", status="failed").inc()
+                polymarket_structure_run_failures.labels(run_type="paper_route").inc()
+                raise
+
+    async def prune_retention(self, *, reason: str) -> dict[str, Any]:
+        scope = {"retention_days": settings.polymarket_structure_retention_days}
+        lock_acquired = await self._acquire_run_lock()
+        if not lock_acquired:
+            return await self._record_blocked_run(run_type="retention_prune", reason=reason, scope=scope)
+        try:
+            return await self._prune_retention_impl(reason=reason)
+        finally:
+            await self._release_run_lock()
+
+    async def _prune_retention_impl(self, *, reason: str) -> dict[str, Any]:
+        retention_cutoff = _utcnow() - timedelta(days=settings.polymarket_structure_retention_days)
+        async with self._session_factory() as session:
+            run = MarketStructureRun(
+                run_type="retention_prune",
+                reason=reason,
+                status="running",
+                scope_json=_json_safe({"retention_cutoff": retention_cutoff}),
+            )
+            session.add(run)
+            await session.flush()
+            rows_inserted = {"runs_deleted": 0}
+            try:
+                old_runs = (
+                    await session.execute(
+                        select(MarketStructureRun)
+                        .where(
+                            MarketStructureRun.started_at < retention_cutoff,
+                            MarketStructureRun.run_type != "retention_prune",
+                        )
+                        .order_by(MarketStructureRun.started_at.asc())
+                    )
+                ).scalars().all()
+                rows_inserted["runs_deleted"] = len(old_runs)
+                for old_run in old_runs:
+                    await session.delete(old_run)
+                run.status = "completed"
+                run.completed_at = _utcnow()
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b"}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="retention_prune", status="completed").inc()
+                self._observe_run_success(run)
+                await refresh_structure_runtime_metrics(session)
+                return _serialize_structure_run(run)
+            except Exception as exc:
+                run.status = "failed"
+                run.completed_at = _utcnow()
+                run.error_count = 1
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b", "error": str(exc)}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="retention_prune", status="failed").inc()
+                polymarket_structure_run_failures.labels(run_type="retention_prune").inc()
                 raise
 
     async def _scan_neg_risk_group(
@@ -1864,64 +2285,42 @@ def _serialize_structure_leg(row: MarketStructureOpportunityLeg) -> dict[str, An
 
 
 def _serialize_cross_venue_link(row: CrossVenueMarketLink) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "link_key": row.link_key,
-        "left_venue": row.left_venue,
-        "left_market_id": row.left_market_id,
-        "left_outcome_id": row.left_outcome_id,
-        "left_condition_id": row.left_condition_id,
-        "left_asset_id": row.left_asset_id,
-        "left_external_id": row.left_external_id,
-        "left_symbol": row.left_symbol,
-        "right_venue": row.right_venue,
-        "right_market_id": row.right_market_id,
-        "right_outcome_id": row.right_outcome_id,
-        "right_condition_id": row.right_condition_id,
-        "right_asset_id": row.right_asset_id,
-        "right_external_id": row.right_external_id,
-        "right_symbol": row.right_symbol,
-        "mapping_kind": row.mapping_kind,
-        "active": row.active,
-        "details_json": row.details_json,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
+    return serialize_cross_venue_link(row) or {}
 
 
 async def fetch_market_structure_status(session: AsyncSession) -> dict[str, Any]:
-    latest_group_build = (
-        await session.execute(
-            select(MarketStructureRun)
-            .where(MarketStructureRun.run_type == "group_build")
-            .order_by(MarketStructureRun.started_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    latest_scan = (
-        await session.execute(
-            select(MarketStructureRun)
-            .where(MarketStructureRun.run_type == "opportunity_scan")
-            .order_by(MarketStructureRun.started_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    last_successful_group_build_at = (
-        await session.execute(
-            select(func.max(MarketStructureRun.completed_at)).where(
-                MarketStructureRun.run_type == "group_build",
-                MarketStructureRun.status == "completed",
+    async def _latest_run(run_type: str) -> MarketStructureRun | None:
+        return (
+            await session.execute(
+                select(MarketStructureRun)
+                .where(MarketStructureRun.run_type == run_type)
+                .order_by(MarketStructureRun.started_at.desc())
+                .limit(1)
             )
-        )
-    ).scalar_one_or_none()
-    last_successful_scan_at = (
-        await session.execute(
-            select(func.max(MarketStructureRun.completed_at)).where(
-                MarketStructureRun.run_type == "opportunity_scan",
-                MarketStructureRun.status == "completed",
+        ).scalar_one_or_none()
+
+    async def _last_success_at(run_type: str) -> datetime | None:
+        return (
+            await session.execute(
+                select(func.max(MarketStructureRun.completed_at)).where(
+                    MarketStructureRun.run_type == run_type,
+                    MarketStructureRun.status == "completed",
+                )
             )
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
+
+    latest_group_build = await _latest_run("group_build")
+    latest_scan = await _latest_run("opportunity_scan")
+    latest_validation = await _latest_run("opportunity_validation")
+    latest_paper_plan = await _latest_run("paper_plan")
+    latest_paper_route = await _latest_run("paper_route")
+    latest_retention = await _latest_run("retention_prune")
+    last_successful_group_build_at = await _last_success_at("group_build")
+    last_successful_scan_at = await _last_success_at("opportunity_scan")
+    last_successful_validation_at = await _last_success_at("opportunity_validation")
+    last_successful_paper_plan_at = await _last_success_at("paper_plan")
+    last_successful_paper_route_at = await _last_success_at("paper_route")
+    last_successful_retention_prune_at = await _last_success_at("retention_prune")
 
     recent_cutoff = _utcnow() - timedelta(hours=24)
     opportunity_rows = (
@@ -1972,6 +2371,12 @@ async def fetch_market_structure_status(session: AsyncSession) -> dict[str, Any]
         ).scalar_one()
         or 0
     )
+    phase8b_summary = await fetch_market_structure_phase8b_summary(session)
+
+    def _run_duration_seconds(run: MarketStructureRun | None) -> float | None:
+        if run is None or run.completed_at is None:
+            return None
+        return max(0.0, (run.completed_at - run.started_at).total_seconds())
 
     return {
         "enabled": settings.polymarket_structure_engine_enabled,
@@ -1984,17 +2389,45 @@ async def fetch_market_structure_status(session: AsyncSession) -> dict[str, Any]
         "max_groups_per_run": settings.polymarket_structure_max_groups_per_run,
         "cross_venue_max_staleness_seconds": settings.polymarket_structure_cross_venue_max_staleness_seconds,
         "max_leg_slippage_bps": settings.polymarket_structure_max_leg_slippage_bps,
+        "run_lock_enabled": settings.polymarket_structure_run_lock_enabled,
+        "retention_days": settings.polymarket_structure_retention_days,
+        "validation_enabled": settings.polymarket_structure_validation_enabled,
+        "paper_routing_enabled": settings.polymarket_structure_paper_routing_enabled,
+        "paper_require_manual_approval": settings.polymarket_structure_paper_require_manual_approval,
+        "max_notional_per_plan": settings.polymarket_structure_max_notional_per_plan,
+        "min_depth_per_leg": settings.polymarket_structure_min_depth_per_leg,
+        "plan_max_age_seconds": settings.polymarket_structure_plan_max_age_seconds,
+        "link_review_required": settings.polymarket_structure_link_review_required,
         "last_successful_group_build_at": last_successful_group_build_at,
         "last_successful_scan_at": last_successful_scan_at,
+        "last_successful_validation_at": last_successful_validation_at,
+        "last_successful_paper_plan_at": last_successful_paper_plan_at,
+        "last_successful_paper_route_at": last_successful_paper_route_at,
+        "last_successful_retention_prune_at": last_successful_retention_prune_at,
         "last_group_build_status": latest_group_build.status if latest_group_build is not None else None,
         "last_group_build_started_at": latest_group_build.started_at if latest_group_build is not None else None,
+        "last_group_build_duration_seconds": _run_duration_seconds(latest_group_build),
         "last_scan_status": latest_scan.status if latest_scan is not None else None,
         "last_scan_started_at": latest_scan.started_at if latest_scan is not None else None,
+        "last_scan_duration_seconds": _run_duration_seconds(latest_scan),
+        "last_validation_status": latest_validation.status if latest_validation is not None else None,
+        "last_validation_started_at": latest_validation.started_at if latest_validation is not None else None,
+        "last_validation_duration_seconds": _run_duration_seconds(latest_validation),
+        "last_paper_plan_status": latest_paper_plan.status if latest_paper_plan is not None else None,
+        "last_paper_plan_started_at": latest_paper_plan.started_at if latest_paper_plan is not None else None,
+        "last_paper_plan_duration_seconds": _run_duration_seconds(latest_paper_plan),
+        "last_paper_route_status": latest_paper_route.status if latest_paper_route is not None else None,
+        "last_paper_route_started_at": latest_paper_route.started_at if latest_paper_route is not None else None,
+        "last_paper_route_duration_seconds": _run_duration_seconds(latest_paper_route),
+        "last_retention_prune_status": latest_retention.status if latest_retention is not None else None,
+        "last_retention_prune_started_at": latest_retention.started_at if latest_retention is not None else None,
+        "last_retention_prune_duration_seconds": _run_duration_seconds(latest_retention),
         "recent_actionable_by_type": actionable_by_type,
         "recent_non_executable_count": non_executable_count,
         "informational_augmented_group_count": informational_augmented_group_count,
         "active_group_counts": active_group_counts,
         "active_cross_venue_link_count": active_link_count,
+        **phase8b_summary,
         "recent_runs": [_serialize_structure_run(row) for row in recent_runs],
     }
 
@@ -2097,33 +2530,33 @@ async def lookup_market_structure_opportunities(
     asset_id: str | None,
     venue: str | None,
     actionable: bool | None,
+    classification: str | None = None,
+    reason_code: str | None = None,
+    edge_bucket: str | None = None,
+    plan_status: str | None = None,
+    review_status: str | None = None,
+    confidence_min: float | None = None,
+    executable_only: bool | None = None,
     limit: int,
 ) -> list[dict[str, Any]]:
-    query = select(MarketStructureOpportunity).distinct()
-    if group_type or event_slug:
-        query = query.join(MarketStructureGroup, MarketStructureGroup.id == MarketStructureOpportunity.group_id)
-    if condition_id or asset_id or venue:
-        query = query.join(MarketStructureOpportunityLeg, MarketStructureOpportunityLeg.opportunity_id == MarketStructureOpportunity.id)
-    if group_type:
-        query = query.where(MarketStructureGroup.group_type == group_type)
-    if opportunity_type:
-        query = query.where(MarketStructureOpportunity.opportunity_type == opportunity_type)
-    if event_slug:
-        query = query.where(MarketStructureGroup.event_slug == event_slug)
-    if condition_id:
-        query = query.where(MarketStructureOpportunityLeg.condition_id == condition_id)
-    if asset_id:
-        query = query.where(MarketStructureOpportunityLeg.asset_id == asset_id)
-    if venue:
-        query = query.where(MarketStructureOpportunityLeg.venue == venue)
-    if actionable is not None:
-        query = query.where(MarketStructureOpportunity.actionable.is_(actionable))
-    rows = (
-        await session.execute(
-            query.order_by(MarketStructureOpportunity.observed_at_local.desc(), MarketStructureOpportunity.id.desc()).limit(limit)
-        )
-    ).scalars().all()
-    return [_serialize_structure_opportunity(row) for row in rows]
+    return await lookup_market_structure_opportunities_with_validation(
+        session,
+        group_type=group_type,
+        opportunity_type=opportunity_type,
+        event_slug=event_slug,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        venue=venue,
+        actionable=actionable,
+        classification=classification,
+        reason_code=reason_code,
+        edge_bucket=edge_bucket,
+        plan_status=plan_status,
+        review_status=review_status,
+        confidence_min=confidence_min,
+        executable_only=executable_only,
+        limit=limit,
+    )
 
 
 async def lookup_market_structure_opportunity_legs(
@@ -2162,6 +2595,8 @@ async def lookup_cross_venue_market_links(
     *,
     venue: str | None,
     actionable: bool | None,
+    review_status: str | None = None,
+    confidence_min: float | None = None,
     limit: int,
 ) -> list[dict[str, Any]]:
     query = select(CrossVenueMarketLink)
@@ -2173,10 +2608,26 @@ async def lookup_cross_venue_market_links(
         query = query.where(CrossVenueMarketLink.active.is_(actionable))
     rows = (
         await session.execute(
-            query.order_by(CrossVenueMarketLink.updated_at.desc(), CrossVenueMarketLink.id.desc()).limit(limit)
+            query.order_by(CrossVenueMarketLink.updated_at.desc(), CrossVenueMarketLink.id.desc()).limit(max(limit * 4, limit))
         )
     ).scalars().all()
-    return [_serialize_cross_venue_link(row) for row in rows]
+    results: list[dict[str, Any]] = []
+    now = _utcnow()
+    for row in rows:
+        effective_status = row.review_status
+        expires_at = _as_utc(row.expires_at)
+        if not row.active or row.review_status == "disabled":
+            effective_status = "disabled"
+        elif expires_at is not None and expires_at < now:
+            effective_status = "expired"
+        if review_status and effective_status != review_status:
+            continue
+        if confidence_min is not None and (row.confidence or ZERO) < Decimal(str(confidence_min)):
+            continue
+        results.append(_serialize_cross_venue_link(row))
+        if len(results) >= limit:
+            break
+    return results
 
 
 def _default_link_key(payload: dict[str, Any]) -> str:
@@ -2203,6 +2654,8 @@ async def upsert_cross_venue_market_link(
     if row is None:
         row = CrossVenueMarketLink(link_key=link_key)
         session.add(row)
+    if payload.get("review_status") == "approved" and payload.get("last_reviewed_at") is None:
+        payload["last_reviewed_at"] = _utcnow()
     for key, value in payload.items():
         if key == "link_key" and not value:
             continue
@@ -2247,4 +2700,177 @@ async def trigger_manual_structure_opportunity_scan(
             limit=limit,
         )
     finally:
+        await service.close()
+
+
+async def trigger_manual_structure_validation(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    reason: str,
+    opportunity_id: int | None = None,
+    scan_run_id: uuid.UUID | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    service = PolymarketStructureEngineService(session_factory)
+    try:
+        return await service.validate_opportunities(
+            reason=reason,
+            opportunity_id=opportunity_id,
+            scan_run_id=scan_run_id,
+            limit=limit,
+        )
+    finally:
+        await service.close()
+
+
+async def trigger_manual_structure_paper_plan_create(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    opportunity_id: int,
+    validation_id: int | None = None,
+    actor: str,
+    auto_created: bool = False,
+    reason: str = "manual",
+) -> dict[str, Any]:
+    service = PolymarketStructureEngineService(session_factory)
+    scope = {
+        "opportunity_id": opportunity_id,
+        "validation_id": validation_id,
+        "actor": actor,
+        "auto_created": auto_created,
+    }
+    lock_acquired = await service._acquire_run_lock()
+    if not lock_acquired:
+        try:
+            await service._record_blocked_run(run_type="paper_plan", reason=reason, scope=scope)
+        finally:
+            await service.close()
+        raise RuntimeError("Market structure run lock unavailable")
+    try:
+        async with session_factory() as session:
+            run = MarketStructureRun(
+                run_type="paper_plan",
+                reason=reason,
+                status="running",
+                scope_json=_json_safe(scope),
+            )
+            session.add(run)
+            await session.flush()
+            try:
+                plan = await create_market_structure_paper_plan(
+                    session,
+                    opportunity_id=opportunity_id,
+                    validation_id=validation_id,
+                    actor=actor,
+                    auto_created=auto_created,
+                    run_id=run.id,
+                )
+                created_new = plan.run_id == run.id
+                run.status = "completed"
+                run.completed_at = _utcnow()
+                run.rows_inserted_json = _json_safe(
+                    {
+                        "plans_seen": 1,
+                        "plans_created": 1 if created_new else 0,
+                    }
+                )
+                run.details_json = {
+                    "phase": "8b",
+                    "scope": _json_safe(scope),
+                    "plan_id": str(plan.id),
+                    "created_new": created_new,
+                }
+                await session.commit()
+                await session.refresh(plan)
+                polymarket_structure_runs.labels(run_type="paper_plan", status="completed").inc()
+                service._observe_run_success(run)
+                await refresh_structure_runtime_metrics(session)
+                return serialize_structure_paper_plan(plan)
+            except Exception as exc:
+                run.status = "failed"
+                run.completed_at = _utcnow()
+                run.error_count = 1
+                run.rows_inserted_json = _json_safe({"plans_seen": 1, "plans_created": 0})
+                run.details_json = {"phase": "8b", "scope": _json_safe(scope), "error": str(exc)}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="paper_plan", status="failed").inc()
+                polymarket_structure_run_failures.labels(run_type="paper_plan").inc()
+                raise
+    finally:
+        await service._release_run_lock()
+        await service.close()
+
+
+async def trigger_manual_structure_paper_plan_route(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    plan_id: uuid.UUID,
+    actor: str,
+    reason: str = "manual",
+) -> dict[str, Any]:
+    service = PolymarketStructureEngineService(session_factory)
+    scope = {"plan_id": str(plan_id), "actor": actor}
+    lock_acquired = await service._acquire_run_lock()
+    if not lock_acquired:
+        try:
+            await service._record_blocked_run(run_type="paper_route", reason=reason, scope=scope)
+        finally:
+            await service.close()
+        raise RuntimeError("Market structure run lock unavailable")
+    try:
+        async with session_factory() as session:
+            run = MarketStructureRun(
+                run_type="paper_route",
+                reason=reason,
+                status="running",
+                scope_json=_json_safe(scope),
+            )
+            session.add(run)
+            await session.flush()
+            rows_inserted = {
+                "plans_seen": 1,
+                "plans_routed": 0,
+                "plans_blocked": 0,
+                "plans_partial_failed": 0,
+            }
+            try:
+                plan = await route_market_structure_paper_plan(
+                    session,
+                    plan_id=plan_id,
+                    actor=actor,
+                    run_id=run.id,
+                )
+                if plan.status == "routed":
+                    rows_inserted["plans_routed"] = 1
+                elif plan.status == "partial_failed":
+                    rows_inserted["plans_partial_failed"] = 1
+                else:
+                    rows_inserted["plans_blocked"] = 1
+                run.status = "completed"
+                run.completed_at = _utcnow()
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {
+                    "phase": "8b",
+                    "scope": _json_safe(scope),
+                    "plan_id": str(plan.id),
+                    "final_status": plan.status,
+                }
+                await session.commit()
+                await session.refresh(plan)
+                polymarket_structure_runs.labels(run_type="paper_route", status="completed").inc()
+                service._observe_run_success(run)
+                await refresh_structure_runtime_metrics(session)
+                return serialize_structure_paper_plan(plan)
+            except Exception as exc:
+                run.status = "failed"
+                run.completed_at = _utcnow()
+                run.error_count = 1
+                run.rows_inserted_json = _json_safe(rows_inserted)
+                run.details_json = {"phase": "8b", "scope": _json_safe(scope), "error": str(exc)}
+                await session.commit()
+                polymarket_structure_runs.labels(run_type="paper_route", status="failed").inc()
+                polymarket_structure_run_failures.labels(run_type="paper_route").inc()
+                raise
+    finally:
+        await service._release_run_lock()
         await service.close()
