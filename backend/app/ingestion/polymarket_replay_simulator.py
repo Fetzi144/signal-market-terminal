@@ -36,6 +36,7 @@ from app.ingestion.polymarket_microstructure import (
     ReplayData,
     ReplayMarker,
 )
+from app.ingestion.polymarket_settlement import get_polymarket_canonical_settlement
 from app.metrics import (
     polymarket_replay_coverage_limited_runs,
     polymarket_replay_fills_total,
@@ -217,12 +218,31 @@ def _directional_exit_price(direction: str, marker: ReplayMarker | None) -> Deci
     return marker.mid if direction == "buy_yes" else (ONE - marker.mid).quantize(PRICE_Q)
 
 
+def _directional_settlement_exit_price(direction: str, outcome_price: Decimal | None) -> Decimal | None:
+    if outcome_price is None:
+        return None
+    return outcome_price if direction == "buy_yes" else (ONE - outcome_price).quantize(PRICE_Q)
+
+
 def _action_mix_payload(orders: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for order in orders:
         action_type = str(order.get("action_type") or order.get("status") or "unknown")
         counts[action_type] = counts.get(action_type, 0) + 1
     return counts
+
+
+def _supported_replay_detector_types() -> list[str]:
+    detector = str(settings.default_strategy_signal_type).strip() if settings.default_strategy_signal_type else ""
+    return [detector] if detector else []
+
+
+def _variant_results_coverage_limited(results: list["VariantReplayResult"]) -> bool:
+    for result in results:
+        details = result.metric.get("details_json") if isinstance(result.metric, dict) else None
+        if isinstance(details, dict) and details.get("coverage_limited"):
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -852,10 +872,12 @@ class PolymarketReplaySimulatorService:
             for key, value in counts.items():
                 row_counts[key] += value
 
+        scenario_coverage_limited = coverage["coverage_limited"] or _variant_results_coverage_limited(results)
         return {
-            "status": SCENARIO_STATUS_COVERAGE if coverage["coverage_limited"] else SCENARIO_STATUS_COMPLETED,
+            "status": SCENARIO_STATUS_COVERAGE if scenario_coverage_limited else SCENARIO_STATUS_COMPLETED,
             "details": {
                 "coverage": coverage,
+                "coverage_limited": scenario_coverage_limited,
                 "recon_status": recon_state.status if recon_state is not None else None,
                 "source_execution_decision_id": blueprint.source_execution_decision_id,
                 "source_execution_candidate_id": blueprint.source_execution_candidate_id,
@@ -1107,10 +1129,12 @@ class PolymarketReplaySimulatorService:
             for key, value in counts.items():
                 row_counts[key] += value
 
+        scenario_coverage_limited = coverage["coverage_limited"] or _variant_results_coverage_limited(results)
         return {
-            "status": SCENARIO_STATUS_COVERAGE if coverage["coverage_limited"] else SCENARIO_STATUS_COMPLETED,
+            "status": SCENARIO_STATUS_COVERAGE if scenario_coverage_limited else SCENARIO_STATUS_COMPLETED,
             "details": {
                 "coverage": coverage,
+                "coverage_limited": scenario_coverage_limited,
                 "quote_status": quote.status,
                 "quote_recommendation_action": quote.recommendation_action,
                 "comparison_winner": quote.comparison_winner,
@@ -1371,7 +1395,8 @@ class PolymarketReplaySimulatorService:
                 source_execution_decision_id=blueprint.source_execution_decision_id,
                 details_json={"reason": "missing_midpoint"},
             )
-            metric = self._metric_from_execution(
+            metric = await self._metric_from_execution(
+                session,
                 variant_name="midpoint_baseline",
                 direction=context.direction,
                 orders=[order],
@@ -1418,7 +1443,8 @@ class PolymarketReplaySimulatorService:
         order["details_json"] = {**(order["details_json"] or {}), **execution["order_details"]}
         traces.extend(execution["traces"])
         fills = execution["fills"]
-        metric = self._metric_from_execution(
+        metric = await self._metric_from_execution(
+            session,
             variant_name="midpoint_baseline",
             direction=context.direction,
             orders=[order],
@@ -1496,7 +1522,8 @@ class PolymarketReplaySimulatorService:
                 source_execution_decision_id=blueprint.source_execution_decision_id,
                 details_json={"reason_code": chosen_reason},
             )
-            metric = self._metric_from_execution(
+            metric = await self._metric_from_execution(
+                session,
                 variant_name=variant_name,
                 direction=context.direction,
                 orders=[order],
@@ -1547,7 +1574,8 @@ class PolymarketReplaySimulatorService:
                         source_optimizer_recommendation_id=source_optimizer_recommendation_id,
                         details_json={"risk_recommendation_type": recommendation_type},
                     )
-                    metric = self._metric_from_execution(
+                    metric = await self._metric_from_execution(
+                        session,
                         variant_name=variant_name,
                         direction=context.direction,
                         orders=[order],
@@ -1605,7 +1633,8 @@ class PolymarketReplaySimulatorService:
         order["details_json"] = {**(order["details_json"] or {}), **execution["order_details"]}
         traces.extend(execution["traces"])
         fills = execution["fills"]
-        metric = self._metric_from_execution(
+        metric = await self._metric_from_execution(
+            session,
             variant_name=variant_name,
             direction=context.direction,
             orders=[order],
@@ -1693,7 +1722,8 @@ class PolymarketReplaySimulatorService:
                 source_quote_recommendation_id=quote.id,
                 details_json={"recommendation_action": recommendation_action},
             )
-            metric = self._metric_from_execution(
+            metric = await self._metric_from_execution(
+                session,
                 variant_name=variant_name,
                 direction=context.direction,
                 orders=[order],
@@ -1744,7 +1774,8 @@ class PolymarketReplaySimulatorService:
         fills = execution["fills"]
         traces.extend(execution["traces"])
         realism_adjustment = _to_decimal(snapshot.maker_realism_adjustment_total) if snapshot is not None else ZERO
-        metric = self._metric_from_execution(
+        metric = await self._metric_from_execution(
+            session,
             variant_name=variant_name,
             direction=context.direction,
             orders=[order],
@@ -2366,8 +2397,9 @@ class PolymarketReplaySimulatorService:
             ],
         }
 
-    def _metric_from_execution(
+    async def _metric_from_execution(
         self,
+        session: AsyncSession,
         *,
         variant_name: str,
         direction: str,
@@ -2389,8 +2421,13 @@ class PolymarketReplaySimulatorService:
         ).quantize(PRICE_Q)
         fees_paid = sum(((_to_decimal(fill.get("fee_paid")) or ZERO) for fill in fills), ZERO).quantize(PRICE_Q)
         rewards_estimated = sum(((_to_decimal(fill.get("reward_estimate")) or ZERO) for fill in fills), ZERO).quantize(PRICE_Q)
-        exit_marker = self._microstructure._marker_as_of(replay, replay.latest_observed_time or decision_ts)
-        exit_price = _directional_exit_price(direction, exit_marker)
+        settlement = await get_polymarket_canonical_settlement(
+            session,
+            condition_id=replay.context.condition_id,
+            asset_id=replay.context.asset_id,
+        )
+        exit_price = _directional_settlement_exit_price(direction, settlement.outcome_price)
+        coverage_limited = self._coverage_payload(replay)["coverage_limited"] or settlement.coverage_limited
         gross_pnl = ZERO
         if exit_price is not None:
             for fill in fills:
@@ -2435,7 +2472,11 @@ class PolymarketReplaySimulatorService:
             "requested_total": requested_total,
             "filled_notional": filled_notional,
             "exit_price": exit_price,
-            "coverage_limited": self._coverage_payload(replay)["coverage_limited"],
+            "coverage_limited": coverage_limited,
+            "coverage_mode": "canonical_settlement" if exit_price is not None else "canonical_settlement_unavailable",
+            "settlement_source_kind": settlement.source_kind,
+            "settlement_resolution_state": settlement.resolution_state,
+            "settlement_winning_asset_id": settlement.winning_asset_id,
             **(additional_details or {}),
         }
         return metric
@@ -3200,6 +3241,23 @@ async def fetch_polymarket_replay_status(session: AsyncSession) -> dict[str, Any
         ).scalar_one()
         or 0
     )
+    observed_detector_rows = (
+        await session.execute(
+            select(Signal.signal_type).distinct().order_by(Signal.signal_type.asc())
+        )
+    ).scalars().all()
+    observed_detectors = sorted(str(row) for row in observed_detector_rows if row)
+    supported_detector_set = set(_supported_replay_detector_types())
+    supported_detectors = [detector for detector in observed_detectors if detector in supported_detector_set]
+    unsupported_detectors = [detector for detector in observed_detectors if detector not in supported_detector_set]
+    if not observed_detectors:
+        coverage_mode = "no_detector_activity"
+    elif supported_detectors and unsupported_detectors:
+        coverage_mode = "partial_supported_detectors"
+    elif supported_detectors:
+        coverage_mode = "supported_detectors_only"
+    else:
+        coverage_mode = "unsupported_detectors_only"
     summary = await fetch_polymarket_replay_policy_summary(session)
     return {
         "enabled": settings.polymarket_replay_enabled,
@@ -3219,6 +3277,10 @@ async def fetch_polymarket_replay_status(session: AsyncSession) -> dict[str, Any
         "recent_scenario_count_24h": recent_scenario_count,
         "recent_coverage_limited_run_count_24h": coverage_limited_run_count,
         "recent_failed_run_count_24h": failed_run_count,
+        "coverage_mode": coverage_mode,
+        "configured_supported_detectors": _supported_replay_detector_types(),
+        "supported_detectors": supported_detectors,
+        "unsupported_detectors": unsupported_detectors,
         "recent_variant_summary": summary["variants"],
         "recent_runs": [_serialize_run(row) for row in recent_runs],
     }

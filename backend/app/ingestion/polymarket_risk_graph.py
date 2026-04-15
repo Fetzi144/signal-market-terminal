@@ -1641,7 +1641,19 @@ async def assess_structure_plan_risk(session: AsyncSession, *, plan: MarketStruc
         return None
     controls = _evaluate_control_for_asset(state, node=node, proposed_notional_usd=_to_decimal(plan.plan_notional_total) or ZERO, direction_sign=_direction_sign(direction=anchor_order.side, side=anchor_order.side, outcome_name=node.label), context_kind="structure_plan", scope_kind="market")
     approved = controls["recommendation_type"] not in {"block", "no_quote"}
-    return {"approved": approved, "approved_size_usd": controls["target_size_cap_usd"] if approved else ZERO, "reason": controls["reason_code"] if not approved else "phase10_risk_allow", "drawdown_active": False, "risk_mode": "graph", "recommendation": controls}
+    return {
+        "approved": approved,
+        "approved_size_usd": controls["target_size_cap_usd"] if approved else ZERO,
+        "reason": controls["reason_code"] if not approved else "phase10_risk_allow",
+        "reason_code": "risk_shared_global_block" if not approved else "phase10_risk_allow",
+        "drawdown_active": False,
+        "risk_mode": "graph",
+        "risk_source": "risk_graph",
+        "risk_scope": "shared_global",
+        "original_reason_code": controls["reason_code"],
+        "original_reason": controls["reason_code"],
+        "recommendation": controls,
+    }
 
 
 async def assess_paper_trade_risk(session: AsyncSession, *, outcome_id: uuid.UUID, market_id: uuid.UUID, direction: str, proposed_notional_usd: Decimal) -> dict[str, Any] | None:
@@ -1657,7 +1669,19 @@ async def assess_paper_trade_risk(session: AsyncSession, *, outcome_id: uuid.UUI
         return None
     controls = _evaluate_control_for_asset(state, node=node, proposed_notional_usd=proposed_notional_usd, direction_sign=_direction_sign(direction=direction, side=direction, outcome_name=asset_dim.outcome_name if asset_dim is not None else node.label), context_kind="paper_trade", scope_kind="asset")
     approved = controls["recommendation_type"] not in {"block", "no_quote"}
-    return {"approved": approved, "approved_size_usd": controls["target_size_cap_usd"] if approved else ZERO, "reason": controls["reason_code"] if not approved else "phase10_risk_allow", "drawdown_active": False, "risk_mode": "graph", "recommendation": controls}
+    return {
+        "approved": approved,
+        "approved_size_usd": controls["target_size_cap_usd"] if approved else ZERO,
+        "reason": controls["reason_code"] if not approved else "phase10_risk_allow",
+        "reason_code": "risk_shared_global_block" if not approved else "phase10_risk_allow",
+        "drawdown_active": False,
+        "risk_mode": "graph",
+        "risk_source": "risk_graph",
+        "risk_scope": "shared_global",
+        "original_reason_code": controls["reason_code"],
+        "original_reason": controls["reason_code"],
+        "recommendation": controls,
+    }
 
 
 class PolymarketRiskGraphService:

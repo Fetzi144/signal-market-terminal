@@ -229,6 +229,98 @@ class LiveFill(Base):
     )
 
 
+class PositionLot(Base):
+    __tablename__ = "position_lots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    condition_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    asset_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    strategy_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    pilot_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("polymarket_pilot_runs.id", ondelete="SET NULL"),
+    )
+    source_live_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("live_orders.id", ondelete="SET NULL"),
+    )
+    source_fill_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("live_fills.id", ondelete="SET NULL"),
+    )
+    side: Mapped[str] = mapped_column(String(16), nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    open_size: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    remaining_size: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    avg_open_price: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    avg_close_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    realized_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    fee_paid: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    source_live_order: Mapped["LiveOrder | None"] = relationship(foreign_keys=[source_live_order_id])
+    source_fill: Mapped["LiveFill | None"] = relationship(foreign_keys=[source_fill_id])
+    lot_events: Mapped[list["PositionLotEvent"]] = relationship(
+        back_populates="lot",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("ix_position_lots_strategy_status_opened", "strategy_family", "status", "opened_at"),
+        Index("ix_position_lots_condition_asset_status", "condition_id", "asset_id", "status"),
+        Index("ix_position_lots_pilot_run", "pilot_run_id"),
+        Index("ix_position_lots_source_live_order", "source_live_order_id"),
+        Index("ix_position_lots_source_fill", "source_fill_id"),
+    )
+
+
+class PositionLotEvent(Base):
+    __tablename__ = "position_lot_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    lot_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("position_lots.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    live_fill_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("live_fills.id", ondelete="SET NULL"),
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    size_delta: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    price: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    fee_delta: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    realized_pnl_delta: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    observed_at_local: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    lot: Mapped["PositionLot"] = relationship(back_populates="lot_events")
+    live_fill: Mapped["LiveFill | None"] = relationship(foreign_keys=[live_fill_id])
+
+    __table_args__ = (
+        Index("ix_position_lot_events_lot_observed", "lot_id", "observed_at_local"),
+        Index("ix_position_lot_events_live_fill", "live_fill_id"),
+        Index("ix_position_lot_events_type_observed", "event_type", "observed_at_local"),
+    )
+
+
 class CapitalReservation(Base):
     __tablename__ = "capital_reservations"
 

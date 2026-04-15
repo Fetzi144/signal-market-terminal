@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
-from sqlalchemy import DateTime, Index, String, text
+from sqlalchemy import DateTime, Index, Numeric, String, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,6 +17,10 @@ class StrategyRun(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    peak_equity: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    current_equity: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    max_drawdown: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    drawdown_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
     contract_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False

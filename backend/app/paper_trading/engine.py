@@ -4,14 +4,13 @@ This is the core simulation engine that tracks hypothetical P&L
 without real money. Every EV-positive signal triggers a paper trade
 using Kelly-recommended sizing, subject to risk management checks.
 """
-from dataclasses import dataclass
 import logging
-import math
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import desc, func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -23,9 +22,16 @@ from app.ingestion.polymarket_execution_policy import (
 from app.ingestion.polymarket_risk_graph import assess_paper_trade_risk
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
-from app.models.snapshot import OrderbookSnapshot
+from app.models.strategy_run import StrategyRun
+from app.paper_trading import portfolio_views as portfolio_views_module
+from app.paper_trading import shadow_execution as shadow_execution_module
+from app.paper_trading.strategy_run_state import (
+    apply_trade_resolution_to_run,
+    initialize_strategy_run_state,
+    strategy_run_state_complete,
+)
 from app.signals.ev import compute_directional_ev_full, compute_ev_full
-from app.signals.kelly import kelly_size_for_trade
+from app.signals.kelly import kelly_size, kelly_size_for_trade
 from app.signals.risk import check_exposure
 
 logger = logging.getLogger(__name__)
@@ -34,6 +40,7 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 HALF = Decimal("0.5")
 REASON_LABELS = {
+    "pending_decision": "Pending decision",
     "paper_trading_disabled": "Paper trading disabled",
     "already_recorded": "Already recorded in run",
     "already_open": "Already open",
@@ -46,6 +53,12 @@ REASON_LABELS = {
     "execution_partial_fill_below_minimum": "Partial fill below minimum",
     "execution_ev_below_threshold": "Executable EV below threshold",
     "execution_size_zero_after_fill_cap": "Executable size is zero after fill cap",
+    "risk_state_uninitialized": "Run risk state not initialized",
+    "risk_local_total_exposure": "Local paper-book total exposure limit reached",
+    "risk_local_cluster_exposure": "Local paper-book cluster exposure limit reached",
+    "risk_local_invalid_size": "Local paper-book invalid size",
+    "risk_local_rejected": "Local paper-book risk rejected",
+    "risk_shared_global_block": "Shared/global platform risk blocked the trade",
     "opened": "Trade opened",
 }
 
@@ -77,16 +90,6 @@ class ExecutionDecisionBuildResult:
     shadow_execution: dict | None = None
 
 
-@dataclass
-class OrderbookContext:
-    snapshot: OrderbookSnapshot | None
-    snapshot_age_seconds: int | None
-    snapshot_side: str | None
-    usable: bool
-    stale: bool = False
-    missing_reason: str | None = None
-
-
 def _risk_reason_code(reason: str) -> str:
     if reason == "event_cap_exceeded":
         return "risk_event_exposure"
@@ -114,6 +117,73 @@ def _risk_reason_label(reason_code: str) -> str:
         "risk_rejected": "Risk rejected",
     }
     return labels.get(reason_code, reason_code.replace("_", " "))
+
+
+async def _load_strategy_run(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None,
+) -> StrategyRun | None:
+    if strategy_run_id is None:
+        return None
+    return await session.get(StrategyRun, strategy_run_id)
+
+
+def _base_bankroll() -> Decimal:
+    return Decimal(str(settings.default_bankroll)).quantize(Decimal("0.01"))
+
+
+def _risk_context_from_run(strategy_run: StrategyRun | None, *, cumulative_pnl: Decimal) -> tuple[Decimal, Decimal]:
+    bankroll = _base_bankroll()
+    if strategy_run is None:
+        peak_bankroll = bankroll
+        if cumulative_pnl > ZERO:
+            peak_bankroll = bankroll + cumulative_pnl
+        return peak_bankroll, cumulative_pnl
+    if not strategy_run_state_complete(strategy_run):
+        raise ValueError("strategy_run risk state is not initialized")
+    peak_bankroll = Decimal(str(strategy_run.peak_equity))
+    run_cumulative_pnl = Decimal(str(strategy_run.current_equity)) - bankroll
+    return peak_bankroll, run_cumulative_pnl
+
+
+def _normalize_risk_result(
+    risk_result: dict | None,
+    *,
+    upstream_source: str,
+) -> dict | None:
+    if risk_result is None:
+        return None
+    normalized = dict(risk_result)
+    recommendation = normalized.get("recommendation")
+    if not isinstance(recommendation, dict):
+        recommendation = {}
+    original_reason_code = (
+        normalized.get("original_reason_code")
+        or normalized.get("reason_code")
+        or recommendation.get("reason_code")
+    )
+    original_reason = normalized.get("original_reason") or normalized.get("reason")
+    is_shared_global = (
+        upstream_source == "risk_graph"
+        or normalized.get("risk_scope") == "shared_global"
+        or normalized.get("risk_source") == "risk_graph"
+        or normalized.get("risk_mode") == "graph"
+        or recommendation.get("recommendation_type") in {"block", "reduce_size"}
+    )
+    if is_shared_global:
+        normalized.setdefault("risk_scope", "shared_global")
+        normalized.setdefault("risk_source", "risk_graph")
+        if not normalized.get("approved"):
+            normalized.setdefault("reason_code", "risk_shared_global_block")
+    else:
+        normalized.setdefault("risk_scope", "local_paper_book")
+        normalized.setdefault("risk_source", "paper_book")
+        if not normalized.get("approved"):
+            normalized.setdefault("reason_code", "risk_local_rejected")
+    normalized.setdefault("original_reason_code", original_reason_code)
+    normalized.setdefault("original_reason", original_reason)
+    return normalized
 
 
 def _ensure_utc(value: datetime | None) -> datetime | None:
@@ -158,54 +228,17 @@ def _net_expected_pnl_usd(
 
 
 async def get_portfolio_state(session: AsyncSession) -> dict:
-    """Get current portfolio state: open positions, P&L, exposure."""
-    return await _get_portfolio_state(session)
+    return await portfolio_views_module.get_portfolio_state(session)
 
 
-async def _get_portfolio_state(
-    session: AsyncSession,
-    *,
-    strategy_run_id: uuid.UUID | None = None,
-) -> dict:
-    """Get current portfolio state: open positions, P&L, exposure."""
-    # Open positions
-    open_query = select(PaperTrade).where(PaperTrade.status == "open")
-    resolved_query = select(
-        func.count(PaperTrade.id).label("total_trades"),
-        func.sum(PaperTrade.pnl).label("cumulative_pnl"),
-        func.count(PaperTrade.id).filter(PaperTrade.pnl > 0).label("wins"),
-        func.count(PaperTrade.id).filter(PaperTrade.pnl <= 0).label("losses"),
-    ).where(PaperTrade.status == "resolved")
-
-    if strategy_run_id is not None:
-        open_query = open_query.where(PaperTrade.strategy_run_id == strategy_run_id)
-        resolved_query = resolved_query.where(PaperTrade.strategy_run_id == strategy_run_id)
-
-    result = await session.execute(
-        open_query.order_by(PaperTrade.opened_at.desc())
-    )
-    open_trades = result.scalars().all()
-
-    # Resolved trades
-    result = await session.execute(resolved_query)
-    stats = result.one()
-
-    total_trades = stats.total_trades or 0
-    cumulative_pnl = stats.cumulative_pnl or ZERO
-    wins = stats.wins or 0
-    losses = stats.losses or 0
-
-    open_exposure = sum((t.size_usd for t in open_trades), ZERO)
-
-    return {
-        "open_trades": open_trades,
-        "open_exposure": open_exposure,
-        "total_resolved": total_trades,
-        "cumulative_pnl": cumulative_pnl,
-        "wins": wins,
-        "losses": losses,
-        "win_rate": Decimal(str(wins / total_trades)).quantize(Decimal("0.0001")) if total_trades > 0 else ZERO,
-    }
+def _decision_action(decision: str, action: str | None = None) -> str:
+    if action is not None:
+        return action
+    if decision == "opened":
+        return "cross"
+    if decision == "pending_decision":
+        return "pending"
+    return "skip"
 
 
 async def build_execution_decision(
@@ -224,6 +257,7 @@ async def build_execution_decision(
     """Build and persist the Phase 0 execution decision before a trade opens."""
 
     decision_at = _ensure_utc(fired_at) or datetime.now(timezone.utc)
+    execution_decision_row: ExecutionDecision | None = None
 
     async def finish(
         *,
@@ -268,8 +302,9 @@ async def build_execution_decision(
         decision_reason_json: dict | None = None,
         polymarket_policy_result=None,
     ) -> ExecutionDecisionBuildResult:
+        nonlocal execution_decision_row
         label = reason_label or _reason_label(reason_code)
-        execution_decision = None
+        execution_decision = execution_decision_row
         if strategy_run_id is not None:
             details_payload = _json_safe(
                 {
@@ -303,42 +338,74 @@ async def build_execution_decision(
                     "decision_reason_json": decision_reason_json,
                 }
             )
-            execution_decision = ExecutionDecision(
-                id=uuid.uuid4(),
-                signal_id=signal_id,
-                strategy_run_id=strategy_run_id,
-                decision_at=decision_at,
-                decision_status=decision,
-                action=action or ("cross" if decision == "opened" else "skip"),
-                direction=direction,
-                ideal_entry_price=ideal_entry_price,
-                executable_entry_price=executable_entry_price,
-                requested_size_usd=requested_size_usd,
-                fillable_size_usd=fillable_size_usd,
-                fill_probability=fill_probability,
-                net_ev_per_share=net_ev_per_share,
-                net_expected_pnl_usd=net_expected_pnl_usd,
-                missing_orderbook_context=missing_orderbook_context,
-                stale_orderbook_context=stale_orderbook_context,
-                liquidity_constrained=liquidity_constrained,
-                fill_status=fill_status,
-                reason_code=reason_code,
-                chosen_action_type=chosen_action_type,
-                chosen_order_type_hint=chosen_order_type_hint,
-                chosen_target_price=chosen_target_price,
-                chosen_target_size=chosen_target_size,
-                chosen_est_fillable_size=chosen_est_fillable_size,
-                chosen_est_fill_probability=chosen_est_fill_probability,
-                chosen_est_net_ev_bps=chosen_est_net_ev_bps,
-                chosen_est_net_ev_total=chosen_est_net_ev_total,
-                chosen_est_fee=chosen_est_fee,
-                chosen_est_slippage=chosen_est_slippage,
-                chosen_policy_version=chosen_policy_version,
-                decision_reason_json=_json_safe(decision_reason_json),
-                details=details_payload,
-            )
-            session.add(execution_decision)
+            if execution_decision is None:
+                execution_decision = ExecutionDecision(
+                    id=uuid.uuid4(),
+                    signal_id=signal_id,
+                    strategy_run_id=strategy_run_id,
+                    decision_at=decision_at,
+                    decision_status=decision,
+                    action=_decision_action(decision, action),
+                    direction=direction,
+                    ideal_entry_price=ideal_entry_price,
+                    executable_entry_price=executable_entry_price,
+                    requested_size_usd=requested_size_usd,
+                    fillable_size_usd=fillable_size_usd,
+                    fill_probability=fill_probability,
+                    net_ev_per_share=net_ev_per_share,
+                    net_expected_pnl_usd=net_expected_pnl_usd,
+                    missing_orderbook_context=missing_orderbook_context,
+                    stale_orderbook_context=stale_orderbook_context,
+                    liquidity_constrained=liquidity_constrained,
+                    fill_status=fill_status,
+                    reason_code=reason_code,
+                    chosen_action_type=chosen_action_type,
+                    chosen_order_type_hint=chosen_order_type_hint,
+                    chosen_target_price=chosen_target_price,
+                    chosen_target_size=chosen_target_size,
+                    chosen_est_fillable_size=chosen_est_fillable_size,
+                    chosen_est_fill_probability=chosen_est_fill_probability,
+                    chosen_est_net_ev_bps=chosen_est_net_ev_bps,
+                    chosen_est_net_ev_total=chosen_est_net_ev_total,
+                    chosen_est_fee=chosen_est_fee,
+                    chosen_est_slippage=chosen_est_slippage,
+                    chosen_policy_version=chosen_policy_version,
+                    decision_reason_json=_json_safe(decision_reason_json),
+                    details=details_payload,
+                )
+                session.add(execution_decision)
+            else:
+                execution_decision.decision_at = decision_at
+                execution_decision.decision_status = decision
+                execution_decision.action = _decision_action(decision, action)
+                execution_decision.direction = direction
+                execution_decision.ideal_entry_price = ideal_entry_price
+                execution_decision.executable_entry_price = executable_entry_price
+                execution_decision.requested_size_usd = requested_size_usd
+                execution_decision.fillable_size_usd = fillable_size_usd
+                execution_decision.fill_probability = fill_probability
+                execution_decision.net_ev_per_share = net_ev_per_share
+                execution_decision.net_expected_pnl_usd = net_expected_pnl_usd
+                execution_decision.missing_orderbook_context = missing_orderbook_context
+                execution_decision.stale_orderbook_context = stale_orderbook_context
+                execution_decision.liquidity_constrained = liquidity_constrained
+                execution_decision.fill_status = fill_status
+                execution_decision.reason_code = reason_code
+                execution_decision.chosen_action_type = chosen_action_type
+                execution_decision.chosen_order_type_hint = chosen_order_type_hint
+                execution_decision.chosen_target_price = chosen_target_price
+                execution_decision.chosen_target_size = chosen_target_size
+                execution_decision.chosen_est_fillable_size = chosen_est_fillable_size
+                execution_decision.chosen_est_fill_probability = chosen_est_fill_probability
+                execution_decision.chosen_est_net_ev_bps = chosen_est_net_ev_bps
+                execution_decision.chosen_est_net_ev_total = chosen_est_net_ev_total
+                execution_decision.chosen_est_fee = chosen_est_fee
+                execution_decision.chosen_est_slippage = chosen_est_slippage
+                execution_decision.chosen_policy_version = chosen_policy_version
+                execution_decision.decision_reason_json = _json_safe(decision_reason_json)
+                execution_decision.details = details_payload
             await session.flush()
+            execution_decision_row = execution_decision
             if polymarket_policy_result is not None:
                 await persist_polymarket_execution_policy_result(
                     session,
@@ -368,21 +435,34 @@ async def build_execution_decision(
                 ExecutionDecision.strategy_run_id == strategy_run_id,
             )
         )
-        existing_decision = existing_decision_result.scalars().first()
-        if existing_decision is not None:
+        execution_decision_row = existing_decision_result.scalars().first()
+        if execution_decision_row is not None and execution_decision_row.decision_status != "pending_decision":
             return ExecutionDecisionBuildResult(
-                execution_decision=existing_decision,
+                execution_decision=execution_decision_row,
                 decision="skipped",
                 reason_code="already_recorded",
                 reason_label=_reason_label("already_recorded"),
-                detail=f"Signal already has an execution decision in strategy run ({existing_decision.id})",
+                detail=f"Signal already has an execution decision in strategy run ({execution_decision_row.id})",
                 diagnostics={
-                    "existing_execution_decision_id": str(existing_decision.id),
-                    "existing_decision_status": existing_decision.decision_status,
-                    "existing_reason_code": existing_decision.reason_code,
+                    "existing_execution_decision_id": str(execution_decision_row.id),
+                    "existing_decision_status": execution_decision_row.decision_status,
+                    "existing_reason_code": execution_decision_row.reason_code,
                 },
             )
 
+    strategy_run = await _load_strategy_run(session, strategy_run_id=strategy_run_id)
+    if strategy_run_id is not None and strategy_run is None:
+        return await finish(
+            decision="skipped",
+            reason_code="risk_state_uninitialized",
+            detail=f"Strategy run {strategy_run_id} no longer exists",
+        )
+    if strategy_run is not None and not strategy_run_state_complete(strategy_run):
+        return await finish(
+            decision="skipped",
+            reason_code="risk_state_uninitialized",
+            detail="Strategy run drawdown state is not initialized. Start a fresh run before trading.",
+        )
     existing_query = select(PaperTrade.id, PaperTrade.status).where(PaperTrade.signal_id == signal_id)
     if strategy_run_id is not None:
         existing_query = existing_query.where(PaperTrade.strategy_run_id == strategy_run_id)
@@ -394,7 +474,7 @@ async def build_execution_decision(
         existing_trade_id, existing_trade_status = existing_trade
         if strategy_run_id is not None:
             return ExecutionDecisionBuildResult(
-                execution_decision=None,
+                execution_decision=execution_decision_row,
                 decision="skipped",
                 reason_code="already_recorded",
                 reason_label=_reason_label("already_recorded"),
@@ -411,6 +491,31 @@ async def build_execution_decision(
             detail=f"Signal already has an open paper trade ({existing_trade_id})",
         )
 
+    if strategy_run_id is not None and execution_decision_row is None:
+        execution_decision_row = ExecutionDecision(
+            id=uuid.uuid4(),
+            signal_id=signal_id,
+            strategy_run_id=strategy_run_id,
+            decision_at=decision_at,
+            decision_status="pending_decision",
+            action="pending",
+            direction=None,
+            reason_code="pending_decision",
+            decision_reason_json=None,
+            details=_json_safe(
+                {
+                    "reason_label": _reason_label("pending_decision"),
+                    "detail": None,
+                    "market_id": market_id,
+                    "market_question": market_question,
+                    "estimated_probability": estimated_probability,
+                    "market_price": market_price,
+                }
+            ),
+        )
+        session.add(execution_decision_row)
+        await session.flush()
+
     if not settings.paper_trading_enabled:
         return await finish(decision="skipped", reason_code="paper_trading_disabled")
 
@@ -425,6 +530,13 @@ async def build_execution_decision(
             derived_precheck_reason_code = "missing_market_price"
 
     if derived_precheck_reason_code is not None:
+        if derived_precheck_reason_code == "pending_decision":
+            return await finish(
+                decision="pending_decision",
+                reason_code="pending_decision",
+                reason_label=derived_precheck_reason_label,
+                action="pending",
+            )
         return await finish(
             decision="skipped",
             reason_code=derived_precheck_reason_code,
@@ -640,7 +752,7 @@ async def build_execution_decision(
                     polymarket_policy_result=policy_result,
                 )
 
-            portfolio = await _get_portfolio_state(session, strategy_run_id=strategy_run_id)
+            portfolio = await portfolio_views_module._get_portfolio_state(session, strategy_run_id=strategy_run_id)
             open_positions = [
                 {
                     "size_usd": t.size_usd,
@@ -649,9 +761,10 @@ async def build_execution_decision(
                 }
                 for t in portfolio["open_trades"]
             ]
-            peak_bankroll = bankroll
-            if portfolio["cumulative_pnl"] > ZERO:
-                peak_bankroll = bankroll + portfolio["cumulative_pnl"]
+            peak_bankroll, cumulative_pnl = _risk_context_from_run(
+                strategy_run,
+                cumulative_pnl=portfolio["cumulative_pnl"],
+            )
 
             risk_result = await assess_paper_trade_risk(
                 session,
@@ -673,14 +786,20 @@ async def build_execution_decision(
                     max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
                     drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
                     peak_bankroll=peak_bankroll,
-                    cumulative_pnl=portfolio["cumulative_pnl"],
+                    cumulative_pnl=cumulative_pnl,
                 )
+                risk_result = _normalize_risk_result(risk_result, upstream_source="local_paper_book")
+            else:
+                risk_result = _normalize_risk_result(risk_result, upstream_source="risk_graph")
             if not risk_result["approved"]:
                 logger.info(
                     "Paper trade rejected by risk check: %s (signal %s)",
                     risk_result["reason"], signal_id,
                 )
-                reason_code = _risk_reason_code(risk_result["reason"])
+                reason_code = str(
+                    risk_result.get("reason_code")
+                    or ("risk_shared_global_block" if risk_result.get("risk_scope") == "shared_global" else "risk_local_rejected")
+                )
                 return await finish(
                     decision="skipped",
                     reason_code=reason_code,
@@ -695,6 +814,7 @@ async def build_execution_decision(
                         "fill_capped_size_usd": str(fill_capped_size_usd),
                         "approved_size_usd": str(risk_result["approved_size_usd"]),
                         "risk_reason": risk_result["reason"],
+                        "risk_result": _json_safe(risk_result),
                         "drawdown_active": risk_result["drawdown_active"],
                     },
                     direction=ideal_ev["direction"],
@@ -747,9 +867,9 @@ async def build_execution_decision(
                 diagnostics={
                     "direction": ideal_ev["direction"],
                     "ideal_entry_price": str(ideal_ev["entry_price"]),
-                    "ideal_ev_per_share": str(ideal_ev["ev_per_share"]),
-                    "executable_entry_price": str(executable_entry_price),
-                    "ev_per_share": str(chosen.est_net_ev_per_share),
+                        "ideal_ev_per_share": str(ideal_ev["ev_per_share"]),
+                        "executable_entry_price": str(executable_entry_price),
+                        "ev_per_share": str(chosen.est_net_ev_per_share),
                     "edge_pct": (
                         str(((chosen.est_net_ev_bps or ZERO) / Decimal("10000")).quantize(Decimal("0.00000001")))
                         if chosen.est_net_ev_bps is not None
@@ -759,9 +879,10 @@ async def build_execution_decision(
                     "kelly_used": str(executable_sizing["kelly_used"]),
                     "recommended_size_usd": str(executable_sizing["recommended_size_usd"]),
                     "fillable_size_usd": str(fillable_size_usd),
-                    "fill_capped_size_usd": str(fill_capped_size_usd),
-                    "approved_size_usd": str(approved_size_usd),
-                    "drawdown_active": risk_result["drawdown_active"],
+                        "fill_capped_size_usd": str(fill_capped_size_usd),
+                        "approved_size_usd": str(approved_size_usd),
+                        "risk_result": _json_safe(risk_result),
+                        "drawdown_active": risk_result["drawdown_active"],
                     "shadow_entry_price": str(executable_entry_price),
                     "liquidity_constrained": shadow_details.get("liquidity_constrained"),
                     "missing_orderbook_context": shadow_details.get("missing_orderbook_context"),
@@ -814,7 +935,7 @@ async def build_execution_decision(
                 polymarket_policy_result=policy_result,
             )
 
-    shadow_execution = await _build_shadow_execution(
+    shadow_execution = await shadow_execution_module.build_shadow_execution(
         session=session,
         outcome_id=outcome_id,
         direction=ideal_ev["direction"],
@@ -823,8 +944,8 @@ async def build_execution_decision(
         fired_at=fired_at,
     )
     shadow_details = shadow_execution["details"]
-    fillable_size_usd = _parse_decimal(shadow_details.get("filled_size_usd")) or ZERO
-    fill_probability = _parse_decimal(shadow_details.get("fill_pct"))
+    fillable_size_usd = shadow_execution_module.parse_decimal(shadow_details.get("filled_size_usd")) or ZERO
+    fill_probability = shadow_execution_module.parse_decimal(shadow_details.get("fill_pct"))
 
     if shadow_details.get("missing_orderbook_context") is True:
         reason_code = (
@@ -983,7 +1104,7 @@ async def build_execution_decision(
             fill_capped_size_usd=fill_capped_size_usd,
         )
 
-    portfolio = await _get_portfolio_state(session, strategy_run_id=strategy_run_id)
+    portfolio = await portfolio_views_module._get_portfolio_state(session, strategy_run_id=strategy_run_id)
     open_positions = [
         {
             "size_usd": t.size_usd,
@@ -992,9 +1113,10 @@ async def build_execution_decision(
         }
         for t in portfolio["open_trades"]
     ]
-    peak_bankroll = bankroll
-    if portfolio["cumulative_pnl"] > ZERO:
-        peak_bankroll = bankroll + portfolio["cumulative_pnl"]
+    peak_bankroll, cumulative_pnl = _risk_context_from_run(
+        strategy_run,
+        cumulative_pnl=portfolio["cumulative_pnl"],
+    )
 
     risk_result = await assess_paper_trade_risk(
         session,
@@ -1016,14 +1138,20 @@ async def build_execution_decision(
             max_cluster_pct=Decimal(str(settings.max_cluster_exposure_pct)),
             drawdown_breaker_pct=Decimal(str(settings.drawdown_circuit_breaker_pct)),
             peak_bankroll=peak_bankroll,
-            cumulative_pnl=portfolio["cumulative_pnl"],
+            cumulative_pnl=cumulative_pnl,
         )
+        risk_result = _normalize_risk_result(risk_result, upstream_source="local_paper_book")
+    else:
+        risk_result = _normalize_risk_result(risk_result, upstream_source="risk_graph")
     if not risk_result["approved"]:
         logger.info(
             "Paper trade rejected by risk check: %s (signal %s)",
             risk_result["reason"], signal_id,
         )
-        reason_code = _risk_reason_code(risk_result["reason"])
+        reason_code = str(
+            risk_result.get("reason_code")
+            or ("risk_shared_global_block" if risk_result.get("risk_scope") == "shared_global" else "risk_local_rejected")
+        )
         return await finish(
             decision="skipped",
             reason_code=reason_code,
@@ -1035,6 +1163,7 @@ async def build_execution_decision(
                 "fill_capped_size_usd": str(fill_capped_size_usd),
                 "approved_size_usd": str(risk_result["approved_size_usd"]),
                 "risk_reason": risk_result["reason"],
+                "risk_result": _json_safe(risk_result),
                 "drawdown_active": risk_result["drawdown_active"],
             },
             direction=ideal_ev["direction"],
@@ -1200,6 +1329,7 @@ async def attempt_open_trade(
             "approved_size_usd": decision_result.diagnostics["approved_size_usd"],
             "ideal_ev_per_share": decision_result.diagnostics["ideal_ev_per_share"],
             "risk_result": "approved" if not decision_result.diagnostics["drawdown_active"] else "approved (drawdown-reduced)",
+            "risk_control": decision_result.diagnostics.get("risk_result"),
             "drawdown_active": decision_result.diagnostics["drawdown_active"],
             "chosen_action_type": decision_result.diagnostics.get("chosen_action_type"),
             "chosen_order_type_hint": decision_result.diagnostics.get("chosen_order_type_hint"),
@@ -1351,7 +1481,7 @@ async def _legacy_attempt_open_trade(
         )
 
     # Risk check
-    portfolio = await _get_portfolio_state(session, strategy_run_id=strategy_run_id)
+    portfolio = await portfolio_views_module._get_portfolio_state(session, strategy_run_id=strategy_run_id)
     open_positions = [
         {
             "size_usd": t.size_usd,
@@ -1413,7 +1543,7 @@ async def _legacy_attempt_open_trade(
     approved_size = risk_result["approved_size_usd"]
     entry_price = sizing["entry_price"]
     shares = (approved_size / entry_price).quantize(Decimal("0.0001")) if entry_price > ZERO else ZERO
-    shadow_execution = await _build_shadow_execution(
+    shadow_execution = await shadow_execution_module.build_shadow_execution(
         session=session,
         outcome_id=outcome_id,
         direction=sizing["direction"],
@@ -1505,6 +1635,34 @@ async def open_trade(
     return result.trade
 
 
+async def ensure_pending_execution_decision(
+    session: AsyncSession,
+    *,
+    signal_id: uuid.UUID,
+    outcome_id: uuid.UUID | None,
+    market_id: uuid.UUID,
+    estimated_probability: Decimal | None,
+    market_price: Decimal | None,
+    market_question: str = "",
+    fired_at: datetime | None = None,
+    strategy_run_id: uuid.UUID | None = None,
+) -> ExecutionDecision | None:
+    result = await build_execution_decision(
+        session=session,
+        signal_id=signal_id,
+        outcome_id=outcome_id,
+        market_id=market_id,
+        estimated_probability=estimated_probability,
+        market_price=market_price,
+        market_question=market_question,
+        fired_at=fired_at,
+        strategy_run_id=strategy_run_id,
+        precheck_reason_code="pending_decision",
+        precheck_reason_label=_reason_label("pending_decision"),
+    )
+    return result.execution_decision
+
+
 async def resolve_trades(
     session: AsyncSession,
     outcome_id: uuid.UUID,
@@ -1538,8 +1696,9 @@ async def resolve_trades(
 
     now = resolved_at or datetime.now(timezone.utc)
     count = 0
+    strategy_runs: dict[uuid.UUID, StrategyRun] = {}
 
-    for trade in trades:
+    for trade in sorted(trades, key=lambda row: str(row.id)):
         if trade.direction == "buy_yes":
             exit_price = Decimal("1.000000") if outcome_won else Decimal("0.000000")
         else:  # buy_no
@@ -1548,7 +1707,7 @@ async def resolve_trades(
         # P&L = shares * (exit_price - entry_price)
         pnl = (trade.shares * (exit_price - trade.entry_price)).quantize(Decimal("0.01"))
         shadow_pnl = None
-        shadow_shares = _shadow_shares_from_trade(trade)
+        shadow_shares = shadow_execution_module.shadow_shares_from_trade(trade)
         if shadow_shares == ZERO:
             shadow_pnl = ZERO.quantize(Decimal("0.01"))
         elif trade.shadow_entry_price is not None and trade.shadow_entry_price > ZERO:
@@ -1559,6 +1718,16 @@ async def resolve_trades(
         trade.shadow_pnl = shadow_pnl
         trade.status = "resolved"
         trade.resolved_at = now
+        if trade.strategy_run_id is not None:
+            strategy_run = strategy_runs.get(trade.strategy_run_id)
+            if strategy_run is None:
+                strategy_run = await session.get(StrategyRun, trade.strategy_run_id)
+                if strategy_run is not None:
+                    if not strategy_run_state_complete(strategy_run):
+                        initialize_strategy_run_state(strategy_run)
+                    strategy_runs[trade.strategy_run_id] = strategy_run
+            if strategy_run is not None:
+                apply_trade_resolution_to_run(strategy_run, pnl=pnl)
         count += 1
 
         logger.info(
@@ -1573,433 +1742,8 @@ async def resolve_trades(
 
 
 async def get_metrics(session: AsyncSession) -> dict:
-    """Compute portfolio performance metrics: Sharpe, max drawdown, win rate, P&L."""
-    # Get all resolved trades ordered by resolution time
-    result = await session.execute(
-        select(PaperTrade)
-        .where(PaperTrade.status == "resolved")
-        .order_by(PaperTrade.resolved_at.asc())
-    )
-    resolved = result.scalars().all()
-
-    if not resolved:
-        return {
-            "total_trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "win_rate": 0.0,
-            "cumulative_pnl": 0.0,
-            "shadow_cumulative_pnl": 0.0,
-            "avg_pnl": 0.0,
-            "max_drawdown": 0.0,
-            "sharpe_ratio": 0.0,
-            "profit_factor": 0.0,
-            "shadow_profit_factor": 0.0,
-            "best_trade": 0.0,
-            "worst_trade": 0.0,
-            "liquidity_constrained_trades": 0,
-            "trades_missing_orderbook_context": 0,
-        }
-
-    pnls = [float(t.pnl) for t in resolved if t.pnl is not None]
-    shadow_pnls = [float(t.shadow_pnl) for t in resolved if t.shadow_pnl is not None]
-    wins = [p for p in pnls if p > 0]
-    losses = [p for p in pnls if p <= 0]
-    shadow_wins = [p for p in shadow_pnls if p > 0]
-    shadow_losses = [p for p in shadow_pnls if p <= 0]
-
-    # Cumulative P&L curve for max drawdown
-    cumulative = []
-    running = 0.0
-    for p in pnls:
-        running += p
-        cumulative.append(running)
-
-    # Max drawdown
-    peak = 0.0
-    max_dd = 0.0
-    for value in cumulative:
-        if value > peak:
-            peak = value
-        dd = peak - value
-        if dd > max_dd:
-            max_dd = dd
-
-    # Sharpe ratio (simplified: mean/std of per-trade returns)
-    mean_pnl = sum(pnls) / len(pnls)
-    if len(pnls) > 1:
-        variance = sum((p - mean_pnl) ** 2 for p in pnls) / (len(pnls) - 1)
-        std_pnl = math.sqrt(variance)
-        sharpe = (mean_pnl / std_pnl) if std_pnl > 0 else 0.0
-    else:
-        sharpe = 0.0
-
-    # Profit factor
-    total_wins = sum(wins) if wins else 0.0
-    total_losses = abs(sum(losses)) if losses else 0.0
-    profit_factor = (total_wins / total_losses) if total_losses > 0 else float("inf") if total_wins > 0 else 0.0
-    shadow_total_wins = sum(shadow_wins) if shadow_wins else 0.0
-    shadow_total_losses = abs(sum(shadow_losses)) if shadow_losses else 0.0
-    shadow_profit_factor = (
-        shadow_total_wins / shadow_total_losses
-        if shadow_total_losses > 0
-        else float("inf") if shadow_total_wins > 0 else 0.0
-    )
-    liquidity_constrained_trades = sum(
-        1
-        for trade in resolved
-        if isinstance(trade.details, dict)
-        and isinstance(trade.details.get("shadow_execution"), dict)
-        and trade.details["shadow_execution"].get("liquidity_constrained") is True
-    )
-    trades_missing_orderbook_context = sum(
-        1
-        for trade in resolved
-        if isinstance(trade.details, dict)
-        and isinstance(trade.details.get("shadow_execution"), dict)
-        and trade.details["shadow_execution"].get("missing_orderbook_context") is True
-    )
-
-    return {
-        "total_trades": len(pnls),
-        "wins": len(wins),
-        "losses": len(losses),
-        "win_rate": round(len(wins) / len(pnls), 4) if pnls else 0.0,
-        "cumulative_pnl": round(sum(pnls), 2),
-        "shadow_cumulative_pnl": round(sum(shadow_pnls), 2) if shadow_pnls else 0.0,
-        "avg_pnl": round(mean_pnl, 2),
-        "max_drawdown": round(max_dd, 2),
-        "sharpe_ratio": round(sharpe, 4),
-        "profit_factor": round(profit_factor, 4) if profit_factor != float("inf") else None,
-        "shadow_profit_factor": round(shadow_profit_factor, 4) if shadow_profit_factor != float("inf") else None,
-        "best_trade": round(max(pnls), 2) if pnls else 0.0,
-        "worst_trade": round(min(pnls), 2) if pnls else 0.0,
-        "liquidity_constrained_trades": liquidity_constrained_trades,
-        "trades_missing_orderbook_context": trades_missing_orderbook_context,
-    }
+    return await portfolio_views_module.get_metrics(session)
 
 
 async def get_pnl_curve(session: AsyncSession) -> list[dict]:
-    """Return cumulative P&L curve data points for charting."""
-    result = await session.execute(
-        select(PaperTrade)
-        .where(PaperTrade.status == "resolved")
-        .order_by(PaperTrade.resolved_at.asc())
-    )
-    resolved = result.scalars().all()
-
-    curve = []
-    running = Decimal("0")
-    for trade in resolved:
-        if trade.pnl is not None and trade.resolved_at is not None:
-            running += trade.pnl
-            curve.append({
-                "timestamp": trade.resolved_at.isoformat(),
-                "pnl": float(running),
-                "trade_pnl": float(trade.pnl),
-                "shadow_trade_pnl": float(trade.shadow_pnl) if trade.shadow_pnl is not None else None,
-                "direction": trade.direction,
-                "trade_id": str(trade.id),
-            })
-
-    return curve
-
-
-def _parse_decimal(value) -> Decimal | None:
-    if value in (None, "", []):
-        return None
-    try:
-        return Decimal(str(value))
-    except Exception:
-        return None
-
-
-def _best_price(levels) -> Decimal | None:
-    if not levels:
-        return None
-    try:
-        return Decimal(str(levels[0][0]))
-    except Exception:
-        return None
-
-
-def _near_touch_liquidity(
-    levels,
-    *,
-    side: str,
-    half_spread: Decimal,
-) -> dict[str, Decimal | None]:
-    if not levels:
-        return {
-            "available_depth_shares": None,
-            "available_depth_usd": None,
-        }
-
-    best = _best_price(levels)
-    if best is None:
-        return {
-            "available_depth_shares": None,
-            "available_depth_usd": None,
-        }
-
-    threshold = half_spread if half_spread > ZERO else Decimal("0.01")
-    depth_shares = ZERO
-    depth_usd = ZERO
-    saw_level = False
-
-    for level in levels:
-        if len(level) < 2:
-            continue
-        price = _parse_decimal(level[0])
-        size = _parse_decimal(level[1])
-        if price is None or size is None or size <= ZERO:
-            continue
-        if side == "ask":
-            if price > best + threshold:
-                break
-            fill_price = price
-        else:
-            if price < best - threshold:
-                break
-            fill_price = (ONE - price).quantize(Decimal("0.000001"))
-        saw_level = True
-        if fill_price <= ZERO:
-            continue
-        depth_shares += size
-        depth_usd += size * fill_price
-
-    if not saw_level:
-        return {
-            "available_depth_shares": None,
-            "available_depth_usd": None,
-        }
-
-    return {
-        "available_depth_shares": depth_shares.quantize(Decimal("0.0001")),
-        "available_depth_usd": depth_usd.quantize(Decimal("0.01")),
-    }
-
-
-async def _nearest_orderbook_snapshot(
-    session: AsyncSession,
-    outcome_id: uuid.UUID,
-    fired_at: datetime | None,
-) -> OrderbookContext:
-    anchor = _ensure_utc(fired_at) or datetime.now(timezone.utc)
-    before_result = await session.execute(
-        select(OrderbookSnapshot)
-        .where(
-            OrderbookSnapshot.outcome_id == outcome_id,
-            OrderbookSnapshot.captured_at <= anchor,
-        )
-        .order_by(desc(OrderbookSnapshot.captured_at))
-        .limit(1)
-    )
-    before = before_result.scalars().first()
-
-    after_result = await session.execute(
-        select(OrderbookSnapshot)
-        .where(
-            OrderbookSnapshot.outcome_id == outcome_id,
-            OrderbookSnapshot.captured_at >= anchor,
-        )
-        .order_by(OrderbookSnapshot.captured_at.asc())
-        .limit(1)
-    )
-    after = after_result.scalars().first()
-
-    usable_candidates: list[tuple[int, int, OrderbookSnapshot, str]] = []
-    before_captured_at = _ensure_utc(before.captured_at) if before is not None else None
-    after_captured_at = _ensure_utc(after.captured_at) if after is not None else None
-    if before is not None and before_captured_at is not None:
-        age_seconds = max(0, int((anchor - before_captured_at).total_seconds()))
-        if age_seconds <= settings.shadow_execution_max_staleness_seconds:
-            usable_candidates.append((age_seconds, 0, before, "before"))
-    if after is not None and after_captured_at is not None:
-        age_seconds = max(0, int((after_captured_at - anchor).total_seconds()))
-        if age_seconds <= settings.shadow_execution_max_forward_seconds:
-            usable_candidates.append((age_seconds, 1, after, "after"))
-
-    if usable_candidates:
-        age_seconds, _priority, snapshot, snapshot_side = min(usable_candidates, key=lambda row: (row[0], row[1]))
-        return OrderbookContext(
-            snapshot=snapshot,
-            snapshot_age_seconds=age_seconds,
-            snapshot_side=snapshot_side,
-            usable=True,
-        )
-
-    stale_candidates: list[tuple[int, int, OrderbookSnapshot, str, str]] = []
-    if before is not None and before_captured_at is not None:
-        age_seconds = max(0, int((anchor - before_captured_at).total_seconds()))
-        stale_candidates.append((age_seconds, 0, before, "before", "stale_snapshot"))
-    if after is not None and after_captured_at is not None:
-        age_seconds = max(0, int((after_captured_at - anchor).total_seconds()))
-        stale_candidates.append((age_seconds, 1, after, "after", "future_snapshot_too_far"))
-
-    if stale_candidates:
-        age_seconds, _priority, snapshot, snapshot_side, missing_reason = min(
-            stale_candidates,
-            key=lambda row: (row[0], row[1]),
-        )
-        return OrderbookContext(
-            snapshot=snapshot,
-            snapshot_age_seconds=age_seconds,
-            snapshot_side=snapshot_side,
-            usable=False,
-            stale=True,
-            missing_reason=missing_reason,
-        )
-
-    return OrderbookContext(
-        snapshot=None,
-        snapshot_age_seconds=None,
-        snapshot_side=None,
-        usable=False,
-        stale=False,
-        missing_reason="no_snapshot",
-    )
-
-
-async def _build_shadow_execution(
-    session: AsyncSession,
-    *,
-    outcome_id: uuid.UUID,
-    direction: str,
-    approved_size: Decimal,
-    ideal_entry_price: Decimal,
-    fired_at: datetime | None,
-) -> dict:
-    orderbook_context = await _nearest_orderbook_snapshot(session, outcome_id, fired_at)
-    snapshot = orderbook_context.snapshot
-    requested_size_usd = approved_size.quantize(Decimal("0.01"))
-    if not orderbook_context.usable or snapshot is None:
-        return {
-            "shadow_entry_price": None,
-            "details": {
-                "missing_orderbook_context": True,
-                "stale_orderbook_context": orderbook_context.stale,
-                "liquidity_constrained": False,
-                "fill_status": "no_fill",
-                "fill_reason": orderbook_context.missing_reason or "missing_orderbook_context",
-                "snapshot_id": snapshot.id if snapshot is not None else None,
-                "captured_at": _ensure_utc(snapshot.captured_at).isoformat() if snapshot is not None and snapshot.captured_at else None,
-                "snapshot_age_seconds": orderbook_context.snapshot_age_seconds,
-                "snapshot_side": orderbook_context.snapshot_side,
-                "spread": str(snapshot.spread) if snapshot is not None and snapshot.spread is not None else None,
-                "best_bid": str(_best_price(snapshot.bids)) if snapshot is not None and _best_price(snapshot.bids) is not None else None,
-                "best_ask": str(_best_price(snapshot.asks)) if snapshot is not None and _best_price(snapshot.asks) is not None else None,
-                "available_depth_shares": None,
-                "available_depth_usd": None,
-                "size_to_depth_ratio": None,
-                "requested_size_usd": str(requested_size_usd),
-                "filled_size_usd": "0.00",
-                "unfilled_size_usd": str(requested_size_usd),
-                "fill_pct": "0.0000",
-                "shadow_shares": "0.0000",
-            },
-        }
-
-    spread = snapshot.spread or ZERO
-    half_spread = (spread * HALF).quantize(Decimal("0.000001"))
-    best_bid = _best_price(snapshot.bids)
-    best_ask = _best_price(snapshot.asks)
-    if direction == "buy_yes":
-        liquidity = _near_touch_liquidity(
-            snapshot.asks or [],
-            side="ask",
-            half_spread=half_spread,
-        )
-    else:
-        liquidity = _near_touch_liquidity(
-            snapshot.bids or [],
-            side="bid",
-            half_spread=half_spread,
-        )
-    available_depth_shares = liquidity["available_depth_shares"]
-    available_depth_usd = liquidity["available_depth_usd"]
-
-    shadow_entry_price = (ideal_entry_price + half_spread).quantize(Decimal("0.000001"))
-    if best_ask is not None and direction == "buy_yes":
-        shadow_entry_price = max(shadow_entry_price, best_ask)
-    if best_bid is not None and direction == "buy_no":
-        shadow_entry_price = max(shadow_entry_price, (ONE - best_bid).quantize(Decimal("0.000001")))
-    shadow_entry_price = min(shadow_entry_price, ONE)
-
-    size_to_depth_ratio = None
-    if available_depth_usd is not None and available_depth_usd > ZERO:
-        size_to_depth_ratio = (approved_size / available_depth_usd).quantize(Decimal("0.0001"))
-
-    if available_depth_usd is None or available_depth_usd <= ZERO:
-        fill_status = "no_fill"
-        filled_size_usd = ZERO
-        liquidity_constrained = True
-        fill_reason = "no_near_touch_depth"
-    elif approved_size > available_depth_usd:
-        candidate_fill_pct = (available_depth_usd / approved_size).quantize(Decimal("0.0001")) if approved_size > ZERO else ZERO
-        if candidate_fill_pct < Decimal(str(settings.shadow_execution_min_fill_pct)):
-            fill_status = "no_fill"
-            filled_size_usd = ZERO
-            liquidity_constrained = True
-            fill_reason = "fill_below_minimum_threshold"
-        else:
-            fill_status = "partial_fill"
-            filled_size_usd = available_depth_usd
-            liquidity_constrained = True
-            fill_reason = "insufficient_near_touch_depth"
-    else:
-        fill_status = "full_fill"
-        filled_size_usd = approved_size
-        liquidity_constrained = False
-        fill_reason = "filled_within_near_touch_depth"
-
-    filled_size_usd = filled_size_usd.quantize(Decimal("0.01"))
-    unfilled_size_usd = (approved_size - filled_size_usd).quantize(Decimal("0.01"))
-    fill_pct = (filled_size_usd / approved_size).quantize(Decimal("0.0001")) if approved_size > ZERO else ZERO
-    shadow_entry_price_to_store = shadow_entry_price if filled_size_usd > ZERO else None
-    shadow_shares = (
-        (filled_size_usd / shadow_entry_price).quantize(Decimal("0.0001"))
-        if shadow_entry_price_to_store is not None and shadow_entry_price > ZERO
-        else ZERO
-    )
-
-    return {
-        "shadow_entry_price": shadow_entry_price_to_store,
-        "details": {
-            "missing_orderbook_context": False,
-            "stale_orderbook_context": False,
-            "liquidity_constrained": bool(liquidity_constrained),
-            "fill_status": fill_status,
-            "fill_reason": fill_reason,
-            "snapshot_id": snapshot.id,
-            "captured_at": _ensure_utc(snapshot.captured_at).isoformat() if snapshot.captured_at else None,
-            "snapshot_age_seconds": orderbook_context.snapshot_age_seconds,
-            "snapshot_side": orderbook_context.snapshot_side,
-            "spread": str(snapshot.spread) if snapshot.spread is not None else None,
-            "best_bid": str(best_bid) if best_bid is not None else None,
-            "best_ask": str(best_ask) if best_ask is not None else None,
-            "available_depth_shares": str(available_depth_shares) if available_depth_shares is not None else None,
-            "available_depth_usd": str(available_depth_usd) if available_depth_usd is not None else None,
-            "size_to_depth_ratio": str(size_to_depth_ratio) if size_to_depth_ratio is not None else None,
-            "requested_size_usd": str(requested_size_usd),
-            "filled_size_usd": str(filled_size_usd),
-            "unfilled_size_usd": str(unfilled_size_usd),
-            "fill_pct": str(fill_pct),
-            "shadow_shares": str(shadow_shares),
-        },
-    }
-
-
-def _shadow_shares_from_trade(trade: PaperTrade) -> Decimal:
-    if isinstance(trade.details, dict):
-        shadow_execution = trade.details.get("shadow_execution")
-        if isinstance(shadow_execution, dict):
-            fill_status = shadow_execution.get("fill_status")
-            if fill_status == "no_fill":
-                return ZERO
-            shadow_shares = _parse_decimal(shadow_execution.get("shadow_shares"))
-            if shadow_shares is not None:
-                return shadow_shares
-    if trade.shadow_entry_price is not None and trade.shadow_entry_price > ZERO:
-        return (trade.size_usd / trade.shadow_entry_price).quantize(Decimal("0.0001"))
-    return trade.shares
+    return await portfolio_views_module.get_pnl_curve(session)

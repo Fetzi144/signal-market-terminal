@@ -4,13 +4,8 @@ function resolveApiBase() {
     return `${configuredBase.replace(/\/$/, "")}/api/v1`;
   }
 
-  if (
-    typeof window !== "undefined"
-    && ["4173", "5173"].includes(window.location.port)
-  ) {
-    return `http://${window.location.hostname}:8001/api/v1`;
-  }
-
+  // In local Vite dev we want same-origin API calls so the dev proxy can route
+  // them to the configured backend target without hardcoding a backend port.
   return "/api/v1";
 }
 
@@ -520,6 +515,101 @@ export function getPolymarketShadowEvaluations({
   if (start) params.set("start", start);
   if (end) params.set("end", end);
   return fetchJson(`${API_BASE}/ingest/polymarket/live/shadow-evaluations?${params}`);
+}
+
+export function getPolymarketPositionLots({
+  strategyFamily,
+  conditionId,
+  assetId,
+  status,
+  start,
+  end,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  if (status) params.set("status", status);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/position-lots?${params}`);
+}
+
+export function getPolymarketPositionLotEvents({
+  strategyFamily,
+  conditionId,
+  assetId,
+  start,
+  end,
+  limit = 200,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (conditionId) params.set("condition_id", conditionId);
+  if (assetId) params.set("asset_id", assetId);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/position-lot-events?${params}`);
+}
+
+export function getPolymarketPilotScorecards({
+  strategyFamily,
+  status,
+  start,
+  end,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (status) params.set("status", status);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/pilot/scorecards?${params}`);
+}
+
+export function getPolymarketPilotGuardrailEvents({
+  strategyFamily,
+  guardrailType,
+  start,
+  end,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (guardrailType) params.set("guardrail_type", guardrailType);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/pilot/guardrail-events?${params}`);
+}
+
+export function getPolymarketPilotReadinessReports({
+  strategyFamily,
+  status,
+  start,
+  end,
+  limit = 100,
+} = {}) {
+  const params = new URLSearchParams({ limit });
+  if (strategyFamily) params.set("strategy_family", strategyFamily);
+  if (status) params.set("status", status);
+  if (start) params.set("start", start);
+  if (end) params.set("end", end);
+  return fetchJson(`${API_BASE}/ingest/polymarket/live/pilot/readiness-reports?${params}`);
+}
+
+export function generatePolymarketPilotScorecard(body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/scorecards/generate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function generatePolymarketPilotReadinessReport(body = {}) {
+  return requestJson(`${API_BASE}/ingest/polymarket/live/pilot/readiness-reports/generate`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export function getPolymarketLiveOrders({

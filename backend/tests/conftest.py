@@ -192,6 +192,11 @@ def make_signal(session, market_id, outcome_id, **kwargs):
     from app.models.signal import Signal
     from app.models.market import Outcome
     now = datetime.now(timezone.utc)
+    fired_at = kwargs.get("fired_at", now)
+    dedupe_bucket = kwargs.get(
+        "dedupe_bucket",
+        fired_at.replace(minute=(fired_at.minute // 15) * 15, second=0, microsecond=0),
+    )
     sync_session = getattr(session, "sync_session", session)
     outcome = next(
         (
@@ -206,8 +211,8 @@ def make_signal(session, market_id, outcome_id, **kwargs):
         signal_type="price_move",
         market_id=market_id,
         outcome_id=outcome_id,
-        fired_at=now,
-        dedupe_bucket=now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0),
+        fired_at=fired_at,
+        dedupe_bucket=dedupe_bucket,
         signal_score=Decimal("0.500"),
         confidence=Decimal("0.800"),
         rank_score=Decimal("0.400"),

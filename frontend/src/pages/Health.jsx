@@ -968,11 +968,14 @@ export default function Health() {
             <StatCard label="Heartbeat" value={phase12Status?.heartbeat_status || "-"} />
             <StatCard label="User Stream" value={phase12Status?.user_stream_connected ? "Connected" : "Disconnected"} />
             <StatCard label="Incidents (24h)" value={phase12Status?.recent_incident_count_24h ?? 0} />
+            <StatCard label="Expired (24h)" value={phase12Status?.approval_expired_count_24h ?? 0} />
             <StatCard label="Kill Switch" value={phase12Status?.kill_switch_enabled ? "On" : "Off"} />
             <StatCard label="Last Reconcile" value={formatShortDateTime(phase12Status?.last_reconcile_success_at)} />
             <StatCard label="Avg Gap" value={formatBps(phase12Status?.live_shadow_summary?.average_gap_bps_24h)} />
             <StatCard label="Worst Gap" value={formatBps(phase12Status?.live_shadow_summary?.worst_gap_bps_24h)} />
             <StatCard label="Gap Breaches" value={phase12Status?.live_shadow_summary?.breach_count_24h ?? 0} />
+            <StatCard label="Daily Net P&L" value={formatUsd(phase12Status?.daily_realized_pnl?.net_realized_pnl)} />
+            <StatCard label="Readiness" value={phase12Status?.latest_readiness_status || "manual_only"} />
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
             <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
@@ -985,6 +988,18 @@ export default function Health() {
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Shadow Evaluation</div>
               <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
                 {phase12Status?.live_shadow_summary?.recent_count_24h ?? 0} comparisons in the last 24h with conservative coverage limits carried forward from replay provenance.
+              </div>
+            </div>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Evidence Loop</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                Realized P&amp;L, approval expirations, guardrail triggers, and readiness remain operator-visible before any broader automation discussion.
+              </div>
+            </div>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Recent Guardrails</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {(phase12Status?.recent_guardrail_triggers || []).slice(0, 3).map((event) => event.guardrail_type).join(", ") || "No recent triggers."}
               </div>
             </div>
           </div>
@@ -1309,6 +1324,11 @@ function formatActionMix(value) {
   return Object.entries(value)
     .map(([action, count]) => `${action}:${count}`)
     .join(" | ");
+}
+
+function formatUsd(value) {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return `$${Number(value).toFixed(2)}`;
 }
 
 function formatBps(value) {

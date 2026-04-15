@@ -14,6 +14,10 @@ from app.execution.polymarket_control_plane import (
     set_heartbeat_status,
 )
 from app.execution.polymarket_gateway import PolymarketGateway
+from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
+
+
+_pilot_evidence = PolymarketPilotEvidenceService()
 
 
 class PolymarketHeartbeatService:
@@ -55,6 +59,22 @@ class PolymarketHeartbeatService:
                 incident_type="heartbeat_missed",
                 details={"error": str(exc)},
                 pilot_run=context["pilot_run"],
+            )
+            strategy_family = (
+                context["pilot_config"].strategy_family
+                if context.get("pilot_config") is not None
+                else settings.polymarket_pilot_default_strategy_family
+            )
+            await _pilot_evidence.record_guardrail_event(
+                session,
+                strategy_family=strategy_family,
+                guardrail_type="heartbeat_degraded",
+                severity="error",
+                action_taken="pause_pilot",
+                pilot_run=context.get("pilot_run"),
+                trigger_value=context.get("open_live_orders"),
+                threshold_value=0,
+                details={"error": str(exc)},
             )
             await pause_active_pilot(
                 session,

@@ -21,6 +21,7 @@ from app.execution.polymarket_live_state import (
     mark_reconcile_started,
     set_gateway_status,
 )
+from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
 from app.ingestion.polymarket_common import parse_polymarket_timestamp, utcnow
 from app.metrics import polymarket_live_fills_observed, polymarket_live_reconcile_failures, polymarket_live_reconcile_runs
 from app.models.polymarket_live_execution import (
@@ -71,6 +72,7 @@ class PolymarketLiveReconciler:
         self._session_factory = session_factory
         self._gateway = gateway or PolymarketGateway()
         self._reservations = reservation_service or PolymarketCapitalReservationService()
+        self._evidence = PolymarketPilotEvidenceService()
 
     async def run(self, stop_event: asyncio.Event) -> None:
         if self._session_factory is None:
@@ -98,6 +100,7 @@ class PolymarketLiveReconciler:
         processed_raw_event_count = 0
         processed_fill_count = 0
         repaired_order_count = 0
+        lot_fill_count = 0
         last_user_event_id = None
 
         try:
@@ -145,6 +148,9 @@ class PolymarketLiveReconciler:
                         await register_restart_pause(session, error=str(exc), live_order=order)
                     await set_gateway_status(session, reachable=False, error=str(exc))
 
+            lot_sync = await self._evidence.sync_position_lots(session)
+            lot_fill_count = int(lot_sync.get("fills_processed") or 0)
+
             await mark_reconcile_finished(
                 session,
                 success=True,
@@ -156,6 +162,7 @@ class PolymarketLiveReconciler:
                 "processed_raw_event_count": processed_raw_event_count,
                 "processed_fill_count": processed_fill_count,
                 "repaired_order_count": repaired_order_count,
+                "lot_fill_count": lot_fill_count,
                 "last_user_event_id": last_user_event_id,
             }
         except Exception as exc:
@@ -292,13 +299,14 @@ class PolymarketLiveReconciler:
         fingerprint = _stable_hash(
             fingerprint_payload
         )
-        existing = (
-            await session.execute(select(LiveFill).where(LiveFill.fingerprint == fingerprint))
-        ).scalar_one_or_none()
-        if existing is not None:
-            return 0
-
-        fill = LiveFill(
+        existing = await self._find_existing_fill(
+            session,
+            trade_id=trade_id or None,
+            transaction_hash=transaction_hash,
+            fingerprint=fingerprint,
+        )
+        is_new_fill = existing is None
+        fill = existing or LiveFill(
             live_order_id=order_id,
             condition_id=str(payload.get("market") or payload.get("condition_id") or ""),
             asset_id=str(payload.get("asset_id") or ""),
@@ -316,9 +324,28 @@ class PolymarketLiveReconciler:
             details_json=_json_safe(payload),
             fingerprint=fingerprint,
         )
-        session.add(fill)
+        fill.live_order_id = order_id
+        fill.condition_id = str(payload.get("market") or payload.get("condition_id") or "")
+        fill.asset_id = str(payload.get("asset_id") or "")
+        fill.trade_id = trade_id or None
+        fill.transaction_hash = transaction_hash
+        fill.fill_status = trade_status
+        fill.side = str(payload.get("side") or "BUY").upper()
+        fill.price = _to_decimal(payload.get("price")) or ZERO
+        fill.size = _to_decimal(payload.get("size")) or ZERO
+        fill.fee_paid = _to_decimal(payload.get("fee_paid") or payload.get("fee"))
+        fill.fee_currency = str(payload.get("fee_currency")) if payload.get("fee_currency") is not None else None
+        fill.maker_taker = "maker" if self._is_maker_fill(payload) else "taker"
+        fill.event_ts_exchange = parse_polymarket_timestamp(payload.get("timestamp") or payload.get("matchtime"))
+        fill.observed_at_local = utcnow()
+        fill.raw_user_event_id = raw_user_event_id
+        fill.details_json = _json_safe(payload)
+        fill.fingerprint = fingerprint
+        if is_new_fill:
+            session.add(fill)
         await session.flush()
-        polymarket_live_fills_observed.labels(fill_status=trade_status).inc()
+        if is_new_fill:
+            polymarket_live_fills_observed.labels(fill_status=trade_status).inc()
 
         if order is not None:
             previous_filled = order.filled_size or ZERO
@@ -342,7 +369,7 @@ class PolymarketLiveReconciler:
                 new_status=self._order_status_after_fill(order=order, fill_status=trade_status),
                 payload=payload,
             )
-        return 1
+        return 1 if is_new_fill else 0
 
     async def _apply_order_snapshot(
         self,
@@ -473,6 +500,30 @@ class PolymarketLiveReconciler:
         weighted_notional = sum((row.size * row.price for row in active_rows), ZERO)
         order.filled_size = total_size
         order.avg_fill_price = (weighted_notional / total_size) if total_size > ZERO else None
+
+    async def _find_existing_fill(
+        self,
+        session: AsyncSession,
+        *,
+        trade_id: str | None,
+        transaction_hash: str | None,
+        fingerprint: str,
+    ) -> LiveFill | None:
+        if trade_id:
+            existing = (
+                await session.execute(select(LiveFill).where(LiveFill.trade_id == trade_id))
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
+        if transaction_hash:
+            existing = (
+                await session.execute(select(LiveFill).where(LiveFill.transaction_hash == transaction_hash))
+            ).scalar_one_or_none()
+            if existing is not None:
+                return existing
+        return (
+            await session.execute(select(LiveFill).where(LiveFill.fingerprint == fingerprint))
+        ).scalar_one_or_none()
 
     async def _record_order_event(
         self,

@@ -187,3 +187,107 @@ class PolymarketLiveShadowEvaluation(Base):
         Index("ix_pm_live_shadow_eval_variant_created", "variant_name", "created_at"),
         Index("ix_pm_live_shadow_eval_replay_run", "replay_run_id"),
     )
+
+
+class PolymarketPilotScorecard(Base):
+    __tablename__ = "polymarket_pilot_scorecards"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    live_orders_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fills_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    approval_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    approval_expired_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejection_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    incident_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    gross_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    net_pnl: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    fees_paid: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    avg_shadow_gap_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    worst_shadow_gap_bps: Mapped[Decimal | None] = mapped_column(Numeric(18, 8))
+    coverage_limited_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("strategy_family", "window_start", "window_end", name="uq_pm_pilot_scorecards_window"),
+        Index("ix_pm_pilot_scorecards_strategy_window", "strategy_family", "window_start", "window_end"),
+        Index("ix_pm_pilot_scorecards_status_created", "status", "created_at"),
+    )
+
+
+class PolymarketPilotGuardrailEvent(Base):
+    __tablename__ = "polymarket_pilot_guardrail_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    guardrail_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    live_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("live_orders.id", ondelete="SET NULL"),
+    )
+    pilot_run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("polymarket_pilot_runs.id", ondelete="SET NULL"),
+    )
+    trigger_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    threshold_value: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
+    action_taken: Mapped[str] = mapped_column(String(32), nullable=False)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    observed_at_local: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        Index("ix_pm_guardrail_events_strategy_observed", "strategy_family", "observed_at_local"),
+        Index("ix_pm_guardrail_events_type_observed", "guardrail_type", "observed_at_local"),
+        Index("ix_pm_guardrail_events_run_observed", "pilot_run_id", "observed_at_local"),
+    )
+
+
+class PolymarketPilotReadinessReport(Base):
+    __tablename__ = "polymarket_pilot_readiness_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    strategy_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    scorecard_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("polymarket_pilot_scorecards.id", ondelete="SET NULL"),
+    )
+    open_incidents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    approval_backlog_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    coverage_limited_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shadow_gap_breach_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        onupdate=_utcnow,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("strategy_family", "window_start", "window_end", name="uq_pm_pilot_readiness_window"),
+        Index("ix_pm_readiness_reports_strategy_generated", "strategy_family", "generated_at"),
+        Index("ix_pm_readiness_reports_status_generated", "status", "generated_at"),
+    )

@@ -4,6 +4,8 @@ import {
   armPolymarketPilot,
   createPolymarketPilotConfig,
   disarmPolymarketPilot,
+  generatePolymarketPilotReadinessReport,
+  generatePolymarketPilotScorecard,
   getPolymarketPilotConfigs,
   getPolymarketPilotConsoleSummary,
   pausePolymarketPilot,
@@ -18,6 +20,8 @@ vi.mock("../api", () => ({
   armPolymarketPilot: vi.fn(),
   createPolymarketPilotConfig: vi.fn(),
   disarmPolymarketPilot: vi.fn(),
+  generatePolymarketPilotReadinessReport: vi.fn(),
+  generatePolymarketPilotScorecard: vi.fn(),
   getPolymarketPilotConfigs: vi.fn(),
   getPolymarketPilotConsoleSummary: vi.fn(),
   pausePolymarketPilot: vi.fn(),
@@ -100,6 +104,48 @@ const summaryPayload = {
     worst_gap_bps_24h: 9.8,
     breach_count_24h: 0,
   },
+  evidence_summary: {
+    approval_expired_count_24h: 1,
+    daily_realized_pnl: { net_realized_pnl: -2.5 },
+    live_shadow_summary: {
+      average_gap_bps_24h: 4.2,
+      worst_gap_bps_24h: 9.8,
+      breach_count_24h: 0,
+    },
+    latest_readiness_report: {
+      status: "manual_only",
+      generated_at: "2026-04-15T10:04:00Z",
+    },
+  },
+  guardrail_events: [
+    {
+      id: 10,
+      observed_at_local: "2026-04-15T10:02:00Z",
+      guardrail_type: "approval_ttl",
+      action_taken: "block",
+      details_json: { reason: "approval_expired" },
+    },
+  ],
+  scorecards: [
+    {
+      id: 1,
+      window_start: "2026-04-14T00:00:00Z",
+      window_end: "2026-04-15T00:00:00Z",
+      status: "watch",
+      net_pnl: -2.5,
+      avg_shadow_gap_bps: 4.2,
+      coverage_limited_count: 0,
+    },
+  ],
+  readiness_reports: [
+    {
+      id: 1,
+      generated_at: "2026-04-15T10:04:00Z",
+      status: "manual_only",
+      approval_backlog_count: 1,
+      shadow_gap_breach_count: 0,
+    },
+  ],
 };
 
 const configPayload = {
@@ -121,6 +167,8 @@ beforeEach(() => {
   pausePolymarketPilot.mockResolvedValue({ ok: true });
   resumePolymarketPilot.mockResolvedValue({ ok: true });
   disarmPolymarketPilot.mockResolvedValue({ ok: true });
+  generatePolymarketPilotScorecard.mockResolvedValue({ ok: true });
+  generatePolymarketPilotReadinessReport.mockResolvedValue({ ok: true });
   approvePolymarketLiveOrder.mockResolvedValue({ ok: true });
   rejectPolymarketLiveOrder.mockResolvedValue({ ok: true });
   setPolymarketLiveKillSwitch.mockResolvedValue({ enabled: true });

@@ -217,6 +217,19 @@ const healthPayload = {
       worst_gap_bps_24h: 11.4,
       breach_count_24h: 0,
     },
+    daily_realized_pnl: {
+      net_realized_pnl: -1.25,
+    },
+    approval_expired_count_24h: 1,
+    recent_guardrail_triggers: [
+      {
+        id: 1,
+        guardrail_type: "approval_ttl",
+        observed_at_local: "2026-04-13T10:06:00Z",
+      },
+    ],
+    latest_readiness_status: "manual_only",
+    latest_readiness_generated_at: "2026-04-13T10:06:30Z",
     last_reconcile_success_at: "2026-04-13T10:05:10Z",
     kill_switch_enabled: false,
   },

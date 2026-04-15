@@ -16,12 +16,19 @@ class DefaultStrategyEvaluation:
 
 
 SKIP_REASON_LABELS = {
+    "pending_decision": "Pending decision",
     "before_baseline_start": "Before baseline start",
     "missing_outcome_id": "Missing outcome",
     "missing_probability": "Missing probability",
     "missing_market_price": "Missing market price",
     "missing_expected_value": "Missing expected value",
     "ev_below_threshold": "EV below threshold",
+    "risk_state_uninitialized": "Run risk state not initialized",
+    "risk_local_total_exposure": "Local paper-book total exposure limit reached",
+    "risk_local_cluster_exposure": "Local paper-book cluster exposure limit reached",
+    "risk_local_invalid_size": "Local paper-book invalid size",
+    "risk_local_rejected": "Local paper-book risk rejected",
+    "risk_shared_global_block": "Shared/global platform risk blocked the trade",
     "execution_missing_orderbook_context": "Missing orderbook context",
     "execution_stale_orderbook_context": "Stale orderbook context",
     "execution_no_fill": "No fill available",

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,14 +9,48 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.execution.polymarket_control_plane_serializers import (
+    serialize_control_plane_incident,
+    serialize_pilot_approval_event,
+    serialize_pilot_config,
+    serialize_pilot_run,
+    serialize_shadow_evaluation,
+)
+from app.execution.polymarket_control_plane_utils import (
+    BPS_Q,
+    PRICE_Q,
+    SUPPORTED_PHASE12_FAMILY,
+    SUPPORTED_PILOT_FAMILIES,
+    ZERO,
+    approval_required as _approval_required,
+    details_with as _details_with,
+    effective_kill_switch_enabled,
+    ensure_utc as _ensure_utc,
+    guardrail_from_submission_reason as _guardrail_from_submission_reason,
+    heartbeat_status as _heartbeat_status,
+    json_safe as _json_safe,
+    live_order_notional as _live_order_notional,
+    normalize_strategy_family as _normalize_strategy_family,
+    pilot_limit_decimal as _pilot_limit_decimal,
+    pilot_limit_int as _pilot_limit_int,
+    price_gap_bps as _price_gap_bps,
+    serialize_decimal as _serialize_decimal,
+    stable_hash as _stable_hash,
+    to_decimal as _to_decimal,
+)
 from app.execution.polymarket_live_state import (
     LIVE_ORDER_TERMINAL_STATUSES,
-    effective_kill_switch_enabled,
     ensure_live_state_row,
     fetch_live_state_row,
     serialize_live_fill,
     serialize_live_order,
     serialize_live_order_event,
+)
+from app.execution.polymarket_pilot_evidence import (
+    PolymarketPilotEvidenceService,
+    list_pilot_guardrail_events,
+    list_pilot_readiness_reports,
+    list_pilot_scorecards,
 )
 from app.ingestion.polymarket_common import utcnow
 from app.metrics import (
@@ -55,174 +87,9 @@ from app.models.polymarket_replay import (
     PolymarketReplayScenario,
 )
 
-SUPPORTED_PILOT_FAMILIES = {"exec_policy", "structure_policy", "maker_policy"}
-SUPPORTED_PHASE12_FAMILY = "exec_policy"
 RUN_ACTIVE_STATUSES = {"armed", "running", "paused"}
 REPLAY_SUCCESS_STATUSES = {"completed", "completed_warnings"}
-ZERO = Decimal("0")
-PRICE_Q = Decimal("0.00000001")
-BPS_Q = Decimal("0.0001")
-
-
-def _ensure_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-def _to_decimal(value: Any) -> Decimal | None:
-    if value in (None, ""):
-        return None
-    try:
-        return Decimal(str(value))
-    except Exception:
-        return None
-
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, datetime):
-        normalized = _ensure_utc(value)
-        return normalized.isoformat() if normalized is not None else None
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    if isinstance(value, dict):
-        return {key: _json_safe(inner) for key, inner in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(inner) for inner in value]
-    return value
-
-
-def _stable_hash(payload: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(_json_safe(payload), sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-    ).hexdigest()
-
-
-def _serialize_decimal(value: Decimal | None) -> float | None:
-    return float(value) if value is not None else None
-
-
-def _normalize_strategy_family(value: str | None) -> str:
-    normalized = str(value or settings.polymarket_pilot_default_strategy_family or SUPPORTED_PHASE12_FAMILY).strip().lower()
-    if normalized not in SUPPORTED_PILOT_FAMILIES:
-        raise ValueError(f"Unsupported strategy family: {value}")
-    return normalized
-
-
-def _details_with(base: dict[str, Any] | list | str | None, **updates: Any) -> dict[str, Any]:
-    details = dict(base) if isinstance(base, dict) else {}
-    for key, value in updates.items():
-        if value is not None:
-            details[key] = value
-    return details
-
-
-def _approval_required(config: PolymarketPilotConfig | None) -> bool:
-    if config is None:
-        return bool(settings.polymarket_live_manual_approval_required)
-    return bool(config.manual_approval_required)
-
-
-def _pilot_limit_decimal(config: PolymarketPilotConfig | None, attr: str, fallback: float | Decimal | None) -> Decimal | None:
-    value = getattr(config, attr, None) if config is not None else None
-    if value is not None:
-        return _to_decimal(value)
-    return _to_decimal(fallback)
-
-
-def _pilot_limit_int(config: PolymarketPilotConfig | None, attr: str, fallback: int | None) -> int | None:
-    value = getattr(config, attr, None) if config is not None else None
-    if value is not None:
-        return int(value)
-    return fallback
-
-
-def _live_order_notional(order: LiveOrder) -> Decimal:
-    price = _to_decimal(order.limit_price) or _to_decimal(order.target_price) or ZERO
-    size = _to_decimal(order.requested_size) or ZERO
-    return (price * size).quantize(PRICE_Q) if price > ZERO and size > ZERO else ZERO
-
-
-def _heartbeat_status(state: PolymarketLiveState | None, *, needed: bool) -> str:
-    if not needed:
-        return "idle"
-    if state is None or state.heartbeat_healthy is None:
-        return "pending"
-    return "healthy" if state.heartbeat_healthy else "degraded"
-
-
-def serialize_pilot_config(row: PolymarketPilotConfig) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "pilot_name": row.pilot_name,
-        "strategy_family": row.strategy_family,
-        "active": row.active,
-        "armed": row.armed,
-        "manual_approval_required": row.manual_approval_required,
-        "live_enabled": row.live_enabled,
-        "market_allowlist_json": row.market_allowlist_json,
-        "category_allowlist_json": row.category_allowlist_json,
-        "max_notional_per_order_usd": _serialize_decimal(_to_decimal(row.max_notional_per_order_usd)),
-        "max_notional_per_day_usd": _serialize_decimal(_to_decimal(row.max_notional_per_day_usd)),
-        "max_open_orders": row.max_open_orders,
-        "max_plan_age_seconds": row.max_plan_age_seconds,
-        "max_decision_age_seconds": row.max_decision_age_seconds,
-        "max_slippage_bps": _serialize_decimal(_to_decimal(row.max_slippage_bps)),
-        "require_complete_replay_coverage": row.require_complete_replay_coverage,
-        "details_json": _json_safe(row.details_json),
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def serialize_pilot_run(row: PolymarketPilotRun) -> dict[str, Any]:
-    return {
-        "id": str(row.id),
-        "pilot_config_id": row.pilot_config_id,
-        "status": row.status,
-        "reason": row.reason,
-        "started_at": row.started_at,
-        "ended_at": row.ended_at,
-        "details_json": _json_safe(row.details_json),
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def serialize_pilot_approval_event(row: PolymarketPilotApprovalEvent) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
-        "execution_decision_id": str(row.execution_decision_id) if row.execution_decision_id is not None else None,
-        "pilot_run_id": str(row.pilot_run_id) if row.pilot_run_id is not None else None,
-        "action": row.action,
-        "operator_identity": row.operator_identity,
-        "reason_code": row.reason_code,
-        "details_json": _json_safe(row.details_json),
-        "observed_at_local": row.observed_at_local,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
-
-def serialize_control_plane_incident(row: PolymarketControlPlaneIncident) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "pilot_run_id": str(row.pilot_run_id) if row.pilot_run_id is not None else None,
-        "severity": row.severity,
-        "incident_type": row.incident_type,
-        "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
-        "condition_id": row.condition_id,
-        "asset_id": row.asset_id,
-        "details_json": _json_safe(row.details_json),
-        "observed_at_local": row.observed_at_local,
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
+_pilot_evidence = PolymarketPilotEvidenceService()
 
 
 async def list_pilot_configs(
@@ -797,6 +664,19 @@ async def record_submission_block(
         live_order=order,
         pilot_run=pilot_run,
     )
+    guardrail = _guardrail_from_submission_reason(reason)
+    if guardrail is not None:
+        guardrail_type, severity, action_taken = guardrail
+        await _pilot_evidence.record_guardrail_event(
+            session,
+            strategy_family=order.strategy_family or SUPPORTED_PHASE12_FAMILY,
+            guardrail_type=guardrail_type,
+            severity=severity,
+            action_taken=action_taken,
+            live_order=order,
+            pilot_run=pilot_run,
+            details={"reason": reason, "operator": operator_identity},
+        )
     polymarket_live_submissions_blocked_by_pilot_total.labels(reason=reason).inc()
 
 
@@ -812,6 +692,17 @@ async def register_restart_pause(
         details={"error": error},
         incident_type="restart_425",
         live_order=live_order,
+    )
+    pilot_run = await get_open_pilot_run(session, pilot_config_id=live_order.pilot_config_id) if live_order is not None and live_order.pilot_config_id is not None else None
+    await _pilot_evidence.record_guardrail_event(
+        session,
+        strategy_family=(live_order.strategy_family if live_order is not None else SUPPORTED_PHASE12_FAMILY),
+        guardrail_type="restart_pause",
+        severity="error",
+        action_taken="pause_pilot",
+        live_order=live_order,
+        pilot_run=pilot_run,
+        details={"error": error},
     )
 
 
@@ -883,6 +774,18 @@ async def expire_stale_approvals(session: AsyncSession, *, now: datetime | None 
             details={"expired_at": observed_at},
             live_order=row,
         )
+        pilot_run = await get_open_pilot_run(session, pilot_config_id=row.pilot_config_id) if row.pilot_config_id is not None else None
+        await _pilot_evidence.record_guardrail_event(
+            session,
+            strategy_family=row.strategy_family or SUPPORTED_PHASE12_FAMILY,
+            guardrail_type="approval_ttl",
+            severity="warning",
+            action_taken="block",
+            live_order=row,
+            pilot_run=pilot_run,
+            details={"expired_at": observed_at},
+            observed_at=observed_at,
+        )
     return len(rows)
 
 
@@ -937,39 +840,6 @@ async def list_control_plane_incidents(
         query = query.where(PolymarketControlPlaneIncident.observed_at_local <= _ensure_utc(end))
     rows = (await session.execute(query.limit(limit))).scalars().all()
     return [serialize_control_plane_incident(row) for row in rows]
-
-
-def _price_gap_bps(*, expected: Decimal | None, actual: Decimal | None, side: str | None) -> Decimal | None:
-    if expected is None or actual is None or expected <= ZERO:
-        return None
-    if str(side or "BUY").upper() == "SELL":
-        gap = ((expected - actual) / expected) * Decimal("10000")
-    else:
-        gap = ((actual - expected) / expected) * Decimal("10000")
-    return gap.quantize(BPS_Q)
-
-
-def serialize_shadow_evaluation(row: PolymarketLiveShadowEvaluation) -> dict[str, Any]:
-    return {
-        "id": row.id,
-        "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
-        "execution_decision_id": str(row.execution_decision_id) if row.execution_decision_id is not None else None,
-        "replay_run_id": str(row.replay_run_id) if row.replay_run_id is not None else None,
-        "variant_name": row.variant_name,
-        "expected_fill_price": _serialize_decimal(_to_decimal(row.expected_fill_price)),
-        "actual_fill_price": _serialize_decimal(_to_decimal(row.actual_fill_price)),
-        "expected_fill_size": _serialize_decimal(_to_decimal(row.expected_fill_size)),
-        "actual_fill_size": _serialize_decimal(_to_decimal(row.actual_fill_size)),
-        "expected_net_ev_bps": _serialize_decimal(_to_decimal(row.expected_net_ev_bps)),
-        "realized_net_bps": _serialize_decimal(_to_decimal(row.realized_net_bps)),
-        "gap_bps": _serialize_decimal(_to_decimal(row.gap_bps)),
-        "reason_code": row.reason_code,
-        "coverage_limited": row.coverage_limited,
-        "details_json": _json_safe(row.details_json),
-        "created_at": row.created_at,
-        "updated_at": row.updated_at,
-    }
-
 
 async def list_live_shadow_evaluations(
     session: AsyncSession,
@@ -1129,6 +999,19 @@ async def upsert_live_shadow_evaluation(
             details={"gap_bps": gap_bps, "threshold_bps": settings.polymarket_pilot_shadow_gap_breach_bps},
             live_order=live_order,
         )
+        pilot_run = await get_open_pilot_run(session, pilot_config_id=live_order.pilot_config_id) if live_order.pilot_config_id is not None else None
+        await _pilot_evidence.record_guardrail_event(
+            session,
+            strategy_family=variant_name,
+            guardrail_type="shadow_gap_breach",
+            severity="warning",
+            action_taken="pause_pilot" if settings.polymarket_pilot_pause_on_shadow_gap_breach else "warn",
+            live_order=live_order,
+            pilot_run=pilot_run,
+            trigger_value=gap_bps,
+            threshold_value=settings.polymarket_pilot_shadow_gap_breach_bps,
+            details={"gap_bps": gap_bps, "threshold_bps": settings.polymarket_pilot_shadow_gap_breach_bps},
+        )
         if settings.polymarket_pilot_pause_on_shadow_gap_breach:
             await pause_active_pilot(
                 session,
@@ -1208,6 +1091,10 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
 async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, Any]:
     pilot_status = await fetch_pilot_status(session)
     active_config = await get_active_pilot_config(session)
+    evidence_summary = await _pilot_evidence.fetch_pilot_evidence_summary(
+        session,
+        strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+    )
     recent_orders = (
         await session.execute(
             select(LiveOrder).order_by(LiveOrder.created_at.desc(), LiveOrder.updated_at.desc()).limit(25)
@@ -1238,11 +1125,27 @@ async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, An
         "active_pilot_family": active_config.strategy_family if active_config is not None else None,
         "approvals": await list_approval_queue(session, approval_state="queued", limit=25),
         "incidents": await list_control_plane_incidents(session, limit=25),
+        "guardrail_events": await list_pilot_guardrail_events(
+            session,
+            strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+            limit=25,
+        ),
+        "scorecards": await list_pilot_scorecards(
+            session,
+            strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+            limit=10,
+        ),
+        "readiness_reports": await list_pilot_readiness_reports(
+            session,
+            strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+            limit=10,
+        ),
         "recent_orders": [serialize_live_order(row) for row in recent_orders],
         "recent_fills": [serialize_live_fill(row) for row in recent_fills],
         "recent_order_events": [serialize_live_order_event(row) for row in recent_events],
         "recent_blocked_submissions": [serialize_live_order_event(row) for row in blocked_events],
         "live_shadow_summary": await compute_live_shadow_summary(session),
+        "evidence_summary": evidence_summary,
     }
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -41,8 +41,17 @@ from app.execution.polymarket_live_state import (
     set_kill_switch,
 )
 from app.execution.polymarket_order_manager import PolymarketOrderManager
+from app.execution.polymarket_pilot_evidence import (
+    PolymarketPilotEvidenceService,
+    list_pilot_guardrail_events,
+    list_pilot_readiness_reports,
+    list_pilot_scorecards,
+    list_position_lot_events,
+    list_position_lots,
+)
 
 router = APIRouter(prefix="/api/v1/ingest/polymarket/live", tags=["polymarket-live"])
+_pilot_evidence = PolymarketPilotEvidenceService()
 
 
 class RowsOut(BaseModel):
@@ -142,6 +151,31 @@ class PilotConfigRequest(BaseModel):
 class PilotArmRequest(BaseModel):
     pilot_config_id: int
     operator_identity: str | None = Field(default=None, max_length=128)
+
+
+class EvidenceGenerationRequest(BaseModel):
+    strategy_family: str | None = Field(default=None, max_length=32)
+    start: datetime | None = None
+    end: datetime | None = None
+    window: str | None = Field(default=None, max_length=16)
+
+
+def _resolve_evidence_window(
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    window: str | None,
+) -> tuple[datetime, datetime]:
+    if start is not None and end is not None:
+        return start, end
+    observed = datetime.now(timezone.utc)
+    normalized_window = str(window or "daily").strip().lower()
+    if normalized_window == "weekly":
+        resolved_end = end or observed
+        resolved_start = start or (resolved_end - timedelta(days=7))
+        return resolved_start, resolved_end
+    day_start = datetime.combine(observed.date(), time.min, tzinfo=timezone.utc)
+    return start or day_start, end or observed
 
 
 @router.get("/status", response_model=PolymarketLiveStatusOut)
@@ -270,6 +304,45 @@ async def resume_polymarket_pilot(
     return result
 
 
+@router.post("/pilot/scorecards/generate")
+async def post_polymarket_pilot_scorecard_generation(
+    body: EvidenceGenerationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    start, end = _resolve_evidence_window(start=body.start, end=body.end, window=body.window)
+    try:
+        result = await _pilot_evidence.generate_scorecard(
+            db,
+            strategy_family=body.strategy_family or "exec_policy",
+            window_start=start,
+            window_end=end,
+            label=str(body.window or "manual").lower(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    return result
+
+
+@router.post("/pilot/readiness-reports/generate")
+async def post_polymarket_pilot_readiness_generation(
+    body: EvidenceGenerationRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    start, end = _resolve_evidence_window(start=body.start, end=body.end, window=body.window)
+    try:
+        result = await _pilot_evidence.generate_readiness_report(
+            db,
+            strategy_family=body.strategy_family or "exec_policy",
+            window_start=start,
+            window_end=end,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await db.commit()
+    return result
+
+
 @router.get("/pilot/status")
 async def get_polymarket_pilot_status(db: AsyncSession = Depends(get_db)):
     return await fetch_pilot_status(db)
@@ -344,6 +417,112 @@ async def get_polymarket_shadow_evaluations(
         variant_name=variant_name,
         condition_id=condition_id,
         asset_id=asset_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/position-lots", response_model=RowsOut)
+async def get_polymarket_position_lots(
+    strategy_family: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_position_lots(
+        db,
+        strategy_family=strategy_family,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        status=status,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/position-lot-events", response_model=RowsOut)
+async def get_polymarket_position_lot_events(
+    strategy_family: str | None = Query(default=None),
+    condition_id: str | None = Query(default=None),
+    asset_id: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_position_lot_events(
+        db,
+        strategy_family=strategy_family,
+        condition_id=condition_id,
+        asset_id=asset_id,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/pilot/scorecards", response_model=RowsOut)
+async def get_polymarket_pilot_scorecards(
+    strategy_family: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_pilot_scorecards(
+        db,
+        strategy_family=strategy_family,
+        status=status,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/pilot/guardrail-events", response_model=RowsOut)
+async def get_polymarket_pilot_guardrail_events(
+    strategy_family: str | None = Query(default=None),
+    guardrail_type: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_pilot_guardrail_events(
+        db,
+        strategy_family=strategy_family,
+        guardrail_type=guardrail_type,
+        start=start,
+        end=end,
+        limit=limit,
+    )
+    return RowsOut(rows=rows, limit=limit)
+
+
+@router.get("/pilot/readiness-reports", response_model=RowsOut)
+async def get_polymarket_pilot_readiness_reports(
+    strategy_family: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    rows = await list_pilot_readiness_reports(
+        db,
+        strategy_family=strategy_family,
+        status=status,
         start=start,
         end=end,
         limit=limit,

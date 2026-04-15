@@ -57,6 +57,13 @@ from app.models.polymarket_stream import (
 logger = logging.getLogger(__name__)
 
 UNSET = object()
+WATCH_REGISTRY_LOOKUP_BATCH_SIZE = 5000
+
+
+def _chunk_values(values: list[Any], size: int) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("Chunk size must be positive")
+    return [values[index:index + size] for index in range(0, len(values), size)]
 
 
 def build_subscription_diff(current: set[str], desired: set[str]) -> tuple[list[str], list[str]]:
@@ -111,7 +118,7 @@ async def ensure_watch_registry_bootstrapped(
         return {"created_count": 0, "updated_count": 0}
 
     result = await session.execute(
-        select(Outcome, Market)
+        select(Outcome.id, Outcome.token_id)
         .join(Market, Outcome.market_id == Market.id)
         .where(
             Market.platform == STATUS_VENUE,
@@ -124,32 +131,34 @@ async def ensure_watch_registry_bootstrapped(
         await _count_watched_assets(session)
         return {"created_count": 0, "updated_count": 0}
 
-    outcome_ids = [outcome.id for outcome, _market in active_rows]
-    existing_result = await session.execute(
-        select(PolymarketWatchAsset).where(PolymarketWatchAsset.outcome_id.in_(outcome_ids))
-    )
-    existing_by_outcome_id = {
-        row.outcome_id: row
-        for row in existing_result.scalars().all()
-    }
+    outcome_ids = [outcome_id for outcome_id, _token_id in active_rows]
+    existing_by_outcome_id: dict[uuid.UUID, PolymarketWatchAsset] = {}
+    for batch in _chunk_values(outcome_ids, WATCH_REGISTRY_LOOKUP_BATCH_SIZE):
+        existing_result = await session.execute(
+            select(PolymarketWatchAsset).where(PolymarketWatchAsset.outcome_id.in_(batch))
+        )
+        existing_by_outcome_id.update({
+            row.outcome_id: row
+            for row in existing_result.scalars().all()
+        })
 
     created_count = 0
     updated_count = 0
-    for outcome, _market in active_rows:
-        watch_asset = existing_by_outcome_id.get(outcome.id)
+    for outcome_id, token_id in active_rows:
+        watch_asset = existing_by_outcome_id.get(outcome_id)
         if watch_asset is None:
             session.add(
                 PolymarketWatchAsset(
-                    outcome_id=outcome.id,
-                    asset_id=str(outcome.token_id),
+                    outcome_id=outcome_id,
+                    asset_id=str(token_id),
                     watch_enabled=True,
                     watch_reason="active_universe_bootstrap",
                 )
             )
             created_count += 1
             continue
-        if watch_asset.asset_id != str(outcome.token_id):
-            watch_asset.asset_id = str(outcome.token_id)
+        if watch_asset.asset_id != str(token_id):
+            watch_asset.asset_id = str(token_id)
             updated_count += 1
 
     if created_count or updated_count:

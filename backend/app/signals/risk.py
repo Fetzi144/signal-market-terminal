@@ -12,6 +12,38 @@ from decimal import Decimal
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
+LOCAL_PAPER_BOOK_SCOPE = "local_paper_book"
+
+
+def _local_reason_code(reason: str) -> str:
+    if reason.startswith("Total exposure limit reached"):
+        return "risk_local_total_exposure"
+    if reason.startswith("Cluster exposure limit reached"):
+        return "risk_local_cluster_exposure"
+    if reason == "Zero or negative size":
+        return "risk_local_invalid_size"
+    return "risk_local_rejected"
+
+
+def _result(
+    *,
+    approved: bool,
+    approved_size_usd: Decimal,
+    reason: str,
+    drawdown_active: bool,
+) -> dict:
+    reason_code = _local_reason_code(reason)
+    return {
+        "approved": approved,
+        "approved_size_usd": approved_size_usd,
+        "reason": reason,
+        "reason_code": reason_code,
+        "risk_source": "paper_book",
+        "risk_scope": LOCAL_PAPER_BOOK_SCOPE,
+        "original_reason_code": reason_code,
+        "original_reason": reason,
+        "drawdown_active": drawdown_active,
+    }
 
 
 def _extract_keywords(question: str) -> set[str]:
@@ -69,12 +101,12 @@ def check_exposure(
     """
     requested_size = Decimal(str(new_trade["size_usd"]))
     if requested_size <= ZERO:
-        return {
-            "approved": False,
-            "approved_size_usd": ZERO,
-            "reason": "Zero or negative size",
-            "drawdown_active": False,
-        }
+        return _result(
+            approved=False,
+            approved_size_usd=ZERO,
+            reason="Zero or negative size",
+            drawdown_active=False,
+        )
 
     # Drawdown circuit breaker
     drawdown_active = False
@@ -94,12 +126,12 @@ def check_exposure(
     remaining_capacity = max_total - current_exposure
 
     if remaining_capacity <= ZERO:
-        return {
-            "approved": False,
-            "approved_size_usd": ZERO,
-            "reason": f"Total exposure limit reached (${current_exposure:.2f} / ${max_total:.2f})",
-            "drawdown_active": drawdown_active,
-        }
+        return _result(
+            approved=False,
+            approved_size_usd=ZERO,
+            reason=f"Total exposure limit reached (${current_exposure:.2f} / ${max_total:.2f})",
+            drawdown_active=drawdown_active,
+        )
 
     if requested_size > remaining_capacity:
         requested_size = remaining_capacity.quantize(Decimal("0.01"))
@@ -119,19 +151,19 @@ def check_exposure(
     cluster_remaining = max_cluster - cluster_exposure
 
     if cluster_remaining <= ZERO:
-        return {
-            "approved": False,
-            "approved_size_usd": ZERO,
-            "reason": f"Cluster exposure limit reached (${cluster_exposure:.2f} / ${max_cluster:.2f})",
-            "drawdown_active": drawdown_active,
-        }
+        return _result(
+            approved=False,
+            approved_size_usd=ZERO,
+            reason=f"Cluster exposure limit reached (${cluster_exposure:.2f} / ${max_cluster:.2f})",
+            drawdown_active=drawdown_active,
+        )
 
     if requested_size > cluster_remaining:
         requested_size = cluster_remaining.quantize(Decimal("0.01"))
 
-    return {
-        "approved": True,
-        "approved_size_usd": requested_size,
-        "reason": "approved" if not drawdown_active else "approved (drawdown-reduced)",
-        "drawdown_active": drawdown_active,
-    }
+    return _result(
+        approved=True,
+        approved_size_usd=requested_size,
+        reason="approved" if not drawdown_active else "approved (drawdown-reduced)",
+        drawdown_active=drawdown_active,
+    )

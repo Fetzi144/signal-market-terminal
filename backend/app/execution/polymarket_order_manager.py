@@ -32,6 +32,7 @@ from app.execution.polymarket_live_state import (
     serialize_live_order,
     set_gateway_status,
 )
+from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
 from app.ingestion.polymarket_common import utcnow
 from app.metrics import (
     polymarket_live_cancels,
@@ -55,6 +56,7 @@ from app.models.signal import Signal
 
 ZERO = Decimal("0")
 SIZE_Q = Decimal("0.0001")
+_pilot_evidence = PolymarketPilotEvidenceService()
 
 
 def _json_safe(value: Any) -> Any:
@@ -177,6 +179,16 @@ class PolymarketOrderManager:
                 new_status="validation_failed",
                 details={"issues": validation_issues},
             )
+            if "stale_execution_decision" in validation_issues:
+                await _pilot_evidence.record_guardrail_event(
+                    session,
+                    strategy_family=order.strategy_family or "exec_policy",
+                    guardrail_type="decision_age",
+                    severity="warning",
+                    action_taken="block",
+                    live_order=order,
+                    details={"issues": validation_issues},
+                )
             return serialize_live_order(order)
 
         reserved, reservation_reason, reservation_row = await self._reservations.reserve_for_intent(
@@ -204,6 +216,16 @@ class PolymarketOrderManager:
                 new_status="submit_blocked",
                 details={"reason": reservation_reason},
             )
+            if reservation_reason == "max_outstanding_notional_exceeded":
+                await _pilot_evidence.record_guardrail_event(
+                    session,
+                    strategy_family=order.strategy_family or "exec_policy",
+                    guardrail_type="max_outstanding_notional",
+                    severity="error",
+                    action_taken="block",
+                    live_order=order,
+                    details={"reason": reservation_reason},
+                )
             return serialize_live_order(order)
 
         if order.kill_switch_blocked or order.allowlist_blocked:

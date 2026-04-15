@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.ingestion import polymarket_stream as polymarket_stream_module
 from app.ingestion.polymarket_stream import (
     PolymarketResyncService,
     PolymarketStreamService,
@@ -217,6 +218,47 @@ async def test_bootstrap_watch_registry_preserves_active_universe_coverage(sessi
     rows = (await session.execute(select(PolymarketWatchAsset))).scalars().all()
     assert bootstrap["created_count"] == 2
     assert {row.asset_id for row in rows} == {outcome_one.token_id, outcome_two.token_id}
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_watch_registry_chunks_existing_outcome_lookup(session, monkeypatch):
+    for index in range(5):
+        market = make_market(session, platform="polymarket", platform_id=f"chunked-{index}", active=True)
+        await session.flush()
+        outcome = make_outcome(session, market.id, token_id=f"token-{index}")
+        await session.flush()
+        if index == 0:
+            session.add(
+                PolymarketWatchAsset(
+                    outcome_id=outcome.id,
+                    asset_id="stale-token",
+                    watch_enabled=True,
+                    watch_reason="seeded",
+                )
+            )
+    await session.commit()
+
+    watch_lookup_count = 0
+    original_execute = session.execute
+
+    async def tracking_execute(statement, *args, **kwargs):
+        nonlocal watch_lookup_count
+        rendered = str(statement)
+        if "FROM polymarket_watch_assets" in rendered and "IN (" in rendered:
+            watch_lookup_count += 1
+        return await original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(polymarket_stream_module, "WATCH_REGISTRY_LOOKUP_BATCH_SIZE", 2)
+    monkeypatch.setattr(session, "execute", tracking_execute)
+
+    bootstrap = await ensure_watch_registry_bootstrapped(session)
+    await session.commit()
+
+    rows = (await original_execute(select(PolymarketWatchAsset))).scalars().all()
+    assert bootstrap["created_count"] == 4
+    assert bootstrap["updated_count"] == 1
+    assert len(rows) == 5
+    assert watch_lookup_count == 3
 
 
 @pytest.mark.asyncio

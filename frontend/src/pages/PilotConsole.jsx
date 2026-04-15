@@ -4,6 +4,8 @@ import {
   armPolymarketPilot,
   createPolymarketPilotConfig,
   disarmPolymarketPilot,
+  generatePolymarketPilotReadinessReport,
+  generatePolymarketPilotScorecard,
   getPolymarketPilotConfigs,
   getPolymarketPilotConsoleSummary,
   pausePolymarketPilot,
@@ -78,10 +80,17 @@ export default function PilotConsole() {
   const activeRun = summary?.pilot?.active_run || null;
   const approvals = summary?.approvals || [];
   const incidents = summary?.incidents || [];
+  const guardrails = summary?.guardrail_events || [];
   const recentOrders = summary?.recent_orders || [];
   const recentFills = summary?.recent_fills || [];
   const blocked = summary?.recent_blocked_submissions || [];
   const shadow = summary?.live_shadow_summary || {};
+  const evidence = summary?.evidence_summary || {};
+  const evidenceShadow = evidence?.live_shadow_summary || {};
+  const dailyRealized = evidence?.daily_realized_pnl || {};
+  const scorecards = summary?.scorecards || [];
+  const readinessReports = summary?.readiness_reports || [];
+  const latestReadiness = evidence?.latest_readiness_report || readinessReports[0] || null;
 
   return (
     <div style={pageStyle}>
@@ -140,6 +149,20 @@ export default function PilotConsole() {
             >
               {summary?.pilot?.kill_switch_enabled ? "Kill Switch On" : "Kill Switch Off"}
             </button>
+            <button
+              onClick={() => runAction("generate-scorecard", () => generatePolymarketPilotScorecard({ strategy_family: "exec_policy", window: "daily" }))}
+              disabled={busyAction === "generate-scorecard"}
+              style={secondaryButtonStyle}
+            >
+              Scorecard
+            </button>
+            <button
+              onClick={() => runAction("generate-readiness", () => generatePolymarketPilotReadinessReport({ strategy_family: "exec_policy", window: "daily" }))}
+              disabled={busyAction === "generate-readiness"}
+              style={secondaryButtonStyle}
+            >
+              Readiness
+            </button>
           </div>
         </div>
 
@@ -149,9 +172,12 @@ export default function PilotConsole() {
           <StatCard label="Run State" value={activeRun?.status || "idle"} />
           <StatCard label="Manual Approval" value={summary?.pilot?.manual_approval_required ? "On" : "Off"} />
           <StatCard label="Approval Queue" value={summary?.pilot?.approval_queue_count ?? 0} />
+          <StatCard label="Expired (24h)" value={evidence?.approval_expired_count_24h ?? 0} />
           <StatCard label="Incidents (24h)" value={summary?.pilot?.recent_incident_count_24h ?? 0} />
           <StatCard label="Open Live Orders" value={summary?.pilot?.open_live_order_count ?? 0} />
           <StatCard label="Shadow Breaches" value={shadow.breach_count_24h ?? 0} />
+          <StatCard label="Daily Net P&L" value={formatCurrency(dailyRealized?.net_realized_pnl)} />
+          <StatCard label="Readiness" value={latestReadiness?.status || "manual_only"} />
         </div>
       </section>
 
@@ -190,17 +216,17 @@ export default function PilotConsole() {
       <div style={splitGridStyle}>
         <section style={panelStyle}>
           <div style={sectionHeaderStyle}>
-            <h3 style={sectionTitleStyle}>Recent Incidents</h3>
+            <h3 style={sectionTitleStyle}>Guardrail Events</h3>
           </div>
           <SimpleTable
-            columns={["When", "Type", "Severity", "Details"]}
-            rows={incidents.map((incident) => ([
-              formatShortDateTime(incident.observed_at_local),
-              incident.incident_type,
-              incident.severity,
-              incident.details_json?.reason || incident.details_json?.error || incident.asset_id || "operator event",
+            columns={["When", "Guardrail", "Action", "Details"]}
+            rows={guardrails.map((event) => ([
+              formatShortDateTime(event.observed_at_local),
+              event.guardrail_type,
+              event.action_taken,
+              event.details_json?.reason || event.details_json?.error || event.details_json?.gap_bps || "-",
             ]))}
-            emptyLabel="No recent pilot incidents."
+            emptyLabel="No recent guardrail events."
           />
         </section>
 
@@ -210,9 +236,9 @@ export default function PilotConsole() {
           </div>
           <div style={statsGridStyle}>
             <StatCard label="Evaluations (24h)" value={shadow.recent_count_24h ?? 0} />
-            <StatCard label="Avg Gap" value={formatBps(shadow.average_gap_bps_24h)} />
-            <StatCard label="Worst Gap" value={formatBps(shadow.worst_gap_bps_24h)} />
-            <StatCard label="Breaches" value={shadow.breach_count_24h ?? 0} />
+            <StatCard label="Avg Gap" value={formatBps(evidenceShadow.average_gap_bps_24h ?? shadow.average_gap_bps_24h)} />
+            <StatCard label="Worst Gap" value={formatBps(evidenceShadow.worst_gap_bps_24h ?? shadow.worst_gap_bps_24h)} />
+            <StatCard label="Breaches" value={evidenceShadow.breach_count_24h ?? shadow.breach_count_24h ?? 0} />
           </div>
           <div style={{ marginTop: 12 }}>
             <SimpleTable
@@ -231,6 +257,35 @@ export default function PilotConsole() {
       <div style={splitGridStyle}>
         <section style={panelStyle}>
           <div style={sectionHeaderStyle}>
+            <h3 style={sectionTitleStyle}>Evidence Summary</h3>
+          </div>
+          <SimpleTable
+            columns={["Window", "Status", "Net P&L", "Avg Gap", "Coverage"]}
+            rows={scorecards.map((card) => ([
+              `${formatShortDateTime(card.window_start)} -> ${formatShortDateTime(card.window_end)}`,
+              card.status,
+              formatCurrency(card.net_pnl),
+              formatBps(card.avg_shadow_gap_bps),
+              card.coverage_limited_count ?? 0,
+            ]))}
+            emptyLabel="No scorecards generated yet."
+          />
+          <div style={{ marginTop: 12 }}>
+            <SimpleTable
+              columns={["Generated", "Status", "Backlog", "Breaches"]}
+              rows={readinessReports.map((report) => ([
+                formatShortDateTime(report.generated_at),
+                report.status,
+                report.approval_backlog_count ?? 0,
+                report.shadow_gap_breach_count ?? 0,
+              ]))}
+              emptyLabel="No readiness reports generated yet."
+            />
+          </div>
+        </section>
+
+        <section style={panelStyle}>
+          <div style={sectionHeaderStyle}>
             <h3 style={sectionTitleStyle}>Recent Orders</h3>
           </div>
           <SimpleTable
@@ -245,24 +300,40 @@ export default function PilotConsole() {
             emptyLabel="No live orders yet."
           />
         </section>
-
-        <section style={panelStyle}>
-          <div style={sectionHeaderStyle}>
-            <h3 style={sectionTitleStyle}>Recent Fills</h3>
-          </div>
-          <SimpleTable
-            columns={["Observed", "Asset", "Status", "Price", "Size"]}
-            rows={recentFills.map((fill) => ([
-              formatShortDateTime(fill.observed_at_local),
-              fill.asset_id,
-              fill.fill_status,
-              formatNumber(fill.price),
-              formatNumber(fill.size),
-            ]))}
-            emptyLabel="No fills yet."
-          />
-        </section>
       </div>
+
+      <section style={panelStyle}>
+        <div style={sectionHeaderStyle}>
+          <h3 style={sectionTitleStyle}>Recent Incidents</h3>
+        </div>
+        <SimpleTable
+          columns={["When", "Type", "Severity", "Details"]}
+          rows={incidents.map((incident) => ([
+            formatShortDateTime(incident.observed_at_local),
+            incident.incident_type,
+            incident.severity,
+            incident.details_json?.reason || incident.details_json?.error || incident.asset_id || "operator event",
+          ]))}
+          emptyLabel="No recent pilot incidents."
+        />
+      </section>
+
+      <section style={panelStyle}>
+        <div style={sectionHeaderStyle}>
+          <h3 style={sectionTitleStyle}>Recent Fills</h3>
+        </div>
+        <SimpleTable
+          columns={["Observed", "Asset", "Status", "Price", "Size"]}
+          rows={recentFills.map((fill) => ([
+            formatShortDateTime(fill.observed_at_local),
+            fill.asset_id,
+            fill.fill_status,
+            formatNumber(fill.price),
+            formatNumber(fill.size),
+          ]))}
+          emptyLabel="No fills yet."
+        />
+      </section>
     </div>
   );
 }
@@ -318,6 +389,11 @@ function formatShortDateTime(value) {
 function formatNumber(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return Number(value).toFixed(2);
+}
+
+function formatCurrency(value) {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return `$${Number(value).toFixed(2)}`;
 }
 
 function formatBps(value) {

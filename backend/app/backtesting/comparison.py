@@ -1,4 +1,6 @@
-"""Locked comparison helpers for prove-the-edge reviews."""
+"""Honest measurement comparisons for prove-the-edge reviews."""
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from decimal import Decimal
 import uuid
@@ -7,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.default_strategy import evaluate_default_strategy_signal
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
 from app.signals.probability import brier_score
@@ -40,30 +43,83 @@ def _compute_max_drawdown(values: list[Decimal]) -> Decimal:
     return max_drawdown
 
 
-def _mode_summary(
-    *,
-    label: str,
-    resolved_signals: int,
-    win_rate: float,
-    avg_clv: Decimal | None,
-    total_profit_loss_per_share: Decimal,
-    max_drawdown_per_share: Decimal,
-    cumulative_pnl: Decimal,
-    brier: Decimal | None,
-) -> dict:
+def _serialize_decimal(value: Decimal | None, *, quantum: Decimal | None = None) -> float | None:
+    if value is None:
+        return None
+    normalized = value.quantize(quantum) if quantum is not None else value
+    return float(normalized)
+
+
+def _signal_level_summary(*, label: str, signals: list[Signal], cohort_label: str) -> dict:
+    clvs = [signal.clv for signal in signals if signal.clv is not None]
+    profit_losses = [signal.profit_loss or ZERO for signal in signals]
+    predictions = [
+        (signal.estimated_probability, signal.resolved_correctly)
+        for signal in signals
+        if signal.estimated_probability is not None and signal.resolved_correctly is not None
+    ]
+    wins = sum(1 for signal in signals if signal.resolved_correctly)
     return {
+        "available": True,
         "mode": label,
-        "resolved_signals": resolved_signals,
-        "win_rate": round(win_rate, 4),
-        "avg_clv": float(avg_clv.quantize(Decimal("0.000001"))) if avg_clv is not None else None,
-        "total_profit_loss_per_share": float(total_profit_loss_per_share.quantize(Decimal("0.000001"))),
-        "max_drawdown_per_share": float(max_drawdown_per_share.quantize(Decimal("0.000001"))),
-        "cumulative_pnl": float(cumulative_pnl.quantize(Decimal("0.01"))),
-        "brier_score": float(brier.quantize(Decimal("0.000001"))) if brier is not None else None,
+        "unit": "per_share",
+        "cohort": cohort_label,
+        "resolved_signals": len(signals),
+        "win_rate": round(wins / len(signals), 4) if signals else 0.0,
+        "avg_clv": _serialize_decimal(_average(clvs), quantum=Decimal("0.000001")) if clvs else None,
+        "total_profit_loss_per_share": _serialize_decimal(sum(profit_losses, ZERO), quantum=Decimal("0.000001")),
+        "max_drawdown_per_share": _serialize_decimal(_compute_max_drawdown(profit_losses), quantum=Decimal("0.000001")),
+        "brier_score": _serialize_decimal(brier_score(predictions), quantum=Decimal("0.000001")) if predictions else None,
     }
 
 
-async def compare_locked_modes(
+def _execution_adjusted_summary(*, trade_rows: list[tuple[PaperTrade, Signal]]) -> dict:
+    pnls = [trade.pnl or ZERO for trade, _signal in trade_rows if trade.pnl is not None]
+    shadow_pnls = [trade.shadow_pnl or ZERO for trade, _signal in trade_rows if trade.shadow_pnl is not None]
+    wins = sum(1 for pnl in pnls if pnl > ZERO)
+    losses = sum(1 for pnl in pnls if pnl <= ZERO)
+    return {
+        "available": True,
+        "unit": "usd",
+        "resolved_trades": len(pnls),
+        "win_rate": round(wins / len(pnls), 4) if pnls else 0.0,
+        "cumulative_pnl": _serialize_decimal(sum(pnls, ZERO), quantum=Decimal("0.01")) or 0.0,
+        "shadow_cumulative_pnl": _serialize_decimal(sum(shadow_pnls, ZERO), quantum=Decimal("0.01")) or 0.0,
+        "avg_trade_pnl": _serialize_decimal((sum(pnls, ZERO) / Decimal(str(len(pnls)))) if pnls else ZERO, quantum=Decimal("0.01")) or 0.0,
+        "max_drawdown": _serialize_decimal(_compute_max_drawdown(pnls), quantum=Decimal("0.01")) or 0.0,
+        "wins": wins,
+        "losses": losses,
+    }
+
+
+def empty_strategy_measurement_modes() -> dict:
+    return {
+        "signal_level": {
+            "unit": "per_share",
+            "default_strategy": {
+                "available": False,
+                "reason": "no_active_run",
+            },
+            "benchmark": {
+                "available": False,
+                "reason": "no_active_run",
+            },
+        },
+        "execution_adjusted": {
+            "unit": "usd",
+            "default_strategy": {
+                "available": False,
+                "reason": "no_active_run",
+            },
+            "benchmark": {
+                "available": False,
+                "reason": "legacy_execution_adjusted_unavailable",
+            },
+        },
+    }
+
+
+async def compare_strategy_measurement_modes(
     session: AsyncSession,
     *,
     start_date: datetime,
@@ -78,64 +134,96 @@ async def compare_locked_modes(
             Signal.fired_at >= start_date,
             Signal.fired_at <= end_date,
             Signal.rank_score >= Decimal(str(settings.legacy_benchmark_rank_threshold)),
-            Signal.resolved_correctly.isnot(None),
+            Signal.resolved_correctly.is_not(None),
         )
     )
     legacy_signals = legacy_result.scalars().all()
-    legacy_clvs = [signal.clv for signal in legacy_signals if signal.clv is not None]
-    legacy_profit_losses = [signal.profit_loss or ZERO for signal in legacy_signals]
-    legacy_predictions = [
-        (signal.estimated_probability, signal.resolved_correctly)
-        for signal in legacy_signals
-        if signal.estimated_probability is not None and signal.resolved_correctly is not None
-    ]
-    legacy_wins = sum(1 for signal in legacy_signals if signal.resolved_correctly)
 
-    default_trade_rows = []
+    default_signal_result = await session.execute(
+        select(Signal).where(
+            Signal.fired_at >= start_date,
+            Signal.fired_at <= end_date,
+            Signal.signal_type == settings.default_strategy_signal_type,
+            Signal.resolved_correctly.is_not(None),
+        )
+    )
+    default_signals = [
+        signal
+        for signal in default_signal_result.scalars().all()
+        if evaluate_default_strategy_signal(signal, started_at=start_date).eligible
+    ]
+
+    default_trade_rows: list[tuple[PaperTrade, Signal]] = []
     if strategy_run_id is not None:
         trade_result = await session.execute(
             select(PaperTrade, Signal)
             .join(Signal, Signal.id == PaperTrade.signal_id)
             .where(
                 PaperTrade.strategy_run_id == strategy_run_id,
+                PaperTrade.status == "resolved",
                 Signal.fired_at >= start_date,
                 Signal.fired_at <= end_date,
-                PaperTrade.status == "resolved",
             )
-            .order_by(PaperTrade.resolved_at.asc())
+            .order_by(PaperTrade.resolved_at.asc(), PaperTrade.id.asc())
         )
         default_trade_rows = trade_result.all()
 
-    default_signals = [signal for _trade, signal in default_trade_rows]
-    default_clvs = [signal.clv for signal in default_signals if signal.clv is not None]
-    default_profit_losses = [signal.profit_loss or ZERO for signal in default_signals]
-    default_predictions = [
-        (signal.estimated_probability, signal.resolved_correctly)
-        for signal in default_signals
-        if signal.estimated_probability is not None and signal.resolved_correctly is not None
-    ]
-    default_wins = sum(1 for signal in default_signals if signal.resolved_correctly)
-    default_cumulative_pnl = sum((trade.pnl or ZERO for trade, _signal in default_trade_rows), ZERO)
-
-    return {
-        "legacy": _mode_summary(
-            label="legacy",
-            resolved_signals=len(legacy_signals),
-            win_rate=(legacy_wins / len(legacy_signals)) if legacy_signals else 0.0,
-            avg_clv=_average(legacy_clvs),
-            total_profit_loss_per_share=sum(legacy_profit_losses, ZERO),
-            max_drawdown_per_share=_compute_max_drawdown(legacy_profit_losses),
-            cumulative_pnl=ZERO,
-            brier=brier_score(legacy_predictions) if legacy_predictions else None,
+    signal_level_default = _signal_level_summary(
+        label="default_strategy",
+        signals=default_signals,
+        cohort_label="eligible_default_strategy_signals",
+    )
+    signal_level_benchmark = _signal_level_summary(
+        label="legacy_benchmark",
+        signals=legacy_signals,
+        cohort_label="rank_threshold_signals",
+    )
+    signal_level_delta = {
+        "unit": "per_share",
+        "profit_loss_per_share_delta": round(
+            (signal_level_default["total_profit_loss_per_share"] or 0.0)
+            - (signal_level_benchmark["total_profit_loss_per_share"] or 0.0),
+            6,
         ),
-        "default_strategy": _mode_summary(
-            label="default_strategy",
-            resolved_signals=len(default_signals),
-            win_rate=(default_wins / len(default_signals)) if default_signals else 0.0,
-            avg_clv=_average(default_clvs),
-            total_profit_loss_per_share=sum(default_profit_losses, ZERO),
-            max_drawdown_per_share=_compute_max_drawdown(default_profit_losses),
-            cumulative_pnl=default_cumulative_pnl,
-            brier=brier_score(default_predictions) if default_predictions else None,
+        "max_drawdown_per_share_delta": round(
+            (signal_level_default["max_drawdown_per_share"] or 0.0)
+            - (signal_level_benchmark["max_drawdown_per_share"] or 0.0),
+            6,
         ),
     }
+
+    execution_adjusted_default = _execution_adjusted_summary(trade_rows=default_trade_rows)
+    execution_adjusted_benchmark = {
+        "available": False,
+        "unit": "usd",
+        "reason": "legacy_execution_adjusted_unavailable",
+    }
+
+    return {
+        "signal_level": {
+            "unit": "per_share",
+            "default_strategy": signal_level_default,
+            "benchmark": signal_level_benchmark,
+            "delta": signal_level_delta,
+        },
+        "execution_adjusted": {
+            "unit": "usd",
+            "default_strategy": execution_adjusted_default,
+            "benchmark": execution_adjusted_benchmark,
+        },
+    }
+
+
+async def compare_locked_modes(
+    session: AsyncSession,
+    *,
+    start_date: datetime,
+    end_date: datetime,
+    strategy_run_id: uuid.UUID | None = None,
+) -> dict:
+    return await compare_strategy_measurement_modes(
+        session,
+        start_date=start_date,
+        end_date=end_date,
+        strategy_run_id=strategy_run_id,
+    )

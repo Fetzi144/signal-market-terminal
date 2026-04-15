@@ -38,3 +38,7 @@ frontend/.env.local
 
 # Local scratch databases
 backend/tmp_*.db
+backend/runtime-dev.db
+
+# Local Playwright page snapshots
+.playwright-cli/page-*.yml

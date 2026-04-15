@@ -479,6 +479,74 @@ async def test_action_policy_replay_produces_stable_choice_traces(session, engin
 
 
 @pytest.mark.asyncio
+async def test_replay_metrics_use_canonical_settlement_price(session, engine, monkeypatch):
+    _set_phase11_defaults(monkeypatch)
+    service = PolymarketReplaySimulatorService(_session_factory(engine))
+    decision_at = datetime(2026, 4, 14, 11, 35, 0, tzinfo=timezone.utc)
+    seeded = await _seed_polymarket_execution_fixture(
+        session,
+        condition_id="cond-phase11-settlement",
+        asset_id="token-phase11-settlement",
+        decision_at=decision_at,
+        estimated_probability="0.65",
+        price_at_fire="0.40",
+        expected_value="0.25",
+        best_bid="0.40",
+        best_ask="0.41",
+        bids=[("0.40", "500"), ("0.39", "500")],
+        asks=[("0.41", "300"), ("0.42", "300")],
+        label_rows=0,
+    )
+    seeded["market_dim"].resolved = True
+    seeded["market_dim"].resolution_state = "resolved"
+    seeded["market_dim"].winning_asset_id = seeded["asset_dim"].asset_id
+    await session.commit()
+
+    replay = _manual_replay(
+        asset_id=seeded["asset_dim"].asset_id,
+        condition_id=seeded["asset_dim"].condition_id,
+        observed_at=decision_at,
+        best_bid="0.40",
+        best_ask="0.41",
+        bid_levels=[("0.40", "500"), ("0.39", "500")],
+        ask_levels=[("0.41", "300"), ("0.42", "300")],
+        latest_observed_time=decision_at + timedelta(seconds=10),
+    )
+
+    metric = await service._metric_from_execution(
+        session,
+        variant_name="exec_policy",
+        direction="buy_yes",
+        orders=[
+            {
+                "requested_size": Decimal("40.0000"),
+                "status": ORDER_STATUS_FILLED,
+                "action_type": "cross_now",
+                "details_json": {},
+            }
+        ],
+        fills=[
+            {
+                "price": Decimal("0.40"),
+                "size": Decimal("100.0000"),
+                "fee_paid": ZERO,
+                "reward_estimate": ZERO,
+            }
+        ],
+        replay=replay,
+        decision_ts=decision_at,
+    )
+    await service.close()
+
+    assert metric["gross_pnl"] == Decimal("60.00000000")
+    assert metric["net_pnl"] == Decimal("60.00000000")
+    assert metric["details_json"]["exit_price"] == Decimal("1.00000000")
+    assert metric["details_json"]["settlement_source_kind"] == "market_dim"
+    assert metric["details_json"]["coverage_mode"] == "canonical_settlement"
+    assert metric["details_json"]["coverage_limited"] is False
+
+
+@pytest.mark.asyncio
 async def test_maker_replay_accounts_for_rewards_and_realism_adjustments(session, engine, monkeypatch):
     _set_phase11_defaults(monkeypatch)
     service = PolymarketReplaySimulatorService(_session_factory(engine))

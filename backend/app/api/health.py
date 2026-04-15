@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.execution.polymarket_control_plane import compute_live_shadow_summary, fetch_pilot_status
+from app.execution.polymarket_control_plane import fetch_pilot_status
 from app.execution.polymarket_live_state import fetch_polymarket_live_status
+from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
 from app.ingestion.polymarket_book_reconstruction import fetch_polymarket_book_recon_status
 from app.ingestion.polymarket_execution_policy import fetch_polymarket_execution_policy_status
 from app.ingestion.polymarket_maker_economics import fetch_polymarket_maker_status
@@ -26,6 +27,7 @@ from app.models.market import Market
 from app.models.signal import Signal
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
+_pilot_evidence = PolymarketPilotEvidenceService()
 
 
 class IngestionStatus(BaseModel):
@@ -273,6 +275,11 @@ class PolymarketPhase12Status(BaseModel):
     user_stream_connected: bool
     recent_incident_count_24h: int
     live_shadow_summary: dict[str, Any]
+    daily_realized_pnl: dict[str, Any]
+    approval_expired_count_24h: int
+    recent_guardrail_triggers: list[dict[str, Any]]
+    latest_readiness_status: str | None = None
+    latest_readiness_generated_at: datetime | None = None
     last_reconcile_success_at: datetime | None = None
     kill_switch_enabled: bool
 
@@ -349,7 +356,7 @@ async def health(db: AsyncSession = Depends(get_db)):
     polymarket_phase10 = await fetch_polymarket_risk_graph_status(db)
     polymarket_phase11 = await fetch_polymarket_replay_status(db)
     polymarket_phase12_pilot = await fetch_pilot_status(db)
-    polymarket_phase12_shadow = await compute_live_shadow_summary(db)
+    polymarket_phase12_evidence = await _pilot_evidence.fetch_pilot_evidence_summary(db)
 
     return HealthOut(
         status="ok",
@@ -608,7 +615,20 @@ async def health(db: AsyncSession = Depends(get_db)):
             heartbeat_status=polymarket_phase12_pilot["heartbeat_status"],
             user_stream_connected=polymarket_phase7a["user_stream_connected"],
             recent_incident_count_24h=polymarket_phase12_pilot["recent_incident_count_24h"],
-            live_shadow_summary=polymarket_phase12_shadow,
+            live_shadow_summary=polymarket_phase12_evidence["live_shadow_summary"],
+            daily_realized_pnl=polymarket_phase12_evidence["daily_realized_pnl"],
+            approval_expired_count_24h=polymarket_phase12_evidence["approval_expired_count_24h"],
+            recent_guardrail_triggers=polymarket_phase12_evidence["recent_guardrail_triggers"],
+            latest_readiness_status=(
+                polymarket_phase12_evidence["latest_readiness_report"]["status"]
+                if polymarket_phase12_evidence["latest_readiness_report"] is not None
+                else None
+            ),
+            latest_readiness_generated_at=(
+                polymarket_phase12_evidence["latest_readiness_report"]["generated_at"]
+                if polymarket_phase12_evidence["latest_readiness_report"] is not None
+                else None
+            ),
             last_reconcile_success_at=polymarket_phase7a["last_reconcile_success_at"],
             kill_switch_enabled=polymarket_phase12_pilot["kill_switch_enabled"],
         ),
