@@ -101,6 +101,33 @@ async def test_strategy_run_open_close_lifecycle_requires_explicit_rollover(sess
 
 
 @pytest.mark.asyncio
+async def test_strategy_run_persists_evidence_boundary_metadata_in_contract_snapshot(session):
+    launch_at = datetime(2026, 4, 15, tzinfo=timezone.utc)
+    strategy_run = await open_default_strategy_run(
+        session,
+        launch_boundary_at=launch_at,
+        contract_metadata={
+            "contract_version": "default_strategy_v0.4.1",
+            "evidence_boundary": {
+                "boundary_id": "v0.4.1",
+                "release_tag": "v0.4.1",
+                "commit_sha": "87a4315b81b81365d9ee974aff5b130813757897",
+                "migration_revision": "038",
+            },
+            "evidence_gate": {
+                "min_resolved_trades": 20,
+                "execution_adjusted_pnl_rule": "positive",
+            },
+        },
+    )
+
+    assert strategy_run.contract_snapshot["contract_version"] == "default_strategy_v0.4.1"
+    assert strategy_run.contract_snapshot["evidence_boundary"]["release_tag"] == "v0.4.1"
+    assert strategy_run.contract_snapshot["evidence_boundary"]["migration_revision"] == "038"
+    assert strategy_run.contract_snapshot["evidence_gate"]["min_resolved_trades"] == 20
+
+
+@pytest.mark.asyncio
 async def test_only_one_active_run_per_strategy(session):
     strategy_run = StrategyRun(
         strategy_name="prove_the_edge_default",

@@ -1,8 +1,8 @@
 """Scheduled jobs: market discovery, snapshot capture, signal detection, evaluation."""
 import asyncio
-from contextlib import suppress
-from datetime import datetime, timedelta, timezone
 import logging
+from contextlib import suppress
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -15,6 +15,7 @@ from app.jobs.lease import (
     release_named_lease,
     renew_named_lease,
 )
+from app.metrics import default_strategy_scheduler_no_active_run
 
 logger = logging.getLogger(__name__)
 
@@ -192,15 +193,15 @@ async def _run_signal_detection():
                     if confluence_count > 0:
                         logger.info("Job: confluence engine created %d fused signals", confluence_count)
 
-                # Auto-open paper trades for EV-positive signals
-                if created > 0:
-                    await _run_paper_trading(session, [*new_signals, *confluence_signals])
+                # Default-strategy processing runs every detection pass; without an active run it records a no-op metric.
+                await _run_paper_trading(session, [*new_signals, *confluence_signals])
 
                 # Broadcast new signals via SSE
                 if created > 0:
                     await _broadcast_new_signals(session, new_signals)
                     await _alert_high_rank_signals(session)
             else:
+                await _run_paper_trading(session, [])
                 logger.info("Job: signal_detection done, no candidates")
         except Exception:
             logger.error("Job: signal_detection failed", exc_info=True)
@@ -209,7 +210,6 @@ async def _run_signal_detection():
 async def _run_confluence(session, candidates):
     """Run Bayesian confluence on candidates grouped by outcome_id."""
     from collections import defaultdict
-    from decimal import Decimal
 
     from app.ranking.scorer import persist_signals
     from app.signals.confluence import fuse_signals
@@ -241,25 +241,20 @@ async def _run_confluence(session, candidates):
 async def _run_paper_trading(session, signals):
     """Auto-open paper trades for EV-positive signals."""
     from app.default_strategy import evaluate_default_strategy_signal
-    from app.paper_trading.engine import attempt_open_trade
-    from app.strategy_runs.service import ensure_active_default_strategy_run
+    from app.paper_trading.engine import attempt_open_trade, ensure_pending_execution_decision
+    from app.strategy_runs.service import get_active_strategy_run
 
     count = 0
     candidate_count = 0
     skip_counts: dict[str, int] = {}
-    bootstrap_candidates = []
-    for signal in signals:
-        if signal.fired_at is None:
-            continue
-        if signal.fired_at.tzinfo is None:
-            bootstrap_candidates.append(signal.fired_at.replace(tzinfo=timezone.utc))
-        else:
-            bootstrap_candidates.append(signal.fired_at.astimezone(timezone.utc))
-    bootstrap_started_at = min(bootstrap_candidates, default=None)
-    strategy_run = await ensure_active_default_strategy_run(
-        session,
-        bootstrap_started_at=bootstrap_started_at,
-    )
+    strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    if strategy_run is None:
+        default_strategy_scheduler_no_active_run.inc()
+        logger.info(
+            "Paper trading skipped for %d signal(s): no active default-strategy run is bootstrapped",
+            len(signals),
+        )
+        return
     baseline_start_at = strategy_run.started_at.isoformat() if strategy_run.started_at else None
 
     for signal in signals:
@@ -270,6 +265,18 @@ async def _run_paper_trading(session, signals):
         candidate_count += 1
         market_question = (signal.details or {}).get("market_question", "")
         attempted_at = datetime.now(timezone.utc).isoformat()
+        if evaluation.eligible:
+            await ensure_pending_execution_decision(
+                session=session,
+                signal_id=signal.id,
+                outcome_id=signal.outcome_id,
+                market_id=signal.market_id,
+                estimated_probability=signal.estimated_probability,
+                market_price=signal.price_at_fire,
+                market_question=market_question,
+                fired_at=signal.fired_at,
+                strategy_run_id=strategy_run.id,
+            )
         result = await attempt_open_trade(
             session=session,
             signal_id=signal.id,

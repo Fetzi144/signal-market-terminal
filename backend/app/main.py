@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Signal Market Terminal",
-    version="0.4.0",
+    version="0.4.1",
     lifespan=lifespan,
 )
 
@@ -116,4 +116,4 @@ Instrumentator().instrument(app).expose(app)
 
 @app.get("/")
 async def root():
-    return {"name": "Signal Market Terminal", "version": "0.4.0"}
+    return {"name": "Signal Market Terminal", "version": "0.4.1"}

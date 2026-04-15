@@ -4,6 +4,8 @@ import inspect
 import logging
 import signal
 
+from prometheus_client import start_http_server
+
 from app.db import async_session
 from app.config import settings
 from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
@@ -20,6 +22,16 @@ from app.ingestion.polymarket_stream import PolymarketStreamService
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
+_worker_metrics_started = False
+
+
+def _start_worker_metrics_server() -> None:
+    global _worker_metrics_started
+    if _worker_metrics_started or not settings.worker_metrics_enabled:
+        return
+    start_http_server(settings.worker_metrics_port)
+    _worker_metrics_started = True
+    logger.info("Worker metrics server listening on port %s", settings.worker_metrics_port)
 
 
 async def _maybe_await(result):
@@ -45,6 +57,8 @@ async def _run_worker() -> None:
     ):
         logger.warning("Worker started with all worker features disabled; exiting")
         return
+
+    _start_worker_metrics_server()
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

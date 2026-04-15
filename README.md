@@ -1,4 +1,4 @@
-# Signal Market Terminal v0.4.0
+# Signal Market Terminal v0.4.1
 
 A prediction-market intelligence platform that ingests market data from **Polymarket** and **Kalshi**, detects unusual market behavior, estimates probabilities, computes expected value, tracks closing line value, and paper-trades a fixed default strategy to prove whether the system has real edge.
 
@@ -110,6 +110,20 @@ The repo now carries one explicit validation path for the "prove the edge" phase
 - **Execution realism overlay:** conservative shadow-entry pricing with liquidity flags from stored orderbook snapshots
 
 See [docs/default-strategy.md](<C:/Code/Signal Market Terminal/docs/default-strategy.md>) for the full contract.
+
+### Default Strategy Measurement Rules
+
+The default-strategy measurement stack is intentionally conservative:
+
+- **Read-only verification surfaces:** `GET /api/v1/paper-trading/portfolio?scope=default_strategy`, `GET /api/v1/paper-trading/history?scope=default_strategy`, `GET /api/v1/paper-trading/metrics?scope=default_strategy`, `GET /api/v1/paper-trading/pnl-curve?scope=default_strategy`, and `GET /api/v1/paper-trading/strategy-health` never create a `strategy_run`.
+- **Explicit bootstrap only:** if no active run exists, those read paths return a clean `no_active_run` / `bootstrap_required` state. Creating a new run is explicit via `POST /api/v1/paper-trading/default-strategy/bootstrap`.
+- **Canonical funnel ledger:** each qualified signal after the run boundary must reconcile into exactly one of `opened_trade`, `skipped`, or `pending_decision`, backed by the run-scoped `ExecutionDecision` ledger.
+- **Risk attribution is explicit:** strategy-health and review outputs separate local paper-book blocks from shared/global risk-graph blocks and preserve original upstream reason codes for debugging.
+- **Persisted drawdown state:** the drawdown breaker uses stored run equity, high-water mark, and drawdown state rather than reconstructing the breaker from current P&L snapshots.
+- **Benchmark honesty:** comparison outputs are split into `signal_level` (`per_share`) and `execution_adjusted` (`usd`) modes so one report never mixes signal-level and trade-level P&L.
+- **Replay truth boundary:** replay reports now resolve outcomes from canonical settlement data and label detector support explicitly with `coverage_mode`, `supported_detectors`, and `unsupported_detectors`.
+
+See [docs/default-strategy.md](<C:/Code/Signal Market Terminal/docs/default-strategy.md>) for the measurement contract and [docs/runbooks/default-strategy-remediation.md](<C:/Code/Signal Market Terminal/docs/runbooks/default-strategy-remediation.md>) for the operator runbook.
 
 ### Signal Detection (5 families)
 

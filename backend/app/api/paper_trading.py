@@ -2,8 +2,9 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.paper_trade import PaperTrade
 from app.paper_trading.analysis import (
+    get_default_strategy_run_lookup,
     get_strategy_health,
     get_strategy_history,
     get_strategy_metrics,
@@ -20,6 +22,7 @@ from app.paper_trading.analysis import (
     get_strategy_portfolio_state,
 )
 from app.paper_trading.engine import get_metrics, get_pnl_curve, get_portfolio_state
+from app.strategy_runs.service import ActiveStrategyRunExistsError, open_default_strategy_run, serialize_strategy_run
 
 router = APIRouter(prefix="/api/v1/paper-trading", tags=["paper-trading"])
 paper_limiter = Limiter(key_func=get_remote_address)
@@ -116,6 +119,77 @@ class PnlPointOut(BaseModel):
     shadow_trade_pnl: float | None = None
     direction: str
     trade_id: str
+
+
+class DefaultStrategyRunLookupOut(BaseModel):
+    state: str
+    strategy_run: dict | None = None
+    bootstrap_required: bool
+    suggested_launch_boundary_at: str | None = None
+
+
+class DefaultStrategyBootstrapIn(BaseModel):
+    launch_boundary_at: datetime | None = None
+    bootstrap_started_at: datetime | None = None
+    evidence_boundary_id: str | None = None
+    release_tag: str | None = None
+    commit_sha: str | None = None
+    migration_revision: str | None = None
+    contract_version: str | None = None
+    evidence_gate: dict[str, Any] | None = None
+
+
+def _build_contract_metadata(payload: DefaultStrategyBootstrapIn) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    evidence_boundary = {
+        "boundary_id": payload.evidence_boundary_id,
+        "release_tag": payload.release_tag,
+        "commit_sha": payload.commit_sha,
+        "migration_revision": payload.migration_revision,
+    }
+    evidence_boundary = {
+        key: value for key, value in evidence_boundary.items() if value is not None and str(value).strip()
+    }
+    if evidence_boundary:
+        metadata["evidence_boundary"] = evidence_boundary
+    if payload.contract_version is not None and payload.contract_version.strip():
+        metadata["contract_version"] = payload.contract_version.strip()
+    if payload.evidence_gate:
+        metadata["evidence_gate"] = payload.evidence_gate
+    return metadata
+
+
+@router.get("/default-strategy/run", response_model=DefaultStrategyRunLookupOut)
+@paper_limiter.limit("10/second")
+async def get_default_strategy_run_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
+    return DefaultStrategyRunLookupOut(**await get_default_strategy_run_lookup(db))
+
+
+@router.post("/default-strategy/bootstrap", response_model=DefaultStrategyRunLookupOut)
+@paper_limiter.limit("5/minute")
+async def bootstrap_default_strategy_run(
+    request: Request,
+    payload: DefaultStrategyBootstrapIn,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        strategy_run = await open_default_strategy_run(
+            db,
+            launch_boundary_at=payload.launch_boundary_at,
+            bootstrap_started_at=payload.bootstrap_started_at,
+            contract_metadata=_build_contract_metadata(payload),
+        )
+        await db.commit()
+    except ActiveStrategyRunExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return DefaultStrategyRunLookupOut(
+        state="active_run",
+        strategy_run=serialize_strategy_run(strategy_run),
+        bootstrap_required=False,
+        suggested_launch_boundary_at=(
+            payload.launch_boundary_at.isoformat() if payload.launch_boundary_at is not None else None
+        ),
+    )
 
 
 @router.get("/portfolio", response_model=PortfolioOut)

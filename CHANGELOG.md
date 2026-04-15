@@ -19,6 +19,22 @@ All notable changes to Signal Market Terminal are documented here.
 - Backend/frontend dev defaults are aligned across API base and CORS settings
 - Backend app version metadata and repo docs now reflect the current `v0.4.0` baseline instead of stale `v0.2.0` labels
 
+## [0.4.1] - 2026-04-15
+
+### Added
+- **Controlled evidence relaunch tooling** via `python -m app.ops.default_strategy_evidence` for recording the evidence boundary, retiring pre-fix runs, explicit run bootstrap, and pending-decision watch checks
+- **Frozen evidence metadata** on `strategy_run.contract_snapshot` for `contract_version`, `evidence_boundary`, and `evidence_gate`
+- **Pending-decision age watch** in strategy-health plus Prometheus gauges for active pending count and oldest pending age
+- **Worker-local Prometheus endpoint** so scheduler-only counters can be scraped from the worker container during relaunch smoke checks
+- **Controlled evidence relaunch runbook** and PowerShell orchestration script for the `docker-compose.prod.yml` workflow
+
+### Changed
+- Default-strategy bootstrap can now persist explicit release/tag/commit/migration metadata instead of relying on an implicit boundary
+- Scheduler no-active-run counting now reflects skipped default-strategy passes even when no new candidate signals are present
+
+### Fixed
+- Weekly review artifacts now carry the frozen contract version and evidence-boundary metadata when present
+
 ## [0.4.0] - 2026-04-08
 
 ### Added

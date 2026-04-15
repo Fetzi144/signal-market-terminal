@@ -172,6 +172,11 @@ class Settings(BaseSettings):
     polymarket_pilot_approval_ttl_seconds: int = 300
     polymarket_pilot_shadow_gap_breach_bps: float = 50.0
     polymarket_pilot_pause_on_shadow_gap_breach: bool = True
+    polymarket_pilot_max_daily_loss_usd: float = 25.0
+    polymarket_pilot_scorecard_enabled: bool = True
+    polymarket_pilot_readiness_report_enabled: bool = True
+    polymarket_pilot_semi_auto_candidate_min_days: int = 7
+    polymarket_pilot_semi_auto_max_avg_shadow_gap_bps: float = 10.0
     polymarket_heartbeat_enabled: bool = True
     polymarket_heartbeat_interval_seconds: int = 30
     polymarket_restart_pause_enabled: bool = True
@@ -243,6 +248,8 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = False
     scheduler_lease_seconds: int = 45
     scheduler_lease_renew_interval_seconds: int = 15
+    worker_metrics_enabled: bool = True
+    worker_metrics_port: int = 9101
     default_strategy_name: str = "prove_the_edge_default"
     default_strategy_signal_type: str = "confluence"
     default_strategy_start_at: datetime | None = datetime(2026, 4, 13, tzinfo=timezone.utc)
@@ -378,6 +385,7 @@ class Settings(BaseSettings):
         "shadow_execution_max_forward_seconds",
         "scheduler_lease_seconds",
         "scheduler_lease_renew_interval_seconds",
+        "worker_metrics_port",
         "default_strategy_min_observation_days",
         "default_strategy_preferred_observation_days",
         "strategy_review_lookback_days",
@@ -400,6 +408,7 @@ class Settings(BaseSettings):
         "polymarket_reconcile_interval_seconds",
         "polymarket_pilot_max_open_orders",
         "polymarket_pilot_approval_ttl_seconds",
+        "polymarket_pilot_semi_auto_candidate_min_days",
         "polymarket_heartbeat_interval_seconds",
         "polymarket_chain_id",
         "polymarket_signature_type",
@@ -422,7 +431,9 @@ class Settings(BaseSettings):
         "polymarket_taker_inventory_budget_usd",
         "polymarket_cross_venue_hedge_haircut_bps",
         "polymarket_pilot_max_daily_notional_usd",
+        "polymarket_pilot_max_daily_loss_usd",
         "polymarket_pilot_shadow_gap_breach_bps",
+        "polymarket_pilot_semi_auto_max_avg_shadow_gap_bps",
     )
     @classmethod
     def polymarket_execution_policy_thresholds_must_be_non_negative(cls, v: float) -> float:

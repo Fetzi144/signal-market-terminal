@@ -15,6 +15,21 @@ signals_fired = Counter(
     ["signal_type"],
 )
 
+default_strategy_scheduler_no_active_run = Counter(
+    "smt_default_strategy_scheduler_no_active_run_total",
+    "Total scheduler passes that skipped default-strategy processing because no active run existed",
+)
+
+default_strategy_pending_decision_count = Gauge(
+    "smt_default_strategy_pending_decision_count",
+    "Current number of pending execution decisions for the active default-strategy run",
+)
+
+default_strategy_pending_decision_max_age_seconds = Gauge(
+    "smt_default_strategy_pending_decision_max_age_seconds",
+    "Age in seconds of the oldest pending execution decision for the active default-strategy run",
+)
+
 # Alerts
 alerts_sent = Counter(
     "smt_alerts_sent_total",
@@ -534,6 +549,44 @@ polymarket_shadow_gap_breaches_total = Counter(
 polymarket_live_last_successful_fill_timestamp = Gauge(
     "smt_polymarket_live_last_successful_fill_timestamp",
     "Unix timestamp of the most recent successful non-dry-run live fill",
+)
+
+polymarket_pilot_scorecards_total = Counter(
+    "smt_polymarket_pilot_scorecards_total",
+    "Total Phase 12B pilot scorecards generated",
+    ["strategy_family", "status"],
+)
+
+polymarket_pilot_readiness_reports_total = Counter(
+    "smt_polymarket_pilot_readiness_reports_total",
+    "Total Phase 12B pilot readiness reports generated",
+    ["strategy_family", "status"],
+)
+
+polymarket_pilot_guardrail_triggers_total = Counter(
+    "smt_polymarket_pilot_guardrail_triggers_total",
+    "Total Phase 12B pilot guardrail triggers",
+    ["strategy_family", "guardrail_type", "action_taken"],
+)
+
+polymarket_pilot_daily_realized_pnl_usd = Gauge(
+    "smt_polymarket_pilot_daily_realized_pnl_usd",
+    "Current Phase 12B realized net P&L across the current UTC day",
+)
+
+polymarket_pilot_approval_expirations_total = Counter(
+    "smt_polymarket_pilot_approval_expirations_total",
+    "Total Phase 12B approval TTL expirations",
+)
+
+polymarket_pilot_shadow_gap_breach_events_total = Counter(
+    "smt_polymarket_pilot_shadow_gap_breach_events_total",
+    "Total Phase 12B shadow-gap breaches recorded as guardrail events",
+)
+
+polymarket_pilot_latest_readiness_report_timestamp = Gauge(
+    "smt_polymarket_pilot_latest_readiness_report_timestamp",
+    "Unix timestamp of the latest Phase 12B readiness report",
 )
 
 # Polymarket Phase 8A structural edge engine

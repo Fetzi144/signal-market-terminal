@@ -8,10 +8,12 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.jobs.scheduler import _resolve_paper_trades, _run_paper_trading
+from app.metrics import default_strategy_scheduler_no_active_run
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
-from app.strategy_runs.service import ensure_active_default_strategy_run
+from app.paper_trading.engine import ensure_pending_execution_decision
+from app.strategy_runs.service import ensure_active_default_strategy_run, open_default_strategy_run
 from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_signal
 
 
@@ -356,6 +358,7 @@ async def test_scheduler_paper_trade_lifecycle_reflected_in_api(client, session)
         bids=[["0.39", "500"], ["0.38", "400"]],
         asks=[["0.41", "300"], ["0.42", "300"]],
     )
+    await open_default_strategy_run(session, launch_boundary_at=fired_at - timedelta(minutes=1))
     await session.commit()
 
     await _run_paper_trading(session, [signal])
@@ -425,6 +428,7 @@ async def test_scheduler_only_auto_trades_default_strategy_signals(client, sessi
         bids=[["0.39", "500"], ["0.38", "400"]],
         asks=[["0.41", "300"], ["0.42", "300"]],
     )
+    await open_default_strategy_run(session, launch_boundary_at=fired_at - timedelta(minutes=1))
     await session.commit()
 
     result = await session.execute(select(PaperTrade).order_by(PaperTrade.opened_at.desc()))
@@ -456,6 +460,7 @@ async def test_scheduler_persists_execution_skip_and_strategy_metadata_for_missi
         expected_value=Decimal("0.250000"),
         details={"direction": "up", "market_question": "Execution skip market", "outcome_name": "Yes"},
     )
+    await open_default_strategy_run(session, launch_boundary_at=signal.fired_at - timedelta(minutes=1))
     await session.commit()
 
     await _run_paper_trading(session, [signal])
@@ -489,6 +494,7 @@ async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
         expected_value=Decimal("0.010000"),
         details={"direction": "up", "market_question": "Skip reason market", "outcome_name": "Yes"},
     )
+    await open_default_strategy_run(session, launch_boundary_at=signal.fired_at - timedelta(minutes=1))
     await session.commit()
 
     await _run_paper_trading(session, [signal])
@@ -504,6 +510,51 @@ async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
     )
     assert execution_decision is not None
     assert execution_decision.reason_code == "ev_below_threshold"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_bootstrap_run_or_stamp_metadata_without_active_run(session):
+    market = make_market(session, question="No bootstrap market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "No bootstrap market", "outcome_name": "Yes"},
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=signal.fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
+    )
+    await session.commit()
+
+    await _run_paper_trading(session, [signal])
+    await session.refresh(signal)
+
+    assert await session.scalar(select(PaperTrade.id).limit(1)) is None
+    assert await session.scalar(select(ExecutionDecision.id).limit(1)) is None
+    assert "default_strategy" not in (signal.details or {})
+
+
+@pytest.mark.asyncio
+async def test_scheduler_no_active_run_metric_increments_even_when_no_signals_are_available(session):
+    before = default_strategy_scheduler_no_active_run._value.get()
+
+    await _run_paper_trading(session, [])
+
+    after = default_strategy_scheduler_no_active_run._value.get()
+    assert after == before + 1
 
 
 @pytest.mark.asyncio
@@ -649,7 +700,7 @@ async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(clie
 
 
 @pytest.mark.asyncio
-async def test_strategy_health_respects_launch_boundary_and_skip_reasons(client, session, monkeypatch):
+async def test_strategy_health_respects_launch_boundary_without_mutating_run_state(client, session, monkeypatch):
     now = datetime.now(timezone.utc)
     launch_at = now - timedelta(hours=12)
     monkeypatch.setattr(settings, "default_strategy_start_at", launch_at)
@@ -683,7 +734,7 @@ async def test_strategy_health_respects_launch_boundary_and_skip_reasons(client,
         details={"market_question": "Launch boundary market", "ev_per_share": "0.150000"},
     )
 
-    in_window_signal = make_signal(
+    make_signal(
         session,
         market.id,
         outcome.id,
@@ -711,16 +762,16 @@ async def test_strategy_health_respects_launch_boundary_and_skip_reasons(client,
     assert resp.status_code == 200
     data = resp.json()
 
-    assert data["observation"]["started_at"] == launch_at.isoformat()
+    assert data["observation"]["started_at"] is None
     assert data["observation"]["baseline_start_at"] == launch_at.isoformat()
-    assert data["observation"]["status"] == "live_waiting_for_trades"
-    assert data["strategy_run"]["contract_snapshot"]["bootstrap_source"] == "DEFAULT_STRATEGY_START_AT"
-    assert data["trade_funnel"]["candidate_signals"] == 1
-    assert data["trade_funnel"]["pre_launch_candidate_signals"] == 1
+    assert data["observation"]["status"] == "no_active_run"
+    assert data["bootstrap_required"] is True
+    assert data["strategy_run"] is None
+    assert data["trade_funnel"]["candidate_signals"] == 0
+    assert data["trade_funnel"]["pre_launch_candidate_signals"] == 0
     assert data["trade_funnel"]["traded_signals"] == 0
-    assert data["trade_funnel"]["excluded_pre_launch_trades"] == 1
-    assert data["skip_reasons"][0]["reason_code"] == "ev_below_threshold"
-    assert data["skip_reasons"][0]["count"] == 1
+    assert data["trade_funnel"]["excluded_pre_launch_trades"] == 0
+    assert data["skip_reasons"] == []
     assert data["headline"]["resolved_trades"] == 0
 
 
@@ -794,11 +845,25 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
         profit_loss=Decimal("-0.100000"),
         details={"direction": "up", "market_question": "Strategy health market", "outcome_name": "Yes"},
     )
+    execution_decision = ExecutionDecision(
+        id=uuid.uuid4(),
+        signal_id=confluence_signal.id,
+        strategy_run_id=strategy_run.id,
+        decision_at=opened_at,
+        decision_status="opened",
+        action="cross",
+        direction="buy_yes",
+        executable_entry_price=Decimal("0.50000000"),
+        reason_code="opened",
+        details={"source": "test"},
+    )
+    session.add(execution_decision)
     _make_paper_trade(
         session,
         confluence_signal.id,
         outcome.id,
         market.id,
+        execution_decision_id=execution_decision.id,
         strategy_run_id=strategy_run.id,
         status="resolved",
         pnl=Decimal("125.00"),
@@ -843,6 +908,24 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
         opened_at=now - timedelta(hours=20),
         details={"market_question": "Strategy health market", "ev_per_share": "0.110000"},
     )
+    pending_signal = await ensure_pending_execution_decision(
+        session=session,
+        signal_id=(
+            await session.scalar(
+                select(Signal.id).where(
+                    Signal.signal_type == "confluence",
+                    Signal.fired_at == now - timedelta(days=2),
+                )
+            )
+        ),
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6400"),
+        market_price=Decimal("0.500000"),
+        market_question="Strategy health market",
+        fired_at=now - timedelta(days=2),
+        strategy_run_id=strategy_run.id,
+    )
     await session.commit()
 
     resp = await client.get("/api/v1/paper-trading/strategy-health")
@@ -857,6 +940,7 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
     assert data["trade_funnel"]["qualified_signals"] == 2
     assert data["trade_funnel"]["traded_signals"] == 1
     assert data["trade_funnel"]["qualified_not_traded"] == 1
+    assert pending_signal is not None
     assert data["trade_funnel"]["resolved_trades"] == 1
     assert data["trade_funnel"]["resolved_signals"] == 1
     assert data["trade_funnel"]["excluded_legacy_trades"] == 1

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,10 @@ from app.config import settings
 from app.default_strategy import get_default_strategy_contract
 from app.models.signal import Signal
 from app.models.strategy_run import StrategyRun
+from app.paper_trading.strategy_run_state import (
+    initialize_strategy_run_state,
+    serialize_strategy_run_state,
+)
 
 ACTIVE_RUN_STATUS = "active"
 CLOSED_RUN_STATUS = "closed"
@@ -28,6 +33,19 @@ class StrategyRunBootstrap:
     started_at: datetime
     source: str
     anchor_at: datetime
+
+
+def _clean_contract_metadata(contract_metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(contract_metadata, dict):
+        return {}
+    cleaned: dict[str, Any] = {}
+    for key, value in contract_metadata.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        cleaned[key] = value
+    return cleaned
 
 
 def _ensure_utc(value: datetime | None) -> datetime | None:
@@ -55,7 +73,12 @@ def serialize_strategy_run(strategy_run: StrategyRun | None) -> dict | None:
         "status": strategy_run.status,
         "started_at": _ensure_utc(strategy_run.started_at).isoformat() if strategy_run.started_at else None,
         "ended_at": _ensure_utc(strategy_run.ended_at).isoformat() if strategy_run.ended_at else None,
+        "peak_equity": float(strategy_run.peak_equity) if strategy_run.peak_equity is not None else None,
+        "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None,
+        "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None,
+        "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None,
         "contract_snapshot": strategy_run.contract_snapshot or {},
+        "state": serialize_strategy_run_state(strategy_run),
         "created_at": _ensure_utc(strategy_run.created_at).isoformat() if strategy_run.created_at else None,
     }
 
@@ -149,6 +172,7 @@ async def open_default_strategy_run(
     *,
     launch_boundary_at: datetime | None = None,
     bootstrap_started_at: datetime | None = None,
+    contract_metadata: dict[str, Any] | None = None,
 ) -> StrategyRun:
     active_run = await get_active_strategy_run(session, settings.default_strategy_name)
     if active_run is not None:
@@ -164,6 +188,7 @@ async def open_default_strategy_run(
     contract_snapshot = get_default_strategy_contract(started_at=bootstrap.started_at)
     contract_snapshot["bootstrap_source"] = bootstrap.source
     contract_snapshot["bootstrap_anchor_at"] = bootstrap.anchor_at.isoformat()
+    contract_snapshot.update(_clean_contract_metadata(contract_metadata))
 
     strategy_run = StrategyRun(
         strategy_name=settings.default_strategy_name,
@@ -171,6 +196,7 @@ async def open_default_strategy_run(
         started_at=bootstrap.started_at,
         contract_snapshot=contract_snapshot,
     )
+    initialize_strategy_run_state(strategy_run)
     session.add(strategy_run)
     await session.flush()
     return strategy_run

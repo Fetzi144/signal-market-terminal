@@ -1,0 +1,172 @@
+# Default Strategy Measurement Contract
+
+The default strategy exists to answer one narrow question: does the frozen baseline produce trustworthy evidence of edge once we account for realistic execution and risk controls?
+
+This document defines the measurement surfaces only. It does not authorize new detectors, threshold changes, or broader live-trading scope.
+
+## Read-Only Verification
+
+The following endpoints are read-only when `scope=default_strategy` is used:
+
+- `GET /api/v1/paper-trading/portfolio?scope=default_strategy`
+- `GET /api/v1/paper-trading/history?scope=default_strategy`
+- `GET /api/v1/paper-trading/metrics?scope=default_strategy`
+- `GET /api/v1/paper-trading/pnl-curve?scope=default_strategy`
+- `GET /api/v1/paper-trading/strategy-health`
+
+These endpoints must never create a `strategy_run`. If there is no active default-strategy run, the read path returns:
+
+- `state = "no_active_run"`
+- `bootstrap_required = true`
+- empty portfolio, history, metrics, and P&L-curve payloads
+
+Creating a run is explicit:
+
+- `GET /api/v1/paper-trading/default-strategy/run` inspects current run state without mutating anything.
+- `POST /api/v1/paper-trading/default-strategy/bootstrap` creates the run anchor intentionally.
+- The scheduler/worker path does not auto-bootstrap a run. If no active run exists, default-strategy processing no-ops and leaves signals untouched.
+
+For controlled evidence relaunches, the bootstrap payload should also carry explicit boundary metadata:
+
+- `launch_boundary_at`
+- `evidence_boundary_id`
+- `release_tag`
+- `commit_sha`
+- `migration_revision`
+- `contract_version`
+- `evidence_gate`
+
+## Immutable Run Anchor
+
+Every prove-the-edge output is anchored to one immutable `strategy_run.id`.
+
+- The run boundary is the active run's `started_at`.
+- The run state persists drawdown-sensitive fields:
+  - `peak_equity`
+  - `current_equity`
+  - `max_drawdown`
+  - `drawdown_pct`
+- The drawdown breaker uses those persisted values instead of reconstructing a breaker from whatever trades are currently loaded.
+
+This keeps breaker behavior auditable and reversible.
+
+## Canonical Funnel Ledger
+
+Run-scoped funnel accounting is derived from `ExecutionDecision`, not from `signal.details.default_strategy`.
+
+For every qualified signal after the run boundary, exactly one of the following must be true:
+
+- `opened_trade`
+- `skipped`
+- `pending_decision`
+
+`pending_decision` is now a stored `ExecutionDecision.decision_status`, not an inferred absence of a row. A qualified signal with no run-scoped decision row is an integrity failure.
+
+`pending_decision_watch` exposes the oldest pending decision timestamp, current pending count, and max pending age so stale pending rows are visible instead of silent.
+
+The core invariant is:
+
+```text
+qualified_signals = opened_trade_signals + skipped_signals + pending_decision_signals
+```
+
+Strategy-health surfaces expose `trade_funnel.conservation_holds`. If the system finds impossible states, it records explicit `integrity_errors` instead of silently guessing.
+
+Examples of surfaced integrity failures:
+
+- trade exists without a matching run-scoped execution decision
+- decision says `opened` but no trade exists
+- trade exists for a decision whose status is not `opened`
+
+## Risk Attribution Semantics
+
+Blocked decisions preserve both the block label used by the default strategy and the original upstream risk recommendation details.
+
+Two categories are surfaced separately:
+
+- `local_paper_book`
+  - local exposure caps, cluster caps, invalid sizing, and local book rejections
+- `shared_global`
+  - shared platform controls, risk-graph blocks, or other cross-strategy/global controls
+
+Strategy-health outputs expose:
+
+- aggregate counts for local vs shared/global blocks
+- reason counts by scope
+- original reason codes/details inside decision diagnostics
+
+This makes it visible when a run appears to have local risk issues but was actually blocked upstream by shared/global controls.
+
+## Benchmark Modes
+
+Comparison output is intentionally split into two honest modes.
+
+### `signal_level`
+
+- Unit: `per_share`
+- Default-strategy cohort: eligible resolved default-strategy signals
+- Benchmark cohort: resolved legacy rank-threshold signals
+
+This mode is for cohort-level signal quality, calibration, and 1-share P&L comparison.
+
+### `execution_adjusted`
+
+- Unit: `usd`
+- Default-strategy cohort: resolved paper trades for the active run
+- Benchmark: currently unavailable for legacy parity in this remediation slice
+
+This mode is for actual run-scoped trade outcomes after paper-trade sizing and execution realism.
+
+These modes must not be merged into one field or one score. If legacy execution-adjusted parity does not exist, the output must say so explicitly rather than imply parity.
+
+## Replay Truth Boundary
+
+Replay outputs now resolve outcomes from canonical market settlement data rather than from the latest observed price marker.
+
+Replay status also exposes explicit coverage metadata:
+
+- `coverage_mode`
+- `configured_supported_detectors`
+- `supported_detectors`
+- `unsupported_detectors`
+
+Interpretation:
+
+- `supported_detectors_only`: the replay window only contained detectors the replay stack currently understands
+- `partial_supported_detectors`: only part of observed detector activity was covered
+- `unsupported_detectors_only`: the replay output is not evidence for the full system
+- `no_detector_activity`: no qualifying detector activity was present in the inspected window
+
+Partial replay coverage is instrumentation, not proof. It must never be presented as full-system evidence.
+
+## Evidence vs Instrumentation
+
+Evidence is the narrow set of outputs that can support a keep/watch/cut decision on the frozen baseline:
+
+- run-scoped paper P&L
+- signal-level cohort comparison
+- execution-adjusted trade outcomes
+- persisted drawdown state
+- reconciled run funnel
+- explicit risk attribution
+- replay results with truthful coverage labels
+
+Instrumentation is everything that helps explain or debug the evidence but does not replace it:
+
+- diagnostic details on execution decisions
+- risk recommendation payloads
+- shadow-execution overlays
+- detector coverage metadata
+- health/readiness convenience summaries
+
+When there is uncertainty, the system should surface it directly rather than infer a cleaner story than the data supports.
+
+## Controlled Evidence Relaunch
+
+Use [docs/runbooks/default-strategy-controlled-evidence-relaunch.md](C:/Code/Signal Market Terminal/docs/runbooks/default-strategy-controlled-evidence-relaunch.md) for the `v0.4.1` relaunch procedure, including:
+
+- pre-fix run retirement
+- explicit boundary logging
+- prod-compose clone smoke checks
+- worker metrics validation
+- first valid post-fix bootstrap
