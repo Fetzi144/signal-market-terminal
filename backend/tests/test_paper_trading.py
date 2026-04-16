@@ -349,6 +349,8 @@ async def test_attempt_open_trade_shadow_no_fill_when_visible_depth_is_too_small
 
     assert result.trade is None
     assert result.execution_decision is not None
+    assert result.decision == "pending_decision"
+    assert result.execution_decision.decision_status == "pending_decision"
     assert result.reason_code == "execution_partial_fill_below_minimum"
     shadow = result.execution_decision.details["shadow_execution"]
     assert result.execution_decision.executable_entry_price is None
@@ -393,6 +395,8 @@ async def test_attempt_open_trade_shadow_no_fill_without_orderbook_context(sessi
 
     assert result.trade is None
     assert result.execution_decision is not None
+    assert result.decision == "pending_decision"
+    assert result.execution_decision.decision_status == "pending_decision"
     assert result.reason_code == "execution_missing_orderbook_context"
     shadow = result.execution_decision.details["shadow_execution"]
     assert result.execution_decision.executable_entry_price is None
@@ -447,6 +451,8 @@ async def test_attempt_open_trade_shadow_no_fill_with_stale_orderbook_context(se
 
     assert result.trade is None
     assert result.execution_decision is not None
+    assert result.decision == "pending_decision"
+    assert result.execution_decision.decision_status == "pending_decision"
     assert result.reason_code == "execution_stale_orderbook_context"
     shadow = result.execution_decision.details["shadow_execution"]
     assert result.execution_decision.executable_entry_price is None
@@ -502,6 +508,8 @@ async def test_attempt_open_trade_skips_when_orderbook_has_no_fillable_depth(ses
 
     assert result.trade is None
     assert result.execution_decision is not None
+    assert result.decision == "pending_decision"
+    assert result.execution_decision.decision_status == "pending_decision"
     assert result.reason_code == "execution_no_fill"
     shadow = result.execution_decision.details["shadow_execution"]
     assert shadow["fill_status"] == "no_fill"
@@ -553,6 +561,8 @@ async def test_attempt_open_trade_skips_when_executable_ev_falls_below_threshold
 
     assert result.trade is None
     assert result.execution_decision is not None
+    assert result.decision == "pending_decision"
+    assert result.execution_decision.decision_status == "pending_decision"
     assert result.reason_code == "execution_ev_below_threshold"
     assert result.execution_decision.executable_entry_price == Decimal("0.530000")
     assert result.execution_decision.net_ev_per_share == Decimal("0.010000")

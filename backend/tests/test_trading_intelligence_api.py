@@ -446,14 +446,16 @@ async def test_scheduler_only_auto_trades_default_strategy_signals(client, sessi
 
 
 @pytest.mark.asyncio
-async def test_scheduler_persists_execution_skip_and_strategy_metadata_for_missing_orderbook(session):
+async def test_scheduler_retries_pending_execution_when_orderbook_context_arrives(session):
     market = make_market(session, question="Execution skip market")
     outcome = make_outcome(session, market.id, name="Yes")
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
     signal = make_signal(
         session,
         market.id,
         outcome.id,
         signal_type="confluence",
+        fired_at=fired_at,
         estimated_probability=Decimal("0.6500"),
         probability_adjustment=Decimal("0.2500"),
         price_at_fire=Decimal("0.400000"),
@@ -467,7 +469,7 @@ async def test_scheduler_persists_execution_skip_and_strategy_metadata_for_missi
     await session.refresh(signal)
 
     metadata = signal.details["default_strategy"]
-    assert metadata["decision"] == "skipped"
+    assert metadata["decision"] == "pending_decision"
     assert metadata["reason_code"] == "execution_missing_orderbook_context"
     assert metadata["reason_label"] == "Missing orderbook context"
     assert metadata["trade_id"] is None
@@ -476,7 +478,31 @@ async def test_scheduler_persists_execution_skip_and_strategy_metadata_for_missi
         select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id)
     )
     assert execution_decision is not None
+    assert execution_decision.decision_status == "pending_decision"
     assert execution_decision.reason_code == "execution_missing_orderbook_context"
+
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
+    )
+    await session.commit()
+
+    await _run_paper_trading(session, [])
+    await session.refresh(signal)
+    await session.refresh(execution_decision)
+
+    metadata = signal.details["default_strategy"]
+    assert metadata["attempt_kind"] == "retry"
+    assert metadata["decision"] == "opened"
+    assert metadata["reason_code"] == "opened"
+    assert metadata["trade_id"] is not None
+    assert execution_decision.decision_status == "opened"
 
 
 @pytest.mark.asyncio

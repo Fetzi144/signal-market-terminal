@@ -109,7 +109,28 @@ async def test_default_strategy_bootstrap_persists_evidence_boundary_metadata(cl
 
 
 @pytest.mark.asyncio
-async def test_strategy_health_funnel_reconciles_qualified_opened_skipped_and_pending(client, session):
+async def test_strategy_health_funnel_reconciles_qualified_opened_skipped_and_pending(client, session, monkeypatch):
+    risk_calls = 0
+
+    async def _mixed_risk(*args, **kwargs):  # noqa: ARG001
+        nonlocal risk_calls
+        risk_calls += 1
+        if risk_calls == 2:
+            return {
+                "approved": False,
+                "approved_size_usd": Decimal("0"),
+                "reason": "inventory_cap",
+                "drawdown_active": False,
+                "risk_mode": "graph",
+                "recommendation": {
+                    "recommendation_type": "block",
+                    "reason_code": "inventory_cap",
+                    "details_json": {"source": "test"},
+                },
+            }
+        return None
+
+    monkeypatch.setattr(engine_module, "assess_paper_trade_risk", _mixed_risk)
     now = datetime.now(timezone.utc)
     started_at = now - timedelta(days=1)
     strategy_run = await open_default_strategy_run(session, launch_boundary_at=started_at)
@@ -150,6 +171,16 @@ async def test_strategy_health_funnel_reconciles_qualified_opened_skipped_and_pe
         price_at_fire=Decimal("0.400000"),
         expected_value=Decimal("0.240000"),
         details={"direction": "up", "market_question": "Funnel balance market", "outcome_name": "Yes"},
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=skipped_signal.fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
     )
 
     pending_signal = make_signal(
@@ -213,7 +244,7 @@ async def test_strategy_health_funnel_reconciles_qualified_opened_skipped_and_pe
     assert opened_result.trade is not None
     assert skipped_result.trade is None
     assert pending_decision is not None
-    assert skipped_result.reason_code == "execution_stale_orderbook_context"
+    assert skipped_result.reason_code == "risk_shared_global_block"
 
     response = await client.get("/api/v1/paper-trading/strategy-health")
     assert response.status_code == 200
@@ -228,7 +259,7 @@ async def test_strategy_health_funnel_reconciles_qualified_opened_skipped_and_pe
         funnel["opened_trade_signals"] + funnel["skipped_signals"] + funnel["pending_decision_signals"]
     )
     assert funnel["integrity_errors"] == []
-    assert {row["reason_code"] for row in data["skip_reasons"]} == {"execution_stale_orderbook_context"}
+    assert {row["reason_code"] for row in data["skip_reasons"]} == {"risk_shared_global_block"}
 
 
 @pytest.mark.asyncio
@@ -672,6 +703,23 @@ async def test_comparison_modes_keep_signal_and_execution_units_separate(session
         profit_loss=Decimal("-0.100000"),
         details={"direction": "up", "market_question": "Comparison market", "outcome_name": "Yes"},
     )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        rank_score=Decimal("0.900"),
+        fired_at=started_at + timedelta(hours=3),
+        estimated_probability=Decimal("0.6100"),
+        probability_adjustment=Decimal("0.1100"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.110000"),
+        resolved=True,
+        resolved_correctly=True,
+        clv=Decimal("0.040000"),
+        profit_loss=Decimal("0.090000"),
+        details={"direction": "up", "market_question": "Comparison market", "outcome_name": "Yes"},
+    )
     _make_paper_trade(
         session,
         default_signal.id,
@@ -701,6 +749,8 @@ async def test_comparison_modes_keep_signal_and_execution_units_separate(session
     assert signal_level["unit"] == "per_share"
     assert "cumulative_pnl" not in signal_level["default_strategy"]
     assert "cumulative_pnl" not in signal_level["benchmark"]
+    assert signal_level["default_strategy"]["resolved_signals"] == 2
+    assert signal_level["benchmark"]["resolved_signals"] == 1
     assert execution_adjusted["unit"] == "usd"
     assert "total_profit_loss_per_share" not in execution_adjusted["default_strategy"]
     assert execution_adjusted["benchmark"]["available"] is False

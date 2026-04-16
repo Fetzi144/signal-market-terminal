@@ -200,8 +200,6 @@ def _reason_label(reason_code: str) -> str:
     if reason_code.startswith("risk_"):
         return _risk_reason_label(reason_code)
     return default_strategy_skip_label(reason_code) or reason_code.replace("_", " ")
-
-
 def _json_safe(value):
     if isinstance(value, Decimal):
         return str(value)
@@ -426,6 +424,87 @@ async def build_execution_decision(
             approved_size_usd=approved_size_usd,
             shares=shares,
             shadow_execution=shadow_execution,
+        )
+
+    async def finish_retryable_pending(
+        *,
+        reason_code: str,
+        detail: str | None = None,
+        diagnostics: dict | None = None,
+        direction: str | None = None,
+        ideal_entry_price: Decimal | None = None,
+        executable_entry_price: Decimal | None = None,
+        requested_size_usd: Decimal | None = None,
+        fillable_size_usd: Decimal | None = None,
+        fill_probability: Decimal | None = None,
+        net_ev_per_share: Decimal | None = None,
+        net_expected_pnl_usd: Decimal | None = None,
+        missing_orderbook_context: bool = False,
+        stale_orderbook_context: bool = False,
+        liquidity_constrained: bool = False,
+        fill_status: str | None = None,
+        ideal_ev: dict | None = None,
+        provisional_sizing: dict | None = None,
+        shadow_execution: dict | None = None,
+        executable_ev: dict | None = None,
+        executable_sizing: dict | None = None,
+        fill_capped_size_usd: Decimal | None = None,
+        chosen_action_type: str | None = None,
+        chosen_order_type_hint: str | None = None,
+        chosen_target_price: Decimal | None = None,
+        chosen_target_size: Decimal | None = None,
+        chosen_est_fillable_size: Decimal | None = None,
+        chosen_est_fill_probability: Decimal | None = None,
+        chosen_est_net_ev_bps: Decimal | None = None,
+        chosen_est_net_ev_total: Decimal | None = None,
+        chosen_est_fee: Decimal | None = None,
+        chosen_est_slippage: Decimal | None = None,
+        chosen_policy_version: str | None = None,
+        decision_reason_json: dict | None = None,
+        polymarket_policy_result=None,
+    ) -> ExecutionDecisionBuildResult:
+        pending_diagnostics = dict(diagnostics or {})
+        pending_diagnostics.setdefault("retry_pending", True)
+        pending_diagnostics.setdefault("retry_reason_code", reason_code)
+        pending_diagnostics.setdefault("retry_reason_label", _reason_label(reason_code))
+        return await finish(
+            decision="pending_decision",
+            reason_code=reason_code,
+            reason_label=_reason_label(reason_code),
+            detail=detail,
+            diagnostics=pending_diagnostics,
+            action="pending",
+            direction=direction,
+            ideal_entry_price=ideal_entry_price,
+            executable_entry_price=executable_entry_price,
+            requested_size_usd=requested_size_usd,
+            fillable_size_usd=fillable_size_usd,
+            fill_probability=fill_probability,
+            net_ev_per_share=net_ev_per_share,
+            net_expected_pnl_usd=net_expected_pnl_usd,
+            missing_orderbook_context=missing_orderbook_context,
+            stale_orderbook_context=stale_orderbook_context,
+            liquidity_constrained=liquidity_constrained,
+            fill_status=fill_status,
+            ideal_ev=ideal_ev,
+            provisional_sizing=provisional_sizing,
+            shadow_execution=shadow_execution,
+            executable_ev=executable_ev,
+            executable_sizing=executable_sizing,
+            fill_capped_size_usd=fill_capped_size_usd,
+            chosen_action_type=chosen_action_type,
+            chosen_order_type_hint=chosen_order_type_hint,
+            chosen_target_price=chosen_target_price,
+            chosen_target_size=chosen_target_size,
+            chosen_est_fillable_size=chosen_est_fillable_size,
+            chosen_est_fill_probability=chosen_est_fill_probability,
+            chosen_est_net_ev_bps=chosen_est_net_ev_bps,
+            chosen_est_net_ev_total=chosen_est_net_ev_total,
+            chosen_est_fee=chosen_est_fee,
+            chosen_est_slippage=chosen_est_slippage,
+            chosen_policy_version=chosen_policy_version,
+            decision_reason_json=decision_reason_json,
+            polymarket_policy_result=polymarket_policy_result,
         )
 
     if strategy_run_id is not None:
@@ -953,8 +1032,7 @@ async def build_execution_decision(
             if shadow_details.get("stale_orderbook_context") is True
             else "execution_missing_orderbook_context"
         )
-        return await finish(
-            decision="skipped",
+        return await finish_retryable_pending(
             reason_code=reason_code,
             detail=f"Executable context unavailable ({shadow_details.get('fill_reason')})",
             diagnostics={
@@ -979,8 +1057,7 @@ async def build_execution_decision(
         )
 
     if shadow_details.get("fill_reason") == "fill_below_minimum_threshold":
-        return await finish(
-            decision="skipped",
+        return await finish_retryable_pending(
             reason_code="execution_partial_fill_below_minimum",
             detail="Executable fill is below the minimum threshold",
             diagnostics={
@@ -1003,8 +1080,7 @@ async def build_execution_decision(
         )
 
     if shadow_details.get("fill_status") == "no_fill":
-        return await finish(
-            decision="skipped",
+        return await finish_retryable_pending(
             reason_code="execution_no_fill",
             detail=f"No executable fill available ({shadow_details.get('fill_reason')})",
             diagnostics={
@@ -1034,8 +1110,7 @@ async def build_execution_decision(
         entry_price=executable_entry_price,
     )
     if executable_ev["ev_per_share"] < min_ev_threshold:
-        return await finish(
-            decision="skipped",
+        return await finish_retryable_pending(
             reason_code="execution_ev_below_threshold",
             detail=(
                 f"Executable EV {executable_ev['ev_per_share']} below threshold "

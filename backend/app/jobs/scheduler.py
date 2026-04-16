@@ -5,6 +5,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from sqlalchemy import select
 
 from app.config import settings
 from app.db import async_session
@@ -241,11 +242,14 @@ async def _run_confluence(session, candidates):
 async def _run_paper_trading(session, signals):
     """Auto-open paper trades for EV-positive signals."""
     from app.default_strategy import evaluate_default_strategy_signal
+    from app.models.execution_decision import ExecutionDecision
+    from app.models.signal import Signal
     from app.paper_trading.engine import attempt_open_trade, ensure_pending_execution_decision
     from app.strategy_runs.service import get_active_strategy_run
 
     count = 0
     candidate_count = 0
+    retry_candidates = 0
     skip_counts: dict[str, int] = {}
     strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
     if strategy_run is None:
@@ -256,16 +260,35 @@ async def _run_paper_trading(session, signals):
         )
         return
     baseline_start_at = strategy_run.started_at.isoformat() if strategy_run.started_at else None
+    fresh_signal_ids = {signal.id for signal in signals}
+    pending_signal_result = await session.execute(
+        select(Signal)
+        .join(ExecutionDecision, ExecutionDecision.signal_id == Signal.id)
+        .where(
+            ExecutionDecision.strategy_run_id == strategy_run.id,
+            ExecutionDecision.decision_status == "pending_decision",
+        )
+        .order_by(ExecutionDecision.decision_at.asc(), ExecutionDecision.id.asc())
+    )
+    pending_retry_signals = [
+        signal
+        for signal in pending_signal_result.scalars().all()
+        if signal.id not in fresh_signal_ids
+    ]
+    work_items = ([(signal, False) for signal in signals]
+                  + [(signal, True) for signal in pending_retry_signals])
 
-    for signal in signals:
+    for signal, is_retry in work_items:
         evaluation = evaluate_default_strategy_signal(signal, started_at=strategy_run.started_at)
         if not evaluation.signal_type_match or not evaluation.in_window:
             continue
 
         candidate_count += 1
+        if is_retry:
+            retry_candidates += 1
         market_question = (signal.details or {}).get("market_question", "")
         attempted_at = datetime.now(timezone.utc).isoformat()
-        if evaluation.eligible:
+        if evaluation.eligible and not is_retry:
             await ensure_pending_execution_decision(
                 session=session,
                 signal_id=signal.id,
@@ -298,6 +321,7 @@ async def _run_paper_trading(session, signals):
             "strategy_run_id": str(strategy_run.id),
             "baseline_start_at": baseline_start_at,
             "evaluated_at": attempted_at,
+            "attempt_kind": "retry" if is_retry else "fresh_signal",
             "eligible": evaluation.eligible,
             "decision": result.decision,
             "reason_code": result.reason_code,
@@ -323,6 +347,11 @@ async def _run_paper_trading(session, signals):
             count,
             candidate_count,
         )
+        if retry_candidates:
+            logger.info(
+                "Paper trading: retried %d pending execution decision(s)",
+                retry_candidates,
+            )
         if skip_counts:
             logger.info("Paper trading skips by reason: %s", skip_counts)
 

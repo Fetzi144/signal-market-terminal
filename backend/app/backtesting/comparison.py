@@ -129,14 +129,18 @@ async def compare_strategy_measurement_modes(
     start_date = _ensure_utc(start_date) or datetime.now(timezone.utc)
     end_date = _ensure_utc(end_date) or datetime.now(timezone.utc)
 
-    legacy_result = await session.execute(
-        select(Signal).where(
-            Signal.fired_at >= start_date,
-            Signal.fired_at <= end_date,
-            Signal.rank_score >= Decimal(str(settings.legacy_benchmark_rank_threshold)),
-            Signal.resolved_correctly.is_not(None),
-        )
+    legacy_query = select(Signal).where(
+        Signal.fired_at >= start_date,
+        Signal.fired_at <= end_date,
+        Signal.rank_score >= Decimal(str(settings.legacy_benchmark_rank_threshold)),
+        Signal.resolved_correctly.is_not(None),
     )
+    if settings.default_strategy_signal_type:
+        legacy_query = legacy_query.where(
+            Signal.signal_type != settings.default_strategy_signal_type,
+        )
+
+    legacy_result = await session.execute(legacy_query)
     legacy_signals = legacy_result.scalars().all()
 
     default_signal_result = await session.execute(
