@@ -1565,6 +1565,22 @@ async def fetch_polymarket_raw_storage_status(session: AsyncSession) -> dict[str
     last_book_snapshot_at = await _latest_success_at(RUN_TYPE_BOOK_SNAPSHOT)
     last_trade_backfill_at = await _latest_success_at(RUN_TYPE_TRADE_BACKFILL)
     last_oi_poll_at = await _latest_success_at(RUN_TYPE_OI_POLL)
+    now = utcnow()
+    book_snapshot_freshness_seconds = (
+        max(0, int((now - last_book_snapshot_at).total_seconds()))
+        if last_book_snapshot_at is not None
+        else None
+    )
+    trade_backfill_freshness_seconds = (
+        max(0, int((now - last_trade_backfill_at).total_seconds()))
+        if last_trade_backfill_at is not None
+        else None
+    )
+    oi_poll_freshness_seconds = (
+        max(0, int((now - last_oi_poll_at).total_seconds()))
+        if last_oi_poll_at is not None
+        else None
+    )
 
     if last_book_snapshot_at is not None:
         polymarket_book_snapshot_last_success_timestamp.set(last_book_snapshot_at.timestamp())
@@ -1581,7 +1597,7 @@ async def fetch_polymarket_raw_storage_status(session: AsyncSession) -> dict[str
         )
     ).scalars().all()
 
-    since = utcnow() - timedelta(hours=24)
+    since = now - timedelta(hours=24)
     recent_rows = {
         "book_snapshots": int(
             (
@@ -1661,6 +1677,9 @@ async def fetch_polymarket_raw_storage_status(session: AsyncSession) -> dict[str
         "last_successful_book_snapshot_at": last_book_snapshot_at,
         "last_successful_trade_backfill_at": last_trade_backfill_at,
         "last_successful_oi_poll_at": last_oi_poll_at,
+        "book_snapshot_freshness_seconds": book_snapshot_freshness_seconds,
+        "trade_backfill_freshness_seconds": trade_backfill_freshness_seconds,
+        "oi_poll_freshness_seconds": oi_poll_freshness_seconds,
         "rows_inserted_24h": recent_rows,
         "recent_capture_runs": [_serialize_capture_run(run) for run in recent_runs],
     }

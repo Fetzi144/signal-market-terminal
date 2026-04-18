@@ -174,7 +174,7 @@ export default function MarketDetail() {
                 }}
               >
                 <span style={{ color: "var(--accent)", marginRight: 8 }}>
-                  {s.signal_type.replace("_", " ")}
+                  {(s.display_signal_label || s.signal_type.replace("_", " "))}
                 </span>
                 <span style={{ fontFamily: "var(--mono)" }}>
                   rank: {Math.round(s.rank_score * 100)}%

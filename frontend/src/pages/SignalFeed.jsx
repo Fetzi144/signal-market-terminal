@@ -193,7 +193,7 @@ function SignalCard({ signal }) {
   const s = signal;
   const d = s.details || {};
   const time = new Date(s.fired_at).toLocaleString();
-  const typeLabel = formatTypeLabel(s.signal_type);
+  const typeLabel = s.display_signal_label || formatTypeLabel(s.signal_type);
 
   // Build detail snippet based on type
   let snippet = null;
@@ -224,6 +224,11 @@ function SignalCard({ signal }) {
             <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--accent)" }}>
               {typeLabel}
             </span>
+            {s.review_family_label && (
+              <span style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                {s.review_family_label}
+              </span>
+            )}
             <DirectionBadge direction={d.direction} />
             {snippet}
             <ConfluenceBadge details={d} />

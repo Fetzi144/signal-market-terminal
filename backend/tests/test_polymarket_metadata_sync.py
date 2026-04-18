@@ -1,7 +1,9 @@
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -9,6 +11,7 @@ import respx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import settings
 from app.ingestion.polymarket_maker_economics import (
     insert_reward_history_if_changed,
     insert_token_fee_history_if_changed,
@@ -18,6 +21,7 @@ from app.ingestion.polymarket_maker_economics import (
     lookup_token_fee_history,
 )
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
+from app.ingestion.polymarket_metadata import apply_stream_event_to_registry
 from app.ingestion.polymarket_stream import PolymarketStreamService, ensure_watch_registry_bootstrapped
 from app.models.polymarket_metadata import (
     PolymarketAssetDim,
@@ -26,7 +30,7 @@ from app.models.polymarket_metadata import (
     PolymarketMarketParamHistory,
     PolymarketMetaSyncRun,
 )
-from tests.conftest import make_market, make_outcome
+from tests.conftest import make_market, make_outcome, make_polymarket_market_event
 
 
 def _session_factory(engine):
@@ -184,6 +188,102 @@ async def test_gamma_sync_bootstrap_creates_registry_and_is_idempotent(engine):
 
 
 @pytest.mark.asyncio
+async def test_gamma_sync_tolerates_reward_cursor_400_and_keeps_first_page(engine):
+    session_factory = _session_factory(engine)
+    async with session_factory() as session:
+        market = make_market(session, platform="polymarket", platform_id="generic-mkt")
+        await session.flush()
+        make_outcome(session, market.id, name="Yes", token_id="token-yes")
+        make_outcome(session, market.id, name="No", token_id="token-no")
+        await session.commit()
+
+    service = PolymarketMetaSyncService(session_factory)
+
+    def reward_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("next_cursor"):
+            return httpx.Response(400, json={"error": "bad cursor"})
+        return httpx.Response(200, json={"markets": [_reward_payload()], "next_cursor": "LTE="})
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://gamma-api.polymarket.com/events/keyset").mock(
+            return_value=httpx.Response(200, json={"events": [_gamma_event_payload()]})
+        )
+        router.get("https://gamma-api.polymarket.com/markets/keyset").mock(
+            return_value=httpx.Response(200, json={"markets": [_gamma_market_payload()]})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-yes").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-no").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/rewards/markets/current").mock(side_effect=reward_handler)
+        result = await service.sync_metadata(reason="manual")
+    await service.close()
+
+    assert result["status"] == "completed"
+
+    async with session_factory() as session:
+        current_reward = await lookup_current_reward_state(
+            session,
+            condition_id="cond-1",
+            as_of=None,
+            limit=10,
+        )
+
+    assert current_reward
+    assert current_reward[0]["reward_status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_gamma_sync_tolerates_reward_cursor_500_and_keeps_first_page(engine):
+    session_factory = _session_factory(engine)
+    async with session_factory() as session:
+        market = make_market(session, platform="polymarket", platform_id="generic-mkt")
+        await session.flush()
+        make_outcome(session, market.id, name="Yes", token_id="token-yes")
+        make_outcome(session, market.id, name="No", token_id="token-no")
+        await session.commit()
+
+    service = PolymarketMetaSyncService(session_factory)
+
+    def reward_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("next_cursor"):
+            return httpx.Response(500, json={"error": "server error"})
+        return httpx.Response(200, json={"markets": [_reward_payload()], "next_cursor": "MjUwMA=="})
+
+    with respx.mock(assert_all_called=True) as router:
+        router.get("https://gamma-api.polymarket.com/events/keyset").mock(
+            return_value=httpx.Response(200, json={"events": [_gamma_event_payload()]})
+        )
+        router.get("https://gamma-api.polymarket.com/markets/keyset").mock(
+            return_value=httpx.Response(200, json={"markets": [_gamma_market_payload()]})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-yes").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/fee-rate/token-no").mock(
+            return_value=httpx.Response(200, json={"base_fee": "6"})
+        )
+        router.get("https://clob.polymarket.com/rewards/markets/current").mock(side_effect=reward_handler)
+        result = await service.sync_metadata(reason="manual")
+    await service.close()
+
+    assert result["status"] == "completed"
+
+    async with session_factory() as session:
+        current_reward = await lookup_current_reward_state(
+            session,
+            condition_id="cond-1",
+            as_of=None,
+            limit=10,
+        )
+
+    assert current_reward
+    assert current_reward[0]["reward_status"] == "active"
+
+
+@pytest.mark.asyncio
 async def test_stream_lifecycle_events_update_registry_and_append_only_history(engine):
     session_factory = _session_factory(engine)
     async with session_factory() as session:
@@ -334,6 +434,72 @@ async def test_missing_watched_asset_metadata_is_seeded_from_books(engine):
         assert str(latest.tick_size) == "0.00100000"
         assert str(latest.min_order_size) == "10.00000000"
         assert latest.neg_risk is True
+
+
+@pytest.mark.asyncio
+async def test_metadata_sync_marks_run_cancelled_when_task_is_cancelled(engine, monkeypatch):
+    session_factory = _session_factory(engine)
+    service = PolymarketMetaSyncService(session_factory)
+
+    async def raise_cancelled(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(settings, "polymarket_reward_history_enabled", False)
+    monkeypatch.setattr(service, "_sync_gamma_events", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_sync_gamma_markets", raise_cancelled)
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.sync_metadata(reason="manual")
+    await service.close()
+
+    async with session_factory() as session:
+        run = (await session.execute(select(PolymarketMetaSyncRun))).scalar_one()
+        assert run.status == "cancelled"
+        assert run.completed_at is not None
+        assert run.error_count == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_stream_event_to_registry_yields_while_meta_sync_is_running(engine):
+    session_factory = _session_factory(engine)
+
+    async with session_factory() as session:
+        event = make_polymarket_market_event(
+            session,
+            message_type="new_market",
+            market_id="cond-stream-skip",
+            asset_id="token-stream-skip",
+            payload={
+                "id": "mkt-stream-skip",
+                "market": "cond-stream-skip",
+                "question": "Skip registry update while sync runs?",
+                "slug": "skip-registry-update",
+                "description": "skip while metadata sync is running",
+                "assets_ids": ["token-stream-skip"],
+                "clob_token_ids": ["token-stream-skip"],
+                "outcomes": ["Yes"],
+                "event_message": {
+                    "id": "evt-stream-skip",
+                    "slug": "evt-stream-skip",
+                    "title": "Skip event",
+                },
+            },
+        )
+        session.add(
+            PolymarketMetaSyncRun(
+                reason="startup",
+                status="running",
+                include_closed=False,
+            )
+        )
+        await session.commit()
+        raw_event_id = event.id
+
+    await apply_stream_event_to_registry(session_factory, raw_event_id=raw_event_id)
+
+    async with session_factory() as session:
+        market_dims = (await session.execute(select(PolymarketMarketDim))).scalars().all()
+        assert market_dims == []
 
 
 @pytest.mark.asyncio

@@ -19,6 +19,7 @@ from app.ingestion.polymarket_risk_graph import PolymarketRiskGraphService
 from app.ingestion.polymarket_raw_storage import PolymarketRawStorageService
 from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.ingestion.polymarket_stream import PolymarketStreamService
+from app.jobs.scheduler import scheduler as scheduler_runtime
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,54 @@ async def _maybe_await(result):
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _scheduler_supervisor_retry_seconds() -> float:
+    return max(
+        0.1,
+        min(
+            float(settings.scheduler_lease_renew_interval_seconds),
+            float(settings.scheduler_lease_seconds),
+        ),
+    )
+
+
+async def _wait_for_stop_or_timeout(stop_event: asyncio.Event, timeout_seconds: float) -> bool:
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=timeout_seconds)
+        return True
+    except asyncio.TimeoutError:
+        return stop_event.is_set()
+
+
+async def _run_scheduler_supervisor(stop_event: asyncio.Event) -> None:
+    retry_seconds = _scheduler_supervisor_retry_seconds()
+    waiting_for_lease = False
+
+    while not stop_event.is_set():
+        if scheduler_runtime.running:
+            waiting_for_lease = False
+            if await _wait_for_stop_or_timeout(stop_event, retry_seconds):
+                return
+            continue
+
+        try:
+            started = await _maybe_await(start_scheduler())
+        except Exception:
+            logger.error("Scheduler startup failed; retrying", exc_info=True)
+            started = False
+
+        if started:
+            waiting_for_lease = False
+        elif not waiting_for_lease:
+            logger.warning(
+                "Scheduler worker did not acquire ownership; retrying every %.1fs until the lease becomes available",
+                retry_seconds,
+            )
+            waiting_for_lease = True
+
+        if await _wait_for_stop_or_timeout(stop_event, retry_seconds):
+            return
 
 
 async def _run_worker() -> None:
@@ -62,7 +111,7 @@ async def _run_worker() -> None:
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
-    scheduler_started = False
+    scheduler_supervisor_task: asyncio.Task | None = None
     stream_service: PolymarketStreamService | None = None
     stream_task: asyncio.Task | None = None
     meta_sync_service: PolymarketMetaSyncService | None = None
@@ -93,11 +142,7 @@ async def _run_worker() -> None:
             pass
 
     if settings.scheduler_enabled:
-        started = await _maybe_await(start_scheduler())
-        if started is False:
-            logger.warning("Scheduler worker did not acquire ownership; continuing without scheduler jobs")
-        else:
-            scheduler_started = True
+        scheduler_supervisor_task = asyncio.create_task(_run_scheduler_supervisor(stop_event))
 
     if settings.polymarket_stream_enabled:
         stream_service = PolymarketStreamService(async_session)
@@ -144,7 +189,7 @@ async def _run_worker() -> None:
         pilot_supervisor_task = asyncio.create_task(pilot_supervisor_service.run(stop_event))
 
     if (
-        not scheduler_started
+        scheduler_supervisor_task is None
         and stream_task is None
         and meta_sync_task is None
         and raw_storage_task is None
@@ -165,6 +210,12 @@ async def _run_worker() -> None:
         await stop_event.wait()
     finally:
         logger.info("Worker stopping")
+        if scheduler_supervisor_task is not None:
+            scheduler_supervisor_task.cancel()
+            try:
+                await scheduler_supervisor_task
+            except asyncio.CancelledError:
+                pass
         if stream_task is not None:
             stream_task.cancel()
             try:
@@ -251,7 +302,7 @@ async def _run_worker() -> None:
                 pass
         if pilot_supervisor_service is not None:
             await pilot_supervisor_service.close()
-        if scheduler_started:
+        if settings.scheduler_enabled:
             await _maybe_await(stop_scheduler())
 
 

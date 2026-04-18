@@ -8,9 +8,12 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.connectors import get_connector, get_enabled_platforms
+from app.connectors.polymarket import PolymarketTokenNotFoundError
 from app.models.ingestion import IngestionRun
 from app.models.market import Market, Outcome
+from app.models.polymarket_stream import PolymarketWatchAsset
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 
 logger = logging.getLogger(__name__)
@@ -45,12 +48,30 @@ async def _capture_platform(session: AsyncSession, platform: str) -> int:
 
     try:
         # Get all active outcomes with token IDs for this platform
-        result = await session.execute(
+        statement = (
             select(Outcome, Market)
             .join(Market, Outcome.market_id == Market.id)
             .where(Market.active.is_(True), Market.platform == platform)
             .where(Outcome.token_id.isnot(None))
         )
+        if platform == "polymarket":
+            # Full-capture Polymarket hosts maintain a much larger historical market table
+            # than the live watch universe. Limit legacy snapshot jobs to the watch set so
+            # scheduler-driven scanning tracks the active capture scope instead of millions
+            # of stale midpoint requests.
+            statement = (
+                statement.join(PolymarketWatchAsset, PolymarketWatchAsset.outcome_id == Outcome.id)
+                .where(PolymarketWatchAsset.watch_enabled.is_(True))
+                .order_by(
+                    PolymarketWatchAsset.priority.desc().nullslast(),
+                    Market.last_volume_24h.desc().nullslast(),
+                    Market.last_liquidity.desc().nullslast(),
+                    Outcome.id.asc(),
+                )
+                .limit(settings.polymarket_snapshot_max_watched_assets)
+            )
+
+        result = await session.execute(statement)
         rows = result.all()
 
         if not rows:
@@ -110,6 +131,8 @@ async def _capture_platform(session: AsyncSession, platform: str) -> int:
                     depth_ask_10pct=depth_ask,
                     captured_at=now,
                 ))
+            except PolymarketTokenNotFoundError:
+                logger.info("Skipping stale Polymarket orderbook token %s", tid)
             except Exception:
                 logger.warning("Failed to fetch orderbook for %s", tid, exc_info=True)
 

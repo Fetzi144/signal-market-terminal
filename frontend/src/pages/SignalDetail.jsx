@@ -36,6 +36,7 @@ export default function SignalDetail() {
 
   const s = signal;
   const d = s.details || {};
+  const signalLabel = s.display_signal_label || s.signal_type.replace("_", " ");
 
   return (
     <div>
@@ -62,7 +63,7 @@ export default function SignalDetail() {
                 color: "var(--accent)",
               }}
             >
-              {s.signal_type.replace("_", " ")}
+              {signalLabel}
             </span>
             <span
               style={{
@@ -82,6 +83,20 @@ export default function SignalDetail() {
                 }}
               >
                 Confirmed: {d.confluence_timeframes.join(" + ")}
+              </span>
+            )}
+            {s.review_family_label && (
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--yellow)",
+                  background: "rgba(255, 214, 61, 0.10)",
+                  padding: "2px 8px",
+                  borderRadius: 4,
+                }}
+              >
+                {s.review_family_label}: {String(s.review_family_posture || "unknown").replace(/_/g, " ")}
               </span>
             )}
           </div>
@@ -308,8 +323,11 @@ export default function SignalDetail() {
             }}
           >
             <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 12, color: "var(--accent)" }}>
-              Cross-Platform Arbitrage
+              Cross-Venue Spread Research
             </h3>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 12 }}>
+              This detector surfaces a one-legged cross-venue spread. It is not treated as executable arbitrage until paired hedge routing exists.
+            </div>
             <div
               style={{
                 display: "grid",

@@ -23,14 +23,21 @@ services:
       - ./backend/.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://smt:smt@db:5432/smt
+      - RUN_MIGRATIONS=true
       - SCHEDULER_ENABLED=false
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./backend:/app
-    command: >
-      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --reload
 
   worker:
     build: ./backend
@@ -38,14 +45,17 @@ services:
       - ./backend/.env
     environment:
       - DATABASE_URL=postgresql+asyncpg://smt:smt@db:5432/smt
+      - RUN_MIGRATIONS=false
       - SCHEDULER_ENABLED=true
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./backend:/app
-    command: >
-      sh -c "alembic upgrade head && python -m app.worker"
+    command:
+      - python
+      - -m
+      - app.worker
 
   frontend:
     build: ./frontend

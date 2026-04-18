@@ -226,6 +226,7 @@ describe("Structures", () => {
 
     expect(await screen.findByText("Structure Opportunities")).toBeInTheDocument();
     expect(await screen.findByText("State race linkage")).toBeInTheDocument();
+    expect(screen.getByText(/paired executable hedge routing exists/i)).toBeInTheDocument();
     expect(await screen.findByText("Cross-Venue Governance")).toBeInTheDocument();
     expect(screen.getByText("reviewed_sheet")).toBeInTheDocument();
     expect(await screen.findByText("Maker Economics")).toBeInTheDocument();

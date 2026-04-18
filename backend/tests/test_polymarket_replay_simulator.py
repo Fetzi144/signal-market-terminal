@@ -858,9 +858,12 @@ async def test_replay_api_and_health_surfaces_are_idempotent(client, engine, mon
     assert scenario_detail.status_code == 200
     assert scenario_detail.json()["metrics"]
     assert status_response.json()["recent_scenario_count_24h"] >= 1
+    assert status_response.json()["coverage_mode"] == "supported_detectors_only"
     assert "exec_policy" in summary_response.json()["variants"]
     assert "polymarket_phase11" in health_response.json()
     assert health_response.json()["polymarket_phase11"]["last_replay_run"]["id"] == first_payload["run"]["id"]
+    assert health_response.json()["polymarket_phase11"]["coverage_mode"] == "supported_detectors_only"
+    assert health_response.json()["polymarket_phase11"]["supported_detectors"] == ["confluence"]
 
     async with session_factory() as session:
         traces = await list_polymarket_replay_decision_traces(session, variant_name="exec_policy", limit=20)

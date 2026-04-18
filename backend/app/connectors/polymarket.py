@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from decimal import Decimal, InvalidOperation
 
 import httpx
@@ -16,9 +17,20 @@ BATCH_SIZE = 50
 # Retry configuration
 MAX_RETRIES = 3
 RETRY_BACKOFF = [1.0, 2.0, 4.0]  # seconds
+INVALID_TOKEN_TTL_SECONDS = 60 * 60
+
+
+class PolymarketTokenNotFoundError(LookupError):
+    """Raised when a Polymarket token no longer has a live orderbook."""
+
+    def __init__(self, token_id: str):
+        super().__init__(f"Polymarket token not found: {token_id}")
+        self.token_id = token_id
 
 
 class PolymarketConnector(BaseConnector):
+    _invalid_token_cache: dict[str, float] = {}
+
     def __init__(self):
         self.gamma_base = settings.polymarket_gamma_base
         self.clob_base = settings.polymarket_api_base
@@ -111,29 +123,31 @@ class PolymarketConnector(BaseConnector):
     async def fetch_midpoints(self, token_ids: list[str]) -> dict[str, Decimal]:
         """Batch fetch midpoints from CLOB API."""
         results: dict[str, Decimal] = {}
+        normalized_token_ids = self._normalize_token_ids(token_ids)
 
-        for i in range(0, len(token_ids), BATCH_SIZE):
-            batch = token_ids[i : i + BATCH_SIZE]
-            ids_param = ",".join(batch)
-            try:
-                resp = await self._request_with_retry(
-                    "get", f"{self.clob_base}/midpoints", params={"token_ids": ids_param},
-                )
-                data = resp.json()
-                for tid, mid in data.items():
-                    try:
-                        results[tid] = Decimal(str(mid))
-                    except (InvalidOperation, TypeError):
-                        logger.warning("Invalid midpoint for token %s: %s", tid, mid)
-            except (httpx.HTTPError, httpx.HTTPStatusError) as e:
-                logger.warning("Failed to fetch midpoints batch %d: %s", i // BATCH_SIZE, e)
+        for i in range(0, len(normalized_token_ids), BATCH_SIZE):
+            batch = normalized_token_ids[i : i + BATCH_SIZE]
+            batch_results = await self._fetch_midpoint_batch(batch, batch_index=i // BATCH_SIZE)
+            results.update(batch_results)
         return results
 
     async def fetch_orderbook(self, token_id: str) -> RawOrderbook:
         """Fetch L2 order book for a single token."""
-        resp = await self._request_with_retry(
-            "get", f"{self.clob_base}/book", params={"token_id": token_id},
-        )
+        normalized_token_id = str(token_id or "").strip()
+        if not normalized_token_id:
+            raise ValueError("token_id is required")
+        if self._is_cached_invalid_token(normalized_token_id):
+            raise PolymarketTokenNotFoundError(normalized_token_id)
+
+        try:
+            resp = await self._request_with_retry(
+                "get", f"{self.clob_base}/book", params={"token_id": normalized_token_id},
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                self._mark_invalid_token(normalized_token_id, reason="404 orderbook")
+                raise PolymarketTokenNotFoundError(normalized_token_id) from exc
+            raise
         data = resp.json()
 
         raw_bids = data.get("bids") or []
@@ -145,7 +159,7 @@ class PolymarketConnector(BaseConnector):
         best_ask = Decimal(asks[0][0]) if asks else None
         spread = (best_ask - best_bid) if (best_bid is not None and best_ask is not None) else None
 
-        return RawOrderbook(token_id=token_id, bids=bids, asks=asks, spread=spread)
+        return RawOrderbook(token_id=normalized_token_id, bids=bids, asks=asks, spread=spread)
 
     async def fetch_resolved_markets(self, since_hours: int = 24) -> list[dict]:
         """Fetch recently resolved markets from Gamma API.
@@ -263,4 +277,160 @@ class PolymarketConnector(BaseConnector):
                 "spread": mkt.get("spread"),
                 "one_day_price_change": mkt.get("oneDayPriceChange"),
             },
+        )
+
+    def _normalize_token_ids(self, token_ids: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        skipped_empty = 0
+        skipped_cached_invalid = 0
+        self._prune_invalid_token_cache()
+
+        for token_id in token_ids:
+            normalized_token_id = str(token_id or "").strip()
+            if not normalized_token_id:
+                skipped_empty += 1
+                continue
+            if self._is_cached_invalid_token(normalized_token_id):
+                skipped_cached_invalid += 1
+                continue
+            if normalized_token_id in seen:
+                continue
+            seen.add(normalized_token_id)
+            normalized.append(normalized_token_id)
+
+        if skipped_empty:
+            logger.warning("Polymarket midpoints skipped %d empty token ids", skipped_empty)
+        if skipped_cached_invalid:
+            logger.info(
+                "Polymarket midpoints skipped %d cached invalid token ids",
+                skipped_cached_invalid,
+            )
+
+        return normalized
+
+    async def _fetch_midpoint_batch(self, batch: list[str], *, batch_index: int) -> dict[str, Decimal]:
+        if not batch:
+            return {}
+
+        try:
+            resp = await self._request_with_retry(
+                "post",
+                f"{self.clob_base}/midpoints",
+                json=[{"token_id": token_id} for token_id in batch],
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 400 and len(batch) > 1:
+                midpoint = max(1, len(batch) // 2)
+                logger.warning(
+                    "Polymarket midpoints batch %d rejected %d token ids with 400; splitting batch",
+                    batch_index,
+                    len(batch),
+                )
+                results: dict[str, Decimal] = {}
+                results.update(await self._fetch_midpoint_batch(batch[:midpoint], batch_index=batch_index))
+                results.update(await self._fetch_midpoint_batch(batch[midpoint:], batch_index=batch_index))
+                return results
+
+            if exc.response is not None and exc.response.status_code == 400:
+                return await self._fetch_single_midpoint(batch[0], batch_index=batch_index)
+
+            logger.warning(
+                "Failed to fetch Polymarket midpoints batch %d (%d tokens): %s",
+                batch_index,
+                len(batch),
+                exc,
+            )
+            return {}
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Failed to fetch Polymarket midpoints batch %d (%d tokens): %s",
+                batch_index,
+                len(batch),
+                exc,
+            )
+            return {}
+
+        data = resp.json()
+        results: dict[str, Decimal] = {}
+        for tid, mid in data.items():
+            try:
+                results[tid] = Decimal(str(mid))
+            except (InvalidOperation, TypeError):
+                logger.warning("Invalid midpoint for token %s: %s", tid, mid)
+        return results
+
+    async def _fetch_single_midpoint(self, token_id: str, *, batch_index: int) -> dict[str, Decimal]:
+        try:
+            resp = await self._request_with_retry(
+                "get",
+                f"{self.clob_base}/midpoint",
+                params={"token_id": token_id},
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code in {400, 404}:
+                self._mark_invalid_token(token_id, reason=f"{exc.response.status_code} midpoint")
+                logger.warning(
+                    "Polymarket midpoint rejected token %s with %d; skipping token",
+                    token_id,
+                    exc.response.status_code,
+                )
+                return {}
+
+            logger.warning(
+                "Failed to fetch Polymarket midpoint for token %s in batch %d: %s",
+                token_id,
+                batch_index,
+                exc,
+            )
+            return {}
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Failed to fetch Polymarket midpoint for token %s in batch %d: %s",
+                token_id,
+                batch_index,
+                exc,
+            )
+            return {}
+
+        data = resp.json()
+        mid = data.get("mid")
+        if mid is None:
+            mid = data.get("mid_price")
+        try:
+            return {token_id: Decimal(str(mid))}
+        except (InvalidOperation, TypeError):
+            logger.warning("Invalid midpoint for token %s: %s", token_id, mid)
+            return {}
+
+    @classmethod
+    def _prune_invalid_token_cache(cls) -> None:
+        now = time.monotonic()
+        expired = [
+            token_id for token_id, expires_at in cls._invalid_token_cache.items()
+            if expires_at <= now
+        ]
+        for token_id in expired:
+            cls._invalid_token_cache.pop(token_id, None)
+
+    @classmethod
+    def _is_cached_invalid_token(cls, token_id: str) -> bool:
+        expires_at = cls._invalid_token_cache.get(token_id)
+        if expires_at is None:
+            return False
+        if expires_at <= time.monotonic():
+            cls._invalid_token_cache.pop(token_id, None)
+            return False
+        return True
+
+    @classmethod
+    def _mark_invalid_token(cls, token_id: str, *, reason: str) -> None:
+        if cls._is_cached_invalid_token(token_id):
+            return
+        cls._invalid_token_cache[token_id] = time.monotonic() + INVALID_TOKEN_TTL_SECONDS
+        logger.warning(
+            "Polymarket token %s marked invalid for %ds after %s",
+            token_id,
+            INVALID_TOKEN_TTL_SECONDS,
+            reason,
         )

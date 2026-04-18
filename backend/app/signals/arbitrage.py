@@ -1,4 +1,4 @@
-"""Arbitrage detector: fires when the same market trades at different prices across platforms."""
+"""Cross-venue spread detector for paired-market review, not executable arbitrage."""
 import logging
 from decimal import Decimal
 
@@ -23,7 +23,8 @@ class ArbitrageDetector(BaseDetector):
 
         threshold = Decimal(str(settings.arb_spread_threshold))
 
-        # Find question_slugs that appear on more than one platform
+        # Find question_slugs that appear on more than one platform.
+        # These candidates are informational spread signals until paired hedge routing exists.
         cross_platform = (
             select(Market.question_slug)
             .where(Market.active.is_(True), Market.question_slug.isnot(None))
@@ -93,7 +94,8 @@ class ArbitrageDetector(BaseDetector):
 
                 platform_prices[market.platform] = (snap, market, yes_outcome)
 
-            # Compare all platform pairs
+        # Compare all platform pairs. The signal remains a one-legged spread lead,
+        # not a guaranteed executable arbitrage package.
             platform_list = list(platform_prices.keys())
             for i in range(len(platform_list)):
                 for j in range(i + 1, len(platform_list)):
@@ -118,7 +120,7 @@ class ArbitrageDetector(BaseDetector):
                         cheap_market, cheap_outcome, cheap_price, cheap_snapshot = market2, outcome2, price2, snap2
                         expensive_market, expensive_price, expensive_snapshot = market1, price1, snap1
 
-                    # Probability engine: for arb, the estimated probability is
+                    # Probability engine: for cross-venue spread review, the estimated probability is
                     # the average of the two platform prices (market consensus).
                     # The cheap platform is below consensus → buy signal.
                     avg_price = (cheap_price + expensive_price) / 2

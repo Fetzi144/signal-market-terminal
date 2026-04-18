@@ -5,6 +5,10 @@ from decimal import Decimal
 
 import pytest
 
+from app.models.ingestion import IngestionRun
+from app.models.paper_trade import PaperTrade
+from app.models.scheduler_lease import SchedulerLease
+from app.models.signal import SignalEvaluation
 from tests.conftest import make_market, make_outcome, make_price_snapshot, make_signal
 
 # ── Health ──────────────────────────────────────────────
@@ -23,7 +27,115 @@ async def test_health_endpoint(client):
     assert "alert_threshold" in data
     assert "ingestion" in data
     assert isinstance(data["ingestion"], list)
+    assert "polymarket_phase1" in data
     assert "polymarket_phase8a" in data
+    assert "scheduler_lease" in data
+    assert "default_strategy_runtime" in data
+    assert "runtime_invariants" in data
+    assert "strategy_families" in data
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint_surfaces_scheduler_and_runtime_status(client, session, monkeypatch):
+    from app.api import health as health_api
+
+    monkeypatch.setattr(health_api.settings, "scheduler_enabled", True)
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXHEALTH-OVERDUE",
+        question="Health overdue market",
+        end_date=now - timedelta(hours=2),
+        active=True,
+    )
+    await session.flush()
+    outcome = make_outcome(session, market.id, name="Yes", platform_outcome_id="KXHEALTH-OVERDUE_yes")
+    await session.flush()
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        fired_at=now - timedelta(minutes=20),
+        price_at_fire=Decimal("0.006000"),
+    )
+    await session.flush()
+
+    session.add(
+        PaperTrade(
+            id=uuid.uuid4(),
+            signal_id=signal.id,
+            outcome_id=outcome.id,
+            market_id=market.id,
+            direction="buy_yes",
+            entry_price=Decimal("0.400000"),
+            size_usd=Decimal("500.00"),
+            shares=Decimal("1250.0000"),
+            status="open",
+            opened_at=now - timedelta(hours=1),
+            details={"market_question": "Health overdue market"},
+        )
+    )
+    session.add(
+        SignalEvaluation(
+            id=uuid.uuid4(),
+            signal_id=signal.id,
+            horizon="15m",
+            price_at_eval=Decimal("1.000000"),
+            price_change=Decimal("0.994000"),
+            price_change_pct=Decimal("9999.9999"),
+            evaluated_at=now - timedelta(hours=1),
+        )
+    )
+    session.add(
+        SchedulerLease(
+            scheduler_name="default",
+            owner_token="default:health-host:123:abc",
+            acquired_at=now - timedelta(seconds=10),
+            heartbeat_at=now - timedelta(seconds=5),
+            expires_at=now + timedelta(seconds=25),
+        )
+    )
+    session.add(
+        IngestionRun(
+            run_type="resolution_backfill",
+            platform="kalshi",
+            status="success",
+            started_at=now - timedelta(minutes=30),
+            finished_at=now - timedelta(minutes=29),
+            markets_processed=2,
+        )
+    )
+    session.add(
+        IngestionRun(
+            run_type="evaluation",
+            platform="system",
+            status="error",
+            started_at=now - timedelta(minutes=20),
+            finished_at=now - timedelta(minutes=19),
+            markets_processed=1,
+            error="1 signal evaluation horizon(s) failed",
+        )
+    )
+    await session.commit()
+
+    resp = await client.get("/api/v1/health")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["status"] == "degraded"
+    assert data["scheduler_lease"]["owner_token"] == "default:health-host:123:abc"
+    assert data["scheduler_lease"]["heartbeat_freshness_seconds"] >= 5
+    assert data["scheduler_lease"]["expires_in_seconds"] >= 0
+    assert data["default_strategy_runtime"]["overdue_open_trades"] == 1
+    assert data["default_strategy_runtime"]["last_resolution_backfill_count"] == 2
+    assert data["default_strategy_runtime"]["last_resolution_backfill_at"] is not None
+    assert data["default_strategy_runtime"]["evaluation_clamp_count_24h"] == 1
+    assert data["default_strategy_runtime"]["last_evaluation_failure_at"] is not None
+    invariant_by_key = {row["key"]: row for row in data["runtime_invariants"]}
+    assert invariant_by_key["scheduler_lease_fresh"]["status"] == "passing"
+    assert invariant_by_key["overdue_open_trades_zero"]["status"] == "failing"
+    assert invariant_by_key["evaluation_failures_24h_zero"]["status"] == "failing"
 
 
 # ── Signals list ────────────────────────────────────────
@@ -137,6 +249,30 @@ async def test_signal_detail_with_evaluations(client, engine):
     assert data["id"] == signal_id
     assert len(data["evaluations"]) == 1
     assert data["evaluations"][0]["horizon"] == "15m"
+
+
+@pytest.mark.asyncio
+async def test_signal_detail_exposes_display_and_strategy_family_metadata(client, engine):
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        market = make_market(session, platform="polymarket", question="Spread research market")
+        await session.flush()
+        outcome = make_outcome(session, market.id)
+        await session.flush()
+        signal = make_signal(session, market.id, outcome.id, signal_type="arbitrage")
+        await session.commit()
+        signal_id = str(signal.id)
+
+    resp = await client.get(f"/api/v1/signals/{signal_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["display_signal_type"] == "cross_venue_spread"
+    assert data["display_signal_label"] == "Cross Venue Spread"
+    assert data["review_family"] == "cross_venue_basis"
+    assert data["review_family_posture"] == "disabled"
+    assert data["review_family_review_enabled"] is False
 
 
 # ── Markets list ────────────────────────────────────────

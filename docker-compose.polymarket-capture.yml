@@ -1,0 +1,73 @@
+services:
+  db:
+    image: postgres:16-alpine
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - max_connections=40
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-smt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-smt}
+      POSTGRES_DB: ${POSTGRES_DB:-smt}
+    restart: unless-stopped
+    mem_limit: 1024m
+    cpus: 1.00
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-smt} -d ${POSTGRES_DB:-smt}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    env_file:
+      - ./backend/.env.polymarket-capture
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-smt}:${POSTGRES_PASSWORD:-smt}@db:5432/${POSTGRES_DB:-smt}
+      RUN_MIGRATIONS: "true"
+      SCHEDULER_ENABLED: "true"
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    mem_limit: 1536m
+    cpus: 1.50
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    profiles: ["api"]
+    env_file:
+      - ./backend/.env.polymarket-capture
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-smt}:${POSTGRES_PASSWORD:-smt}@db:5432/${POSTGRES_DB:-smt}
+      RUN_MIGRATIONS: "false"
+      SCHEDULER_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.50
+
+volumes:
+  pgdata:

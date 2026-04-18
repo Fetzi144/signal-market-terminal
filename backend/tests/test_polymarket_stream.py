@@ -19,6 +19,7 @@ from app.ingestion.polymarket_stream import (
     persist_market_event,
     upsert_stream_status,
 )
+from app.models.polymarket_metadata import PolymarketAssetDim, PolymarketMarketDim
 from app.models.polymarket_stream import (
     PolymarketIngestIncident,
     PolymarketMarketEvent,
@@ -75,6 +76,16 @@ class SequentialConnectFactory:
         if not self.websockets:
             raise RuntimeError("no websocket left")
         return self.websockets.pop(0)
+
+
+class RecordingConnectFactory:
+    def __init__(self, websocket):
+        self.websocket = websocket
+        self.calls = []
+
+    def __call__(self, *args, **kwargs):
+        self.calls.append({"args": args, "kwargs": kwargs})
+        return self.websocket
 
 
 class RecordingResyncStub:
@@ -204,6 +215,37 @@ async def test_resync_service_persists_runs_events_and_partial_failures(engine):
 
 
 @pytest.mark.asyncio
+async def test_resync_service_batches_large_book_requests(engine, monkeypatch):
+    session_factory = _session_factory(engine)
+    service = PolymarketResyncService(session_factory)
+    batches: list[list[str]] = []
+
+    async def fake_fetch_books_batch(asset_ids):
+        batches.append(list(asset_ids))
+        return [
+            {
+                "asset_id": asset_id,
+                "market": f"cond-{asset_id}",
+                "timestamp": "2026-04-13T09:30:00Z",
+                "bids": [],
+                "asks": [],
+            }
+            for asset_id in asset_ids
+        ]
+
+    monkeypatch.setattr(polymarket_stream_module, "BOOK_RESYNC_BATCH_SIZE", 2)
+    monkeypatch.setattr(service, "_fetch_books_batch", fake_fetch_books_batch)
+
+    result = await service.resync_assets(["asset-a", "asset-b", "asset-c", "asset-d", "asset-e"], reason="startup")
+    await service.close()
+
+    assert batches == [["asset-a", "asset-b"], ["asset-c", "asset-d"], ["asset-e"]]
+    assert result["requested_asset_count"] == 5
+    assert result["succeeded_asset_count"] == 5
+    assert result["failed_asset_count"] == 0
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_watch_registry_preserves_active_universe_coverage(session):
     market_one = make_market(session, platform="polymarket", platform_id="mkt-1", active=True)
     market_two = make_market(session, platform="polymarket", platform_id="mkt-2", active=True)
@@ -259,6 +301,102 @@ async def test_bootstrap_watch_registry_chunks_existing_outcome_lookup(session, 
     assert bootstrap["updated_count"] == 1
     assert len(rows) == 5
     assert watch_lookup_count == 3
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_watch_registry_suppresses_stale_auto_watch_set_until_registry_ready(session, monkeypatch):
+    market = make_market(session, platform="polymarket", platform_id="mkt-pending", active=True)
+    await session.flush()
+    outcome = make_outcome(session, market.id, token_id="token-pending")
+    await session.flush()
+    session.add(
+        PolymarketWatchAsset(
+            outcome_id=outcome.id,
+            asset_id="token-pending",
+            watch_enabled=True,
+            watch_reason="active_universe_bootstrap",
+        )
+    )
+    await session.commit()
+
+    monkeypatch.setattr(settings, "polymarket_meta_sync_enabled", True)
+
+    bootstrap = await ensure_watch_registry_bootstrapped(session)
+    await session.commit()
+
+    row = (await session.execute(select(PolymarketWatchAsset))).scalar_one()
+    assert bootstrap["source"] == "registry_pending"
+    assert bootstrap["disabled_count"] == 1
+    assert row.watch_enabled is False
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_watch_registry_prefers_live_registry_truth_and_disables_stale_auto_rows(session, monkeypatch):
+    market_one = make_market(session, platform="polymarket", platform_id="mkt-registry-1", active=True)
+    market_two = make_market(session, platform="polymarket", platform_id="mkt-registry-2", active=True)
+    await session.flush()
+    outcome_one = make_outcome(session, market_one.id, token_id="token-live")
+    outcome_two = make_outcome(session, market_two.id, token_id="token-stale")
+    await session.flush()
+
+    market_dim = PolymarketMarketDim(
+        gamma_market_id="gamma-live-1",
+        condition_id="cond-live-1",
+        question="Registry-backed market?",
+        active=True,
+        closed=False,
+        archived=False,
+        resolved=False,
+        accepting_orders=True,
+    )
+    session.add(market_dim)
+    await session.flush()
+    session.add(
+        PolymarketAssetDim(
+            asset_id="token-live",
+            condition_id="cond-live-1",
+            market_dim_id=market_dim.id,
+            outcome_id=outcome_one.id,
+            outcome_name="Yes",
+            outcome_index=0,
+            active=True,
+        )
+    )
+    session.add_all(
+        [
+            PolymarketWatchAsset(
+                outcome_id=outcome_one.id,
+                asset_id="token-live",
+                watch_enabled=False,
+                watch_reason="active_universe_bootstrap",
+            ),
+            PolymarketWatchAsset(
+                outcome_id=outcome_two.id,
+                asset_id="token-stale",
+                watch_enabled=True,
+                watch_reason="active_universe_bootstrap",
+            ),
+        ]
+    )
+    await session.commit()
+
+    monkeypatch.setattr(settings, "polymarket_meta_sync_enabled", True)
+
+    bootstrap = await ensure_watch_registry_bootstrapped(session)
+    await session.commit()
+
+    rows = (
+        await session.execute(
+            select(PolymarketWatchAsset).order_by(PolymarketWatchAsset.asset_id.asc())
+        )
+    ).scalars().all()
+    row_by_asset = {row.asset_id: row for row in rows}
+
+    assert bootstrap["source"] == "registry_live_bootstrap"
+    assert bootstrap["disabled_count"] == 1
+    assert row_by_asset["token-live"].watch_enabled is True
+    assert row_by_asset["token-live"].watch_reason == "registry_live_bootstrap"
+    assert row_by_asset["token-stale"].watch_enabled is False
 
 
 @pytest.mark.asyncio
@@ -369,6 +507,49 @@ async def test_worker_loop_records_reconnect_and_gap_incidents(engine, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_worker_loop_passes_configured_max_message_size_to_websocket(engine, monkeypatch):
+    session_factory = _session_factory(engine)
+    async with session_factory() as session:
+        market = make_market(session, platform="polymarket", platform_id="mkt-max-size", active=True)
+        await session.flush()
+        make_outcome(session, market.id, token_id="token-max-size")
+        await session.commit()
+
+    monkeypatch.setattr(settings, "polymarket_stream_enabled", True)
+    monkeypatch.setattr(settings, "polymarket_stream_reconnect_base_seconds", 0.01)
+    monkeypatch.setattr(settings, "polymarket_stream_reconnect_max_seconds", 0.02)
+    monkeypatch.setattr(settings, "polymarket_watch_reconcile_interval_seconds", 1)
+    monkeypatch.setattr(settings, "polymarket_stream_max_message_bytes", 1234567)
+
+    websocket = FakeWebSocket(exception_on_empty=RuntimeError("socket dropped"))
+    connect_factory = RecordingConnectFactory(websocket)
+    service = PolymarketStreamService(
+        session_factory,
+        connect_factory=connect_factory,
+        resync_service=RecordingResyncStub(),
+    )
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(service.run(stop_event))
+    try:
+        for _ in range(50):
+            if connect_factory.calls:
+                break
+            await asyncio.sleep(0.02)
+        stop_event.set()
+        await asyncio.wait_for(task, timeout=1)
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await service.close()
+
+    assert connect_factory.calls
+    assert connect_factory.calls[0]["kwargs"]["max_size"] == 1234567
+
+
+@pytest.mark.asyncio
 async def test_status_and_manual_resync_and_paginated_endpoints(client, engine):
     session_factory = _session_factory(engine)
     async with session_factory() as session:
@@ -424,12 +605,18 @@ async def test_status_and_manual_resync_and_paginated_endpoints(client, engine):
     status_response = await client.get("/api/v1/ingest/polymarket/status")
     assert status_response.status_code == 200
     status_data = status_response.json()
+    assert status_data["enabled"] is False
     assert status_data["connected"] is True
+    assert status_data["continuity_status"] in {"disabled", "healthy", "stale", "awaiting_events"}
+    assert status_data["heartbeat_freshness_seconds"] is not None
     assert status_data["watched_asset_count"] == 1
     assert status_data["active_subscription_count"] == 1
     assert status_data["gap_suspected_count"] >= 1
     assert status_data["malformed_message_count"] == 3
     assert status_data["last_event_received_at"] is not None
+    assert "replay" in status_data
+    assert status_data["replay"]["coverage_mode"] == "no_detector_activity"
+    assert any(row["family"] == "default_strategy" for row in status_data["strategy_families"])
     assert len(status_data["recent_resync_runs"]) >= 1
 
     incidents = await client.get("/api/v1/ingest/polymarket/incidents?page=1&page_size=20")

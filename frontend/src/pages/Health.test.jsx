@@ -39,12 +39,60 @@ vi.mock("../components/PushNotificationToggle", () => ({
 }));
 
 const healthPayload = {
-  status: "ok",
+  status: "degraded",
   active_markets: 12,
   total_signals: 44,
   unresolved_signals: 7,
   recent_alerts_24h: 3,
   alert_threshold: 0.82,
+  scheduler_lease: {
+    owner_token: "default:worker-host:321:abcdef123456",
+    heartbeat_freshness_seconds: 4,
+    expires_in_seconds: 26,
+  },
+  default_strategy_runtime: {
+    overdue_open_trades: 2,
+    last_resolution_backfill_at: "2026-04-13T10:06:00Z",
+    last_resolution_backfill_count: 3,
+    evaluation_clamp_count_24h: 1,
+    last_evaluation_failure_at: "2026-04-13T09:58:00Z",
+  },
+  runtime_invariants: [
+    {
+      key: "scheduler_lease_fresh",
+      label: "Scheduler Lease Fresh",
+      status: "passing",
+      detail: "Owner default:worker-host:321:abcdef123456 heartbeat 4s ago, expires in 26s.",
+    },
+    {
+      key: "overdue_open_trades_zero",
+      label: "Overdue Open Trades",
+      status: "failing",
+      detail: "2 overdue open trade(s) remain past market end.",
+    },
+    {
+      key: "evaluation_failures_24h_zero",
+      label: "Evaluation Failures (24h)",
+      status: "failing",
+      detail: "Latest evaluation failure at 2026-04-13T09:58:00Z.",
+    },
+  ],
+  polymarket_phase1: {
+    enabled: true,
+    connected: true,
+    continuity_status: "healthy",
+    connection_started_at: "2026-04-13T10:02:00Z",
+    current_connection_id: "11111111-1111-1111-1111-111111111111",
+    last_event_received_at: "2026-04-13T10:04:00Z",
+    heartbeat_freshness_seconds: 6,
+    watched_asset_count: 2,
+    subscribed_asset_count: 2,
+    reconnect_count: 4,
+    resync_count: 3,
+    gap_suspected_count: 2,
+    malformed_message_count: 1,
+    last_successful_resync_at: "2026-04-13T10:03:00Z",
+  },
   polymarket_phase6: {
     enabled: true,
     require_live_book: true,
@@ -196,6 +244,10 @@ const healthPayload = {
     recent_scenario_count_24h: 3,
     recent_coverage_limited_run_count_24h: 1,
     recent_failed_run_count_24h: 0,
+    coverage_mode: "supported_detectors_only",
+    configured_supported_detectors: ["confluence", "arbitrage"],
+    supported_detectors: ["confluence"],
+    unsupported_detectors: [],
     recent_variant_summary: {
       exec_policy: { net_pnl: 12.25, fill_rate: 0.66, slippage_bps: 4.2 },
     },
@@ -241,13 +293,38 @@ const healthPayload = {
       markets_processed: 12,
     },
   ],
+  strategy_families: [
+    {
+      family: "default_strategy",
+      label: "Default Strategy",
+      posture: "benchmark_only",
+      configured: true,
+      review_enabled: true,
+      primary_surface: "paper_trading",
+      description: "Frozen confluence benchmark used to prove or falsify edge honestly.",
+      disabled_reason: null,
+    },
+    {
+      family: "cross_venue_basis",
+      label: "Cross-Venue Basis",
+      posture: "disabled",
+      configured: false,
+      review_enabled: false,
+      primary_surface: "structure",
+      description: "Cross-venue spread research stays informational until paired executable hedge routing exists.",
+      disabled_reason: "Paired executable hedge routing is not implemented yet.",
+    },
+  ],
 };
 
 const ingestPayload = {
+  enabled: true,
   connected: true,
   connection_started_at: "2026-04-13T10:02:00Z",
   current_connection_id: "11111111-1111-1111-1111-111111111111",
   last_event_received_at: "2026-04-13T10:04:00Z",
+  heartbeat_freshness_seconds: 6,
+  continuity_status: "healthy",
   watched_asset_count: 2,
   active_watch_count: 2,
   active_subscription_count: 2,
@@ -302,6 +379,9 @@ const ingestPayload = {
     last_successful_book_snapshot_at: "2026-04-13T10:04:10Z",
     last_successful_trade_backfill_at: "2026-04-13T10:04:20Z",
     last_successful_oi_poll_at: "2026-04-13T10:04:30Z",
+    book_snapshot_freshness_seconds: 50,
+    trade_backfill_freshness_seconds: 40,
+    oi_poll_freshness_seconds: 30,
     rows_inserted_24h: {
       book_snapshots: 3,
       book_deltas: 8,
@@ -322,6 +402,7 @@ const ingestPayload = {
     watched_asset_count: 2,
     live_book_count: 2,
     drifted_asset_count: 1,
+    stale_asset_count: 1,
     resyncing_asset_count: 0,
     degraded_asset_count: 1,
     last_successful_resync_at: "2026-04-13T10:04:40Z",
@@ -382,6 +463,34 @@ const ingestPayload = {
     fee_freshness_seconds: 60,
     reward_freshness_seconds: 59,
   },
+  replay: {
+    enabled: false,
+    on_startup: false,
+    interval_seconds: 1800,
+    default_window_minutes: 60,
+    max_scenarios_per_run: 100,
+    structure_enabled: true,
+    maker_enabled: true,
+    risk_adjustments_enabled: true,
+    require_complete_book_coverage: true,
+    passive_fill_timeout_seconds: 15,
+    advisory_only: true,
+    live_disabled_by_default: true,
+    last_replay_run: { started_at: "2026-04-13T10:05:50Z" },
+    last_successful_policy_comparison: { started_at: "2026-04-13T10:05:55Z" },
+    recent_scenario_count_24h: 3,
+    recent_coverage_limited_run_count_24h: 1,
+    recent_failed_run_count_24h: 0,
+    coverage_mode: "supported_detectors_only",
+    configured_supported_detectors: ["confluence", "arbitrage"],
+    supported_detectors: ["confluence"],
+    unsupported_detectors: [],
+    recent_variant_summary: {
+      exec_policy: { net_pnl: 12.25, fill_rate: 0.66, slippage_bps: 4.2 },
+    },
+    recent_runs: [],
+  },
+  strategy_families: healthPayload.strategy_families,
   structure_engine: {
     enabled: true,
     on_startup: true,
@@ -682,10 +791,22 @@ describe("Health", () => {
     expect(screen.getByText("Phase 10 Risk Graph and Portfolio Optimizer")).toBeInTheDocument();
     expect(screen.getByText("Phase 11 Replay Simulator and Backtest Expansion")).toBeInTheDocument();
     expect(screen.getByText("Phase 12 Live Pilot and Control Plane")).toBeInTheDocument();
+    expect(screen.getByText("Benchmark Runtime")).toBeInTheDocument();
+    expect(screen.getByText("Unattended Invariants")).toBeInTheDocument();
+    expect(screen.getByText("Scheduler Lease Fresh")).toBeInTheDocument();
+    expect(screen.getByText("Overdue Open Trades")).toBeInTheDocument();
+    expect(screen.getByText("Evaluation Failures (24h)")).toBeInTheDocument();
+    expect(screen.getByText("Owner token default:worker-host:321:abcdef123456")).toBeInTheDocument();
+    expect(screen.getByText("2 overdue open trade(s) remain past market end.")).toBeInTheDocument();
+    expect(screen.getByText("Strategy Families")).toBeInTheDocument();
+    expect(screen.getByText("Cross-Venue Basis")).toBeInTheDocument();
+    expect(screen.getByText("Paired executable hedge routing is not implemented yet.")).toBeInTheDocument();
     expect(screen.getAllByText(/Live disabled/).length).toBeGreaterThan(0);
     expect(screen.getByText(/cross_now:2/)).toBeInTheDocument();
     expect(screen.getAllByText(/neg_risk_direct_vs_basket:2/).length).toBeGreaterThan(0);
     expect(screen.getByText(/cross_venue_link_expired:1/)).toBeInTheDocument();
+    expect(screen.getByText("Coverage Mode")).toBeInTheDocument();
+    expect(screen.getAllByText("healthy").length).toBeGreaterThan(0);
     expect(screen.getByText("Fee Rows")).toBeInTheDocument();
     expect(screen.getByText("Reward Rows")).toBeInTheDocument();
     expect(screen.getByText(/advisory_only_output:5/)).toBeInTheDocument();

@@ -7,7 +7,14 @@ import pytest
 import respx
 
 from app.connectors.kalshi import KalshiConnector
-from app.connectors.polymarket import PolymarketConnector
+from app.connectors.polymarket import PolymarketConnector, PolymarketTokenNotFoundError
+
+
+@pytest.fixture(autouse=True)
+def clear_polymarket_invalid_token_cache():
+    PolymarketConnector._invalid_token_cache.clear()
+    yield
+    PolymarketConnector._invalid_token_cache.clear()
 
 # ── Polymarket Tests ──
 
@@ -77,7 +84,7 @@ class TestPolymarketMidpoints:
         connector = PolymarketConnector()
         try:
             with respx.mock:
-                respx.get("https://clob.polymarket.com/midpoints").mock(
+                respx.post("https://clob.polymarket.com/midpoints").mock(
                     return_value=httpx.Response(200, json={"tok1": "0.55", "tok2": "0.45"})
                 )
                 result = await connector.fetch_midpoints(["tok1", "tok2"])
@@ -90,12 +97,108 @@ class TestPolymarketMidpoints:
         connector = PolymarketConnector()
         try:
             with respx.mock:
-                respx.get("https://clob.polymarket.com/midpoints").mock(
+                respx.post("https://clob.polymarket.com/midpoints").mock(
                     return_value=httpx.Response(200, json={"tok1": "0.55", "tok2": "invalid"})
                 )
                 result = await connector.fetch_midpoints(["tok1", "tok2"])
                 assert "tok1" in result
                 assert "tok2" not in result
+        finally:
+            await connector.close()
+
+    async def test_fetch_midpoints_splits_bad_request_and_salvages_valid_tokens(self):
+        connector = PolymarketConnector()
+        try:
+            calls: list[list[str]] = []
+
+            def midpoint_batch_handler(request: httpx.Request) -> httpx.Response:
+                token_ids = [entry["token_id"] for entry in json.loads(request.content)]
+                calls.append(token_ids)
+                if len(token_ids) > 1:
+                    return httpx.Response(400, json={"error": "invalid token in batch"})
+                return httpx.Response(400, json={"error": "fallback to single midpoint"})
+
+            def midpoint_single_handler(request: httpx.Request) -> httpx.Response:
+                token_id = request.url.params["token_id"]
+                if token_id == "bad-token":
+                    return httpx.Response(404, json={"error": "not found"})
+                return httpx.Response(
+                    200,
+                    json={"mid": "0.61" if token_id == "tok1" else "0.39"},
+                )
+
+            with respx.mock:
+                respx.post("https://clob.polymarket.com/midpoints").mock(side_effect=midpoint_batch_handler)
+                respx.get("https://clob.polymarket.com/midpoint").mock(side_effect=midpoint_single_handler)
+                result = await connector.fetch_midpoints(["tok1", "bad-token", "tok2"])
+
+                assert result == {
+                    "tok1": Decimal("0.61"),
+                    "tok2": Decimal("0.39"),
+                }
+                assert calls[0] == ["tok1", "bad-token", "tok2"]
+                assert ["bad-token"] in calls
+        finally:
+            await connector.close()
+
+    async def test_fetch_midpoints_skips_empty_and_duplicate_tokens(self):
+        connector = PolymarketConnector()
+        try:
+            observed_ids: list[str] = []
+
+            def midpoint_handler(request: httpx.Request) -> httpx.Response:
+                observed_ids.append(",".join(entry["token_id"] for entry in json.loads(request.content)))
+                return httpx.Response(200, json={"tok1": "0.55", "tok2": "0.45"})
+
+            with respx.mock:
+                respx.post("https://clob.polymarket.com/midpoints").mock(side_effect=midpoint_handler)
+                result = await connector.fetch_midpoints(["tok1", " ", "tok1", "", "tok2"])
+                assert result["tok1"] == Decimal("0.55")
+                assert result["tok2"] == Decimal("0.45")
+                assert observed_ids == ["tok1,tok2"]
+        finally:
+            await connector.close()
+
+    async def test_fetch_midpoints_skips_cached_invalid_tokens(self):
+        connector = PolymarketConnector()
+        try:
+            observed_ids: list[str] = []
+
+            def midpoint_batch_handler(request: httpx.Request) -> httpx.Response:
+                token_ids = ",".join(entry["token_id"] for entry in json.loads(request.content))
+                observed_ids.append(token_ids)
+                if token_ids == "bad-token":
+                    return httpx.Response(400, json={"error": "fallback to single midpoint"})
+                return httpx.Response(200, json={"tok1": "0.55"})
+
+            def midpoint_single_handler(request: httpx.Request) -> httpx.Response:
+                token_id = request.url.params["token_id"]
+                if token_id == "bad-token":
+                    return httpx.Response(404, json={"error": "not found"})
+                return httpx.Response(200, json={"mid": "0.55"})
+
+            with respx.mock:
+                respx.post("https://clob.polymarket.com/midpoints").mock(side_effect=midpoint_batch_handler)
+                respx.get("https://clob.polymarket.com/midpoint").mock(side_effect=midpoint_single_handler)
+                assert await connector.fetch_midpoints(["bad-token"]) == {}
+                result = await connector.fetch_midpoints(["bad-token", "tok1"])
+                assert result == {"tok1": Decimal("0.55")}
+                assert observed_ids == ["bad-token", "tok1"]
+        finally:
+            await connector.close()
+
+    async def test_fetch_midpoints_single_fallback_accepts_mid_price_response(self):
+        connector = PolymarketConnector()
+        try:
+            with respx.mock:
+                respx.post("https://clob.polymarket.com/midpoints").mock(
+                    return_value=httpx.Response(400, json={"error": "fallback to single midpoint"})
+                )
+                respx.get("https://clob.polymarket.com/midpoint").mock(
+                    return_value=httpx.Response(200, json={"mid_price": "0.42"})
+                )
+                result = await connector.fetch_midpoints(["tok1"])
+                assert result == {"tok1": Decimal("0.42")}
         finally:
             await connector.close()
 
@@ -120,6 +223,18 @@ class TestPolymarketOrderbook:
         finally:
             await connector.close()
 
+    async def test_fetch_orderbook_raises_token_not_found_on_404(self):
+        connector = PolymarketConnector()
+        try:
+            with respx.mock:
+                respx.get("https://clob.polymarket.com/book").mock(
+                    return_value=httpx.Response(404, json={"error": "not found"})
+                )
+                with pytest.raises(PolymarketTokenNotFoundError):
+                    await connector.fetch_orderbook("missing-token")
+        finally:
+            await connector.close()
+
 
 @pytest.mark.asyncio
 class TestPolymarketRetry:
@@ -127,7 +242,7 @@ class TestPolymarketRetry:
         connector = PolymarketConnector()
         try:
             with respx.mock:
-                route = respx.get("https://clob.polymarket.com/midpoints")
+                route = respx.post("https://clob.polymarket.com/midpoints")
                 route.side_effect = [
                     httpx.Response(429, headers={"retry-after": "0.01"}),
                     httpx.Response(200, json={"tok1": "0.60"}),

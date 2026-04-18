@@ -24,6 +24,7 @@ from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
 from app.models.strategy_run import StrategyRun
 from app.paper_trading import portfolio_views as portfolio_views_module
+from app.paper_trading.reconciliation import hydrate_strategy_run_state
 from app.paper_trading import shadow_execution as shadow_execution_module
 from app.paper_trading.strategy_run_state import (
     apply_trade_resolution_to_run,
@@ -536,6 +537,8 @@ async def build_execution_decision(
             reason_code="risk_state_uninitialized",
             detail=f"Strategy run {strategy_run_id} no longer exists",
         )
+    if strategy_run is not None and not strategy_run_state_complete(strategy_run):
+        await hydrate_strategy_run_state(session, strategy_run)
     if strategy_run is not None and not strategy_run_state_complete(strategy_run):
         return await finish(
             decision="skipped",

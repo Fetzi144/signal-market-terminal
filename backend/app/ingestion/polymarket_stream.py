@@ -7,12 +7,14 @@ import json
 import logging
 import uuid
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 import httpx
 import websockets
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -28,8 +30,11 @@ from app.ingestion.polymarket_common import (
     utcnow,
 )
 from app.ingestion.polymarket_metadata import (
+    PolymarketAssetDim,
+    PolymarketMarketDim,
     apply_stream_event_to_registry,
     fetch_polymarket_meta_sync_status,
+    meta_sync_run_in_progress,
     seed_registry_from_book_snapshot,
 )
 from app.ingestion.polymarket_normalization import ensure_normalized_event
@@ -58,6 +63,9 @@ logger = logging.getLogger(__name__)
 
 UNSET = object()
 WATCH_REGISTRY_LOOKUP_BATCH_SIZE = 5000
+BOOK_RESYNC_BATCH_SIZE = 250
+STREAM_SUBSCRIPTION_BATCH_SIZE = 1000
+AUTO_BOOTSTRAP_WATCH_REASONS = ("active_universe_bootstrap", "registry_live_bootstrap")
 
 
 def _chunk_values(values: list[Any], size: int) -> list[list[Any]]:
@@ -108,15 +116,27 @@ async def _count_watched_assets(session: AsyncSession) -> int:
     return count
 
 
-async def ensure_watch_registry_bootstrapped(
-    session: AsyncSession,
-    *,
-    commit: bool = False,
-) -> dict[str, int]:
-    if not settings.polymarket_watch_bootstrap_from_active_universe:
-        await _count_watched_assets(session)
-        return {"created_count": 0, "updated_count": 0}
+async def _load_registry_watch_candidates(session: AsyncSession) -> list[tuple[uuid.UUID, str]]:
+    result = await session.execute(
+        select(PolymarketAssetDim.outcome_id, PolymarketAssetDim.asset_id)
+        .join(PolymarketMarketDim, PolymarketAssetDim.market_dim_id == PolymarketMarketDim.id)
+        .where(
+            PolymarketAssetDim.outcome_id.is_not(None),
+            PolymarketAssetDim.asset_id.is_not(None),
+            PolymarketMarketDim.active.is_(True),
+            func.coalesce(PolymarketMarketDim.closed, False).is_(False),
+            func.coalesce(PolymarketMarketDim.archived, False).is_(False),
+            func.coalesce(PolymarketMarketDim.resolved, False).is_(False),
+        )
+    )
+    return [
+        (outcome_id, str(asset_id))
+        for outcome_id, asset_id in result.all()
+        if outcome_id is not None and asset_id is not None
+    ]
 
+
+async def _load_generic_watch_candidates(session: AsyncSession) -> list[tuple[uuid.UUID, str]]:
     result = await session.execute(
         select(Outcome.id, Outcome.token_id)
         .join(Market, Outcome.market_id == Market.id)
@@ -126,12 +146,72 @@ async def ensure_watch_registry_bootstrapped(
             Outcome.token_id.is_not(None),
         )
     )
-    active_rows = result.all()
+    return [
+        (outcome_id, str(token_id))
+        for outcome_id, token_id in result.all()
+        if outcome_id is not None and token_id is not None
+    ]
+
+
+async def _disable_auto_bootstrap_watches(
+    session: AsyncSession,
+    *,
+    desired_outcome_ids: list[uuid.UUID] | None,
+) -> int:
+    query = (
+        update(PolymarketWatchAsset)
+        .where(
+            PolymarketWatchAsset.watch_enabled.is_(True),
+            PolymarketWatchAsset.watch_reason.in_(AUTO_BOOTSTRAP_WATCH_REASONS),
+        )
+        .values(watch_enabled=False, updated_at=utcnow())
+    )
+    if desired_outcome_ids is not None:
+        if desired_outcome_ids:
+            query = query.where(PolymarketWatchAsset.outcome_id.not_in(desired_outcome_ids))
+        else:
+            # When registry truth is not ready yet, suppress the stale auto-watch set entirely.
+            pass
+    result = await session.execute(query)
+    return int(result.rowcount or 0)
+
+
+async def ensure_watch_registry_bootstrapped(
+    session: AsyncSession,
+    *,
+    commit: bool = False,
+) -> dict[str, int]:
+    if not settings.polymarket_watch_bootstrap_from_active_universe:
+        await _count_watched_assets(session)
+        return {"created_count": 0, "updated_count": 0, "disabled_count": 0, "source": "disabled"}
+
+    active_rows = await _load_registry_watch_candidates(session)
+    source = "registry_live_bootstrap"
+    if not active_rows:
+        if settings.polymarket_meta_sync_enabled:
+            disabled_count = await _disable_auto_bootstrap_watches(session, desired_outcome_ids=[])
+            if disabled_count:
+                await session.flush()
+                if commit:
+                    await session.commit()
+            await _count_watched_assets(session)
+            return {
+                "created_count": 0,
+                "updated_count": 0,
+                "disabled_count": disabled_count,
+                "source": "registry_pending",
+            }
+        active_rows = await _load_generic_watch_candidates(session)
+        source = "active_universe_bootstrap"
     if not active_rows:
         await _count_watched_assets(session)
-        return {"created_count": 0, "updated_count": 0}
+        return {"created_count": 0, "updated_count": 0, "disabled_count": 0, "source": source}
 
-    outcome_ids = [outcome_id for outcome_id, _token_id in active_rows]
+    desired_by_outcome_id: dict[uuid.UUID, str] = {}
+    for outcome_id, token_id in active_rows:
+        desired_by_outcome_id[outcome_id] = str(token_id)
+
+    outcome_ids = list(desired_by_outcome_id.keys())
     existing_by_outcome_id: dict[uuid.UUID, PolymarketWatchAsset] = {}
     for batch in _chunk_values(outcome_ids, WATCH_REGISTRY_LOOKUP_BATCH_SIZE):
         existing_result = await session.execute(
@@ -144,35 +224,69 @@ async def ensure_watch_registry_bootstrapped(
 
     created_count = 0
     updated_count = 0
-    for outcome_id, token_id in active_rows:
+    disabled_count = 0
+    rows_to_insert: list[dict[str, Any]] = []
+    now = utcnow()
+    if source == "registry_live_bootstrap":
+        disabled_count = await _disable_auto_bootstrap_watches(session, desired_outcome_ids=outcome_ids)
+    for outcome_id, token_id in desired_by_outcome_id.items():
         watch_asset = existing_by_outcome_id.get(outcome_id)
         if watch_asset is None:
-            session.add(
-                PolymarketWatchAsset(
-                    outcome_id=outcome_id,
-                    asset_id=str(token_id),
-                    watch_enabled=True,
-                    watch_reason="active_universe_bootstrap",
-                )
+            rows_to_insert.append(
+                {
+                    "id": uuid.uuid4(),
+                    "outcome_id": outcome_id,
+                    "asset_id": str(token_id),
+                    "watch_enabled": True,
+                    "watch_reason": source,
+                    "created_at": now,
+                    "updated_at": now,
+                }
             )
-            created_count += 1
             continue
         if watch_asset.asset_id != str(token_id):
             watch_asset.asset_id = str(token_id)
             updated_count += 1
+        if source == "registry_live_bootstrap" and watch_asset.watch_reason in AUTO_BOOTSTRAP_WATCH_REASONS:
+            if not watch_asset.watch_enabled:
+                watch_asset.watch_enabled = True
+                updated_count += 1
+            if watch_asset.watch_reason != source:
+                watch_asset.watch_reason = source
+                updated_count += 1
 
-    if created_count or updated_count:
+    if rows_to_insert:
+        insert_fn = postgresql_insert if session.bind.dialect.name == "postgresql" else sqlite_insert
+        for batch in _chunk_values(rows_to_insert, WATCH_REGISTRY_LOOKUP_BATCH_SIZE):
+            result = await session.execute(
+                insert_fn(PolymarketWatchAsset)
+                .values(batch)
+                .on_conflict_do_nothing(index_elements=["outcome_id"])
+            )
+            created_count += int(result.rowcount or 0)
+
+    if created_count or updated_count or disabled_count:
         await session.flush()
         if commit:
             await session.commit()
 
     await _count_watched_assets(session)
-    return {"created_count": created_count, "updated_count": updated_count}
+    return {
+        "created_count": created_count,
+        "updated_count": updated_count,
+        "disabled_count": disabled_count,
+        "source": source,
+    }
 
 
-async def list_watched_polymarket_assets(session: AsyncSession) -> list[str]:
+async def list_watched_polymarket_assets(
+    session: AsyncSession,
+    *,
+    limit: int | None = None,
+    prioritize: bool = False,
+) -> list[str]:
     await ensure_watch_registry_bootstrapped(session, commit=True)
-    result = await session.execute(
+    query = (
         select(PolymarketWatchAsset.asset_id)
         .join(Outcome, PolymarketWatchAsset.outcome_id == Outcome.id)
         .join(Market, Outcome.market_id == Market.id)
@@ -181,8 +295,15 @@ async def list_watched_polymarket_assets(session: AsyncSession) -> list[str]:
             Market.platform == STATUS_VENUE,
             Outcome.token_id.is_not(None),
         )
-        .order_by(PolymarketWatchAsset.priority.desc().nullslast(), PolymarketWatchAsset.updated_at.desc())
     )
+    if prioritize:
+        query = query.order_by(
+            PolymarketWatchAsset.priority.desc().nullslast(),
+            PolymarketWatchAsset.updated_at.desc(),
+        )
+    if limit is not None:
+        query = query.limit(limit)
+    result = await session.execute(query)
     return [str(asset_id) for asset_id in result.scalars().all()]
 
 
@@ -532,12 +653,33 @@ async def fetch_polymarket_stream_status(session: AsyncSession) -> dict[str, Any
     events_1m = await _count_events_since(session, now - timedelta(minutes=1))
     events_5m = await _count_events_since(session, now - timedelta(minutes=5))
     events_15m = await _count_events_since(session, now - timedelta(minutes=15))
+    heartbeat_reference = last_event_received_at or (status.last_message_received_at if status else None)
+    if heartbeat_reference is not None and heartbeat_reference.tzinfo is None:
+        heartbeat_reference = heartbeat_reference.replace(tzinfo=timezone.utc)
+    heartbeat_freshness_seconds = (
+        max(0, int((now - heartbeat_reference).total_seconds()))
+        if heartbeat_reference is not None
+        else None
+    )
+    if not settings.polymarket_stream_enabled:
+        continuity_status = "disabled"
+    elif status is None or not status.connected:
+        continuity_status = "disconnected"
+    elif heartbeat_freshness_seconds is None:
+        continuity_status = "awaiting_events"
+    elif heartbeat_freshness_seconds > settings.polymarket_stream_ping_interval_seconds * 3:
+        continuity_status = "stale"
+    else:
+        continuity_status = "healthy"
 
     return {
+        "enabled": settings.polymarket_stream_enabled,
         "connected": status.connected if status else False,
         "connection_started_at": status.connection_started_at if status else None,
         "current_connection_id": status.current_connection_id if status else None,
-        "last_event_received_at": last_event_received_at or (status.last_message_received_at if status else None),
+        "last_event_received_at": heartbeat_reference,
+        "heartbeat_freshness_seconds": heartbeat_freshness_seconds,
+        "continuity_status": continuity_status,
         "active_watch_count": watched_count,
         "watched_asset_count": watched_count,
         "active_subscription_count": status.active_subscription_count if status else 0,
@@ -674,39 +816,38 @@ class PolymarketResyncService:
                 "status": "completed",
             }
 
-        try:
-            payloads = await self._fetch_books_batch(requested_asset_ids)
-        except Exception as exc:
-            completed_at = utcnow()
-            async with self._session_factory() as session:
-                run = await session.get(PolymarketResyncRun, run_id)
-                assert run is not None
-                run.status = "failed"
-                run.completed_at = completed_at
-                run.failed_asset_count = len(requested_asset_ids)
-                run.details_json = {
-                    "requested_asset_ids": requested_asset_ids,
-                    "error": str(exc),
-                }
-                await log_ingest_incident(
-                    session,
-                    incident_type="resync_failed",
-                    severity="error",
-                    connection_id=connection_id,
-                    resync_run_id=run.id,
-                    details_json={"reason": reason, "error": str(exc)},
+        payload_by_asset_id: dict[str, dict[str, Any]] = {}
+        failed_asset_ids: list[str] = []
+        batch_errors: list[dict[str, Any]] = []
+        for batch in _chunk_values(requested_asset_ids, BOOK_RESYNC_BATCH_SIZE):
+            try:
+                payloads = await self._fetch_books_batch(batch)
+            except Exception as exc:
+                logger.warning(
+                    "Polymarket resync batch failed for %d asset(s): %s",
+                    len(batch),
+                    exc,
                 )
-                await session.commit()
-            polymarket_resync_runs.labels(reason=reason, status="failed").inc()
-            raise
+                failed_asset_ids.extend(batch)
+                batch_errors.append(
+                    {
+                        "asset_count": len(batch),
+                        "sample_asset_ids": batch[:5],
+                        "error": str(exc),
+                    }
+                )
+                continue
+            payload_by_asset_id.update({
+                str(payload.get("asset_id") or payload.get("assetId")): payload
+                for payload in payloads
+                if isinstance(payload, dict) and (payload.get("asset_id") or payload.get("assetId"))
+            })
 
-        payload_by_asset_id = {
-            str(payload.get("asset_id") or payload.get("assetId")): payload
-            for payload in payloads
-            if isinstance(payload, dict) and (payload.get("asset_id") or payload.get("assetId"))
-        }
         succeeded_asset_ids = [asset_id for asset_id in requested_asset_ids if asset_id in payload_by_asset_id]
-        failed_asset_ids = [asset_id for asset_id in requested_asset_ids if asset_id not in payload_by_asset_id]
+        failed_asset_ids.extend(
+            asset_id for asset_id in requested_asset_ids
+            if asset_id not in payload_by_asset_id and asset_id not in set(failed_asset_ids)
+        )
         ingest_batch_id = uuid.uuid4()
         events_persisted = 0
         completed_at = utcnow()
@@ -738,13 +879,14 @@ class PolymarketResyncService:
                     resync_reason=reason,
                     resync_run_id=run.id,
                 )
-                await seed_registry_from_book_snapshot(
-                    session,
-                    payload=payload,
-                    observed_at_local=started_at,
-                    sync_run_id=None,
-                    raw_event_id=event.id,
-                )
+                if not await meta_sync_run_in_progress(session):
+                    await seed_registry_from_book_snapshot(
+                        session,
+                        payload=payload,
+                        observed_at_local=started_at,
+                        sync_run_id=None,
+                        raw_event_id=event.id,
+                    )
                 events_persisted += 1
 
             run.completed_at = completed_at
@@ -755,6 +897,7 @@ class PolymarketResyncService:
                 "requested_asset_ids": requested_asset_ids,
                 "succeeded_asset_ids": succeeded_asset_ids,
                 "failed_asset_ids": failed_asset_ids,
+                "batch_errors": batch_errors,
             }
             await upsert_stream_status(
                 session,
@@ -772,6 +915,7 @@ class PolymarketResyncService:
                     "requested_asset_ids": requested_asset_ids,
                     "succeeded_asset_ids": succeeded_asset_ids,
                     "failed_asset_ids": failed_asset_ids,
+                    "batch_errors": batch_errors,
                 },
             )
             await session.commit()
@@ -969,18 +1113,20 @@ class PolymarketStreamService:
 
         if to_subscribe:
             logger.info("Polymarket stream subscribing to %d assets", len(to_subscribe))
-            await websocket.send(json.dumps({
-                "assets_ids": to_subscribe,
-                "operation": "subscribe",
-                "custom_feature_enabled": True,
-            }))
+            for batch in _chunk_values(to_subscribe, STREAM_SUBSCRIPTION_BATCH_SIZE):
+                await websocket.send(json.dumps({
+                    "assets_ids": batch,
+                    "operation": "subscribe",
+                    "custom_feature_enabled": True,
+                }))
 
         if to_unsubscribe:
             logger.info("Polymarket stream unsubscribing from %d assets", len(to_unsubscribe))
-            await websocket.send(json.dumps({
-                "assets_ids": to_unsubscribe,
-                "operation": "unsubscribe",
-            }))
+            for batch in _chunk_values(to_unsubscribe, STREAM_SUBSCRIPTION_BATCH_SIZE):
+                await websocket.send(json.dumps({
+                    "assets_ids": batch,
+                    "operation": "unsubscribe",
+                }))
 
         new_subscribed = (subscribed_asset_ids | set(to_subscribe)) - set(to_unsubscribe)
 
@@ -1038,12 +1184,18 @@ class PolymarketStreamService:
                 async with self._connect_factory(
                     settings.polymarket_stream_url,
                     open_timeout=settings.connector_timeout_seconds,
+                    max_size=(
+                        settings.polymarket_stream_max_message_bytes
+                        if settings.polymarket_stream_max_message_bytes > 0
+                        else None
+                    ),
                 ) as websocket:
-                    await websocket.send(json.dumps({
-                        "type": STREAM_CHANNEL,
-                        "assets_ids": watched_asset_ids,
-                        "custom_feature_enabled": True,
-                    }))
+                    for batch in _chunk_values(watched_asset_ids, STREAM_SUBSCRIPTION_BATCH_SIZE):
+                        await websocket.send(json.dumps({
+                            "type": STREAM_CHANNEL,
+                            "assets_ids": batch,
+                            "custom_feature_enabled": True,
+                        }))
                     subscribed_asset_ids = set(watched_asset_ids)
                     await self._set_connected(connection_id, len(subscribed_asset_ids))
 

@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.market import Market
 from app.models.signal import Signal, SignalEvaluation
+from app.strategy_families import (
+    display_signal_label,
+    display_signal_type,
+    infer_signal_review_family,
+)
 
 router = APIRouter(prefix="/api/v1/signals", tags=["signals"])
 signals_limiter = Limiter(key_func=get_remote_address)
@@ -32,6 +37,8 @@ class EvaluationOut(BaseModel):
 class SignalOut(BaseModel):
     id: uuid.UUID
     signal_type: str
+    display_signal_type: str | None = None
+    display_signal_label: str | None = None
     timeframe: str
     market_id: uuid.UUID
     outcome_id: uuid.UUID | None
@@ -61,6 +68,11 @@ class SignalOut(BaseModel):
     edge_pct: Decimal | None = None
     recommended_size_usd: Decimal | None = None
     kelly_fraction: Decimal | None = None
+    review_family: str | None = None
+    review_family_label: str | None = None
+    review_family_posture: str | None = None
+    review_family_review_enabled: bool | None = None
+    review_family_disabled_reason: str | None = None
 
 
 class SignalListOut(BaseModel):
@@ -76,6 +88,7 @@ def _build_signal_out(signal: Signal, question: str | None, platform: str | None
     edge_pct = None
     recommended_size_usd = None
     kelly_fraction = None
+    review_family = infer_signal_review_family(signal.signal_type)
 
     if (
         signal.estimated_probability is not None
@@ -103,6 +116,8 @@ def _build_signal_out(signal: Signal, question: str | None, platform: str | None
     return SignalOut(
         id=signal.id,
         signal_type=signal.signal_type,
+        display_signal_type=display_signal_type(signal.signal_type),
+        display_signal_label=display_signal_label(signal.signal_type),
         timeframe=signal.timeframe,
         market_id=signal.market_id,
         outcome_id=signal.outcome_id,
@@ -129,6 +144,11 @@ def _build_signal_out(signal: Signal, question: str | None, platform: str | None
         edge_pct=edge_pct,
         recommended_size_usd=recommended_size_usd,
         kelly_fraction=kelly_fraction,
+        review_family=review_family["family"] if review_family else None,
+        review_family_label=review_family["label"] if review_family else None,
+        review_family_posture=review_family["posture"] if review_family else None,
+        review_family_review_enabled=review_family["review_enabled"] if review_family else None,
+        review_family_disabled_reason=review_family["disabled_reason"] if review_family else None,
     )
 
 

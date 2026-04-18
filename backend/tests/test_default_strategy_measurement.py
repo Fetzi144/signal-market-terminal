@@ -50,6 +50,7 @@ async def test_default_strategy_read_endpoints_do_not_create_rows_without_active
     lookup = responses[5].json()
     assert health["observation"]["status"] == "no_active_run"
     assert health["strategy_run"] is None
+    assert health["headline"]["overdue_open_trades"] == 0
     assert lookup["state"] == "no_active_run"
     assert lookup["strategy_run"] is None
     assert lookup["bootstrap_required"] is True
@@ -302,6 +303,88 @@ async def test_strategy_health_flags_missing_execution_decision_as_integrity_err
 
 
 @pytest.mark.asyncio
+async def test_attempt_open_trade_rehydrates_incomplete_strategy_run_state_from_resolved_trades(session):
+    market = make_market(session, question="Risk state hydrate market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    now = datetime.now(timezone.utc)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(days=1))
+
+    resolved_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(hours=6),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Risk state hydrate market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        resolved_signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        status="resolved",
+        pnl=Decimal("125.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now - timedelta(hours=5),
+        opened_at=now - timedelta(hours=6),
+    )
+
+    fresh_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(minutes=5),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Risk state hydrate market", "outcome_name": "Yes"},
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fresh_signal.fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
+    )
+
+    strategy_run.peak_equity = None
+    strategy_run.current_equity = None
+    strategy_run.max_drawdown = None
+    strategy_run.drawdown_pct = None
+    await session.commit()
+
+    result = await attempt_open_trade(
+        session=session,
+        signal_id=fresh_signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=fresh_signal.estimated_probability,
+        market_price=fresh_signal.price_at_fire,
+        market_question="Risk state hydrate market",
+        fired_at=fresh_signal.fired_at,
+        strategy_run_id=strategy_run.id,
+    )
+    await session.refresh(strategy_run)
+
+    assert result.reason_code == "opened"
+    assert result.execution_decision is not None
+    assert strategy_run.current_equity == Decimal("10125.00")
+    assert strategy_run.peak_equity == Decimal("10125.00")
+    assert strategy_run.max_drawdown == Decimal("0.00")
+    assert strategy_run.drawdown_pct == Decimal("0.000000")
+
+
+@pytest.mark.asyncio
 async def test_attempt_open_trade_labels_shared_global_risk_blocks_separately(session, monkeypatch):
     async def _block_globally(*args, **kwargs):  # noqa: ARG001
         return {
@@ -489,6 +572,80 @@ async def test_strategy_health_surfaces_pending_decision_age_watch(client, sessi
     assert pending_watch["oldest_decision_at"] is not None
     assert pending_watch["max_age_seconds"] >= 7200
     assert pending_watch["examples"][0]["signal_id"] == str(signal.id)
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_headline_counts_overdue_open_trades(client, session):
+    now = datetime.now(timezone.utc)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(days=1))
+
+    overdue_market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXSTRAT-OVERDUE",
+        question="Overdue strategy market",
+        end_date=now - timedelta(hours=2),
+        active=True,
+    )
+    overdue_outcome = make_outcome(
+        session,
+        overdue_market.id,
+        name="Yes",
+        platform_outcome_id="KXSTRAT-OVERDUE_yes",
+    )
+    overdue_signal = make_signal(
+        session,
+        overdue_market.id,
+        overdue_outcome.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Overdue strategy market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        overdue_signal.id,
+        overdue_outcome.id,
+        overdue_market.id,
+        strategy_run_id=strategy_run.id,
+        status="open",
+    )
+
+    fresh_market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXSTRAT-FUTURE",
+        question="Future strategy market",
+        end_date=now + timedelta(hours=2),
+        active=True,
+    )
+    fresh_outcome = make_outcome(
+        session,
+        fresh_market.id,
+        name="Yes",
+        platform_outcome_id="KXSTRAT-FUTURE_yes",
+    )
+    fresh_signal = make_signal(
+        session,
+        fresh_market.id,
+        fresh_outcome.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Future strategy market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        fresh_signal.id,
+        fresh_outcome.id,
+        fresh_market.id,
+        strategy_run_id=strategy_run.id,
+        status="open",
+    )
+    await session.commit()
+
+    response = await client.get("/api/v1/paper-trading/strategy-health")
+    assert response.status_code == 200
+    headline = response.json()["headline"]
+
+    assert headline["open_trades"] == 2
+    assert headline["overdue_open_trades"] == 1
 
 
 @pytest.mark.asyncio

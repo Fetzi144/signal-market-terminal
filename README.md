@@ -1,8 +1,8 @@
 # Signal Market Terminal v0.4.1
 
-A prediction-market intelligence platform that ingests market data from **Polymarket** and **Kalshi**, detects unusual market behavior, estimates probabilities, computes expected value, tracks closing line value, and paper-trades a fixed default strategy to prove whether the system has real edge.
+A Polymarket-first market-structure terminal with a frozen benchmark strategy. The repo captures venue data, measures execution realism, and paper-trades a fixed default strategy to prove or falsify edge honestly while keeping Kalshi available as a future hedge and basis venue.
 
-This is **not** an auto-trading bot. It is a monitoring, research, and decision-support tool for serious operators. The current product focus is **prove the edge first**: freeze one default strategy, track it honestly, and let the P&L line decide what survives.
+This is **not** an autonomous betting bot. It is a monitoring, research, and decision-support tool for serious operators. The current product focus is still **prove the edge first**: keep the default strategy frozen as a benchmark, build continuity in Polymarket capture, and let replay plus P&L decide what survives.
 
 ## Architecture
 
@@ -67,6 +67,32 @@ For production:
 docker-compose -f docker-compose.prod.yml up --build -d
 # Open http://localhost
 ```
+
+For Oracle's tiny free micro boxes:
+```bash
+cp backend/.env.oracle-micro.example backend/.env.oracle-micro
+docker compose -f docker-compose.oracle-micro.yml up -d db worker
+```
+
+That profile is intentionally headless-first and scanner-only. It keeps PostgreSQL plus the scheduler worker alive and leaves the API as an optional add-on profile:
+```bash
+docker compose -f docker-compose.oracle-micro.yml --profile api up -d backend
+```
+
+See [docs/runbooks/oracle-free-micro.md](<C:/Code/Signal Market Terminal/docs/runbooks/oracle-free-micro.md>) for the rationale and tuning notes.
+
+For an always-on Polymarket capture worker:
+```bash
+cp backend/.env.polymarket-capture.example backend/.env.polymarket-capture
+docker compose -f docker-compose.polymarket-capture.yml up -d db worker
+```
+
+That profile is also headless-first, but it is meant for research truth rather than cheap scanning. It turns on stream continuity, metadata sync, raw storage, trade backfill, open-interest polling, and book reconstruction while leaving features, replay, user stream, pilot, and live trading off initially:
+```bash
+docker compose -f docker-compose.polymarket-capture.yml --profile api up -d backend
+```
+
+See [docs/runbooks/polymarket-capture.md](<C:/Code/Signal Market Terminal/docs/runbooks/polymarket-capture.md>) for the deployment notes and promotion gates.
 
 For local development without Docker:
 

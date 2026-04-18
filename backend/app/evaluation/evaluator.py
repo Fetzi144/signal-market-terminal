@@ -29,12 +29,106 @@ HORIZONS = {
 
 # How far from the target time we'll accept a snapshot
 SNAPSHOT_TOLERANCE = timedelta(minutes=5)
+PRICE_CHANGE_PCT_QUANTUM = Decimal("0.0001")
+MAX_ABS_PRICE_CHANGE_PCT = Decimal("9999.9999")
+
+
+def _bounded_price_change_pct(*, price_change: Decimal, price_at_fire: Decimal, signal_id: uuid.UUID, horizon: str) -> Decimal:
+    if price_at_fire <= 0:
+        return Decimal("0.0000")
+
+    price_change_pct = ((price_change / price_at_fire) * 100).quantize(PRICE_CHANGE_PCT_QUANTUM)
+    if price_change_pct > MAX_ABS_PRICE_CHANGE_PCT:
+        logger.warning(
+            "Clamping signal evaluation price_change_pct for signal %s horizon %s from %s to %s",
+            signal_id,
+            horizon,
+            price_change_pct,
+            MAX_ABS_PRICE_CHANGE_PCT,
+        )
+        return MAX_ABS_PRICE_CHANGE_PCT
+    if price_change_pct < -MAX_ABS_PRICE_CHANGE_PCT:
+        logger.warning(
+            "Clamping signal evaluation price_change_pct for signal %s horizon %s from %s to %s",
+            signal_id,
+            horizon,
+            price_change_pct,
+            -MAX_ABS_PRICE_CHANGE_PCT,
+        )
+        return -MAX_ABS_PRICE_CHANGE_PCT
+    return price_change_pct
+
+
+async def _persist_signal_evaluation(session: AsyncSession, evaluation: SignalEvaluation) -> None:
+    session.add(evaluation)
+    await session.flush()
+
+
+async def _evaluate_signal_horizon(
+    session: AsyncSession,
+    signal: Signal,
+    *,
+    horizon_key: str,
+    horizon_delta: timedelta,
+    now: datetime,
+) -> tuple[int, bool]:
+    fired_at = _ensure_utc(signal.fired_at)
+    target_time = fired_at + horizon_delta
+
+    # Not yet time for this horizon.
+    if target_time > now:
+        return 0, False
+
+    with session.no_autoflush:
+        existing = await session.execute(
+            select(SignalEvaluation.id).where(
+                SignalEvaluation.signal_id == signal.id,
+                SignalEvaluation.horizon == horizon_key,
+            )
+        )
+        if existing.scalar_one_or_none() is not None:
+            return 0, True
+
+        if signal.outcome_id is None or signal.price_at_fire is None:
+            return 0, True
+
+        snap = await _closest_snapshot(session, signal.outcome_id, target_time)
+
+    if snap is None:
+        # No data yet, might arrive later.
+        return 0, False
+
+    price_change = snap.price - signal.price_at_fire
+    price_change_pct = _bounded_price_change_pct(
+        price_change=price_change,
+        price_at_fire=signal.price_at_fire,
+        signal_id=signal.id,
+        horizon=horizon_key,
+    )
+
+    evaluation = SignalEvaluation(
+        id=uuid.uuid4(),
+        signal_id=signal.id,
+        horizon=horizon_key,
+        price_at_eval=snap.price,
+        price_change=price_change,
+        price_change_pct=price_change_pct,
+        evaluated_at=now,
+    )
+
+    async with session.begin_nested():
+        await _persist_signal_evaluation(session, evaluation)
+
+    return 1, True
 
 
 async def evaluate_signals(session: AsyncSession) -> int:
     """Evaluate unresolved signals at each horizon. Returns evaluations created."""
     now = datetime.now(timezone.utc)
     created = 0
+    resolved_changed = False
+    stats = {"created": 0, "failed": 0}
+    session.sync_session.info["signal_evaluation_stats"] = stats
 
     # Get unresolved signals
     result = await session.execute(
@@ -46,59 +140,37 @@ async def evaluate_signals(session: AsyncSession) -> int:
         all_horizons_done = True
 
         for horizon_key, horizon_delta in HORIZONS.items():
-            fired_at = _ensure_utc(signal.fired_at)
-            target_time = fired_at + horizon_delta
-
-            # Not yet time for this horizon
-            if target_time > now:
-                all_horizons_done = False
-                continue
-
-            # Already evaluated?
-            existing = await session.execute(
-                select(SignalEvaluation.id).where(
-                    SignalEvaluation.signal_id == signal.id,
-                    SignalEvaluation.horizon == horizon_key,
+            try:
+                created_delta, horizon_done = await _evaluate_signal_horizon(
+                    session,
+                    signal,
+                    horizon_key=horizon_key,
+                    horizon_delta=horizon_delta,
+                    now=now,
                 )
-            )
-            if existing.scalar_one_or_none() is not None:
-                continue
-
-            if signal.outcome_id is None or signal.price_at_fire is None:
-                continue
-
-            # Find closest snapshot to target_time
-            snap = await _closest_snapshot(
-                session, signal.outcome_id, target_time
-            )
-            if snap is None:
-                # No data yet, might arrive later
+            except Exception:
+                stats["failed"] += 1
                 all_horizons_done = False
+                logger.warning(
+                    "Signal evaluation failed for signal %s horizon %s",
+                    signal.id,
+                    horizon_key,
+                    exc_info=True,
+                )
                 continue
 
-            price_change = snap.price - signal.price_at_fire
-            if signal.price_at_fire > 0:
-                price_change_pct = (price_change / signal.price_at_fire) * 100
-            else:
-                price_change_pct = Decimal("0")
+            created += created_delta
+            stats["created"] = created
+            if not horizon_done:
+                all_horizons_done = False
 
-            evaluation = SignalEvaluation(
-                id=uuid.uuid4(),
-                signal_id=signal.id,
-                horizon=horizon_key,
-                price_at_eval=snap.price,
-                price_change=price_change,
-                price_change_pct=price_change_pct.quantize(Decimal("0.01")),
-                evaluated_at=now,
-            )
-            session.add(evaluation)
-            created += 1
-
-        if all_horizons_done:
+        if all_horizons_done and not signal.resolved:
             signal.resolved = True
+            resolved_changed = True
 
-    if created:
+    if created or resolved_changed:
         await session.commit()
+    if created:
         logger.info("Created %d signal evaluations", created)
 
     return created

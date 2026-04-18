@@ -26,6 +26,7 @@ from app.metrics import (
     polymarket_book_recon_manual_resync_runs,
     polymarket_book_recon_rows_applied,
 )
+from app.models.market import Market, Outcome
 from app.models.polymarket_metadata import PolymarketAssetDim, PolymarketMarketParamHistory
 from app.models.polymarket_raw import (
     PolymarketBboEvent,
@@ -37,7 +38,7 @@ from app.models.polymarket_reconstruction import (
     PolymarketBookReconIncident,
     PolymarketBookReconState,
 )
-from app.models.polymarket_stream import PolymarketIngestIncident
+from app.models.polymarket_stream import PolymarketIngestIncident, PolymarketWatchAsset
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +367,11 @@ class PolymarketBookReconstructionService:
     async def _resolve_scope(self, session: AsyncSession, asset_ids: list[str] | None) -> list[str]:
         target_asset_ids = [str(value) for value in (asset_ids or []) if value]
         if not target_asset_ids:
-            target_asset_ids = await list_watched_polymarket_assets(session)
+            target_asset_ids = await list_watched_polymarket_assets(
+                session,
+                limit=max(1, settings.polymarket_book_recon_max_watched_assets),
+                prioritize=True,
+            )
         max_assets = max(1, settings.polymarket_book_recon_max_watched_assets)
         return target_asset_ids[:max_assets]
 
@@ -1154,9 +1159,24 @@ async def fetch_polymarket_book_recon_status(session: AsyncSession) -> dict[str,
         )
     ).all()
     counts = {status: int(count or 0) for status, count in state_counts}
-    watched_assets = await list_watched_polymarket_assets(session)
+    watched_asset_count = int(
+        (
+            await session.execute(
+                select(func.count(PolymarketWatchAsset.id))
+                .join(Outcome, PolymarketWatchAsset.outcome_id == Outcome.id)
+                .join(Market, Outcome.market_id == Market.id)
+                .where(
+                    PolymarketWatchAsset.watch_enabled.is_(True),
+                    Market.platform == "polymarket",
+                    Outcome.token_id.is_not(None),
+                )
+            )
+        ).scalar_one()
+        or 0
+    )
     live_count = counts.get("live", 0)
     drifted_count = counts.get("drifted", 0)
+    stale_count = counts.get("stale", 0)
     resyncing_count = counts.get("resyncing", 0)
     degraded_count = sum(counts.get(status, 0) for status in DEGRADED_STATUSES)
     last_successful_resync_at = (
@@ -1185,9 +1205,10 @@ async def fetch_polymarket_book_recon_status(session: AsyncSession) -> dict[str,
         "resync_cooldown_seconds": settings.polymarket_book_recon_resync_cooldown_seconds,
         "max_watched_assets": settings.polymarket_book_recon_max_watched_assets,
         "bbo_tolerance": settings.polymarket_book_recon_bbo_tolerance,
-        "watched_asset_count": len(watched_assets),
+        "watched_asset_count": watched_asset_count,
         "live_book_count": live_count,
         "drifted_asset_count": drifted_count,
+        "stale_asset_count": stale_count,
         "resyncing_asset_count": resyncing_count,
         "degraded_asset_count": degraded_count,
         "last_successful_resync_at": last_successful_resync_at,

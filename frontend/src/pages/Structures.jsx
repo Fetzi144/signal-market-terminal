@@ -31,7 +31,7 @@ const opportunityTypeOptions = [
   { value: "neg_risk_direct_vs_basket", label: "Neg-Risk" },
   { value: "binary_complement", label: "Complement / Parity" },
   { value: "event_sum_parity", label: "Augmented Neg-Risk" },
-  { value: "cross_venue_basis", label: "Cross-Venue Basis" },
+  { value: "cross_venue_basis", label: "Cross-Venue Basis (Disabled)" },
 ];
 
 const classificationOptions = [
@@ -258,6 +258,9 @@ export default function Structures() {
 
       {error && <InlineAlert tone="error">{error}</InlineAlert>}
       {actionError && <InlineAlert tone="warning">{actionError}</InlineAlert>}
+      <InlineAlert tone="warning">
+        Cross-venue basis stays review-disabled until paired executable hedge routing exists. Treat these rows as spread research, not true arbitrage.
+      </InlineAlert>
 
       <div
         style={{
@@ -453,6 +456,9 @@ export default function Structures() {
               {detail.cross_venue_link && (
                 <div>
                   <div style={sectionTitleStyle}>Cross-Venue Governance</div>
+                  <div style={{ fontSize: 12, color: "var(--yellow)", marginBottom: 10 }}>
+                    Cross-venue basis remains disabled for executable review until paired hedge routing exists.
+                  </div>
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10 }}>
                     <DetailStat label="Effective Review" value={detail.cross_venue_link.effective_review_status || "-"} />
                     <DetailStat label="Confidence" value={detail.cross_venue_link.confidence || "-"} />

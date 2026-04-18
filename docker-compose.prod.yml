@@ -29,6 +29,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://smt:${DB_PASSWORD:-smt}@db:5432/smt
       - LOG_LEVEL=INFO
       - LOG_FORMAT=json
+      - RUN_MIGRATIONS=true
       - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
       - ALERT_TELEGRAM_BOT_TOKEN=${ALERT_TELEGRAM_BOT_TOKEN:-}
       - ALERT_TELEGRAM_CHAT_ID=${ALERT_TELEGRAM_CHAT_ID:-}
@@ -62,6 +63,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://smt:${DB_PASSWORD:-smt}@db:5432/smt
       - LOG_LEVEL=INFO
       - LOG_FORMAT=json
+      - RUN_MIGRATIONS=false
       - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
       - ALERT_TELEGRAM_BOT_TOKEN=${ALERT_TELEGRAM_BOT_TOKEN:-}
       - ALERT_TELEGRAM_CHAT_ID=${ALERT_TELEGRAM_CHAT_ID:-}

@@ -1,6 +1,7 @@
 import asyncio
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
@@ -137,3 +138,108 @@ async def test_start_scheduler_releases_ownership_on_stop(monkeypatch):
     assert scheduler_module._scheduler_owner_token is None
     assert calls["released"] == 1
     assert calls["owner_token"] == "owner-fixed"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_supervisor_retries_until_lease_is_available(monkeypatch):
+    from app import worker as worker_module
+
+    fake_scheduler = _FakeScheduler()
+    attempts = {"count": 0}
+
+    async def fake_start_scheduler():
+        attempts["count"] += 1
+        if attempts["count"] >= 3:
+            fake_scheduler.running = True
+            return True
+        return False
+
+    monkeypatch.setattr(worker_module, "scheduler_runtime", fake_scheduler)
+    monkeypatch.setattr(worker_module, "start_scheduler", fake_start_scheduler)
+    monkeypatch.setattr(worker_module, "_scheduler_supervisor_retry_seconds", lambda: 0.01)
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(worker_module._run_scheduler_supervisor(stop_event))
+
+    try:
+        for _ in range(100):
+            if fake_scheduler.running:
+                break
+            await asyncio.sleep(0.01)
+        assert fake_scheduler.running is True
+        assert attempts["count"] == 3
+    finally:
+        stop_event.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_scheduler_supervisor_retries_after_local_scheduler_stops(monkeypatch):
+    from app import worker as worker_module
+
+    fake_scheduler = _FakeScheduler()
+    attempts = {"count": 0}
+
+    async def fake_start_scheduler():
+        attempts["count"] += 1
+        fake_scheduler.running = True
+        return True
+
+    monkeypatch.setattr(worker_module, "scheduler_runtime", fake_scheduler)
+    monkeypatch.setattr(worker_module, "start_scheduler", fake_start_scheduler)
+    monkeypatch.setattr(worker_module, "_scheduler_supervisor_retry_seconds", lambda: 0.01)
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(worker_module._run_scheduler_supervisor(stop_event))
+
+    try:
+        for _ in range(100):
+            if attempts["count"] >= 1:
+                break
+            await asyncio.sleep(0.01)
+        fake_scheduler.running = False
+        for _ in range(100):
+            if attempts["count"] >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert attempts["count"] >= 2
+        assert fake_scheduler.running is True
+    finally:
+        stop_event.set()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_records_error_run_when_horizons_fail(engine, monkeypatch):
+    from app.evaluation import evaluator as evaluator_module
+    from app.jobs import scheduler as scheduler_module
+    from app.models.ingestion import IngestionRun
+
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(scheduler_module, "async_session", async_sess)
+
+    async def fake_evaluate(session):
+        session.sync_session.info["signal_evaluation_stats"] = {
+            "created": 1,
+            "failed": 2,
+        }
+        return 1
+
+    monkeypatch.setattr(evaluator_module, "evaluate_signals", fake_evaluate)
+
+    await scheduler_module._run_evaluation()
+
+    async with async_sess() as session:
+        result = await session.execute(
+            select(IngestionRun)
+            .where(IngestionRun.run_type == "evaluation")
+            .order_by(IngestionRun.started_at.desc())
+            .limit(1)
+        )
+        run = result.scalar_one()
+
+    assert run.platform == "system"
+    assert run.status == "error"
+    assert run.markets_processed == 1
+    assert "2 signal evaluation horizon(s) failed" in (run.error or "")
+    assert run.finished_at is not None

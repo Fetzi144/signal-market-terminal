@@ -45,6 +45,7 @@ from app.ingestion.polymarket_maker_economics import (
     lookup_reward_history,
     lookup_token_fee_history,
 )
+from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.ingestion.polymarket_microstructure import (
     fetch_polymarket_feature_status,
     list_polymarket_feature_runs,
@@ -79,6 +80,7 @@ from app.ingestion.polymarket_stream import (
 )
 from app.models.market import Market, Outcome
 from app.models.polymarket_stream import PolymarketWatchAsset
+from app.strategy_families import build_strategy_family_reviews
 
 router = APIRouter(prefix="/api/v1/ingest/polymarket", tags=["ingest"])
 
@@ -249,6 +251,9 @@ class PolymarketRawStorageStatusOut(BaseModel):
     last_successful_book_snapshot_at: datetime | None = None
     last_successful_trade_backfill_at: datetime | None = None
     last_successful_oi_poll_at: datetime | None = None
+    book_snapshot_freshness_seconds: int | None = None
+    trade_backfill_freshness_seconds: int | None = None
+    oi_poll_freshness_seconds: int | None = None
     rows_inserted_24h: dict[str, int]
     recent_capture_runs: list[PolymarketRawCaptureRunOut]
 
@@ -320,12 +325,50 @@ class PolymarketBookReconStatusOut(BaseModel):
     watched_asset_count: int
     live_book_count: int
     drifted_asset_count: int
+    stale_asset_count: int
     resyncing_asset_count: int
     degraded_asset_count: int
     last_successful_resync_at: datetime | None = None
     recent_incident_count: int
     status_counts: dict[str, int]
     recent_incidents: list[PolymarketBookReconIncidentOut]
+
+
+class PolymarketReplayStatusOut(BaseModel):
+    enabled: bool
+    on_startup: bool
+    interval_seconds: int
+    default_window_minutes: int
+    max_scenarios_per_run: int
+    structure_enabled: bool
+    maker_enabled: bool
+    risk_adjustments_enabled: bool
+    require_complete_book_coverage: bool
+    passive_fill_timeout_seconds: int
+    advisory_only: bool
+    live_disabled_by_default: bool
+    last_replay_run: dict[str, Any] | None = None
+    last_successful_policy_comparison: dict[str, Any] | None = None
+    recent_scenario_count_24h: int
+    recent_coverage_limited_run_count_24h: int
+    recent_failed_run_count_24h: int
+    coverage_mode: str
+    configured_supported_detectors: list[str]
+    supported_detectors: list[str]
+    unsupported_detectors: list[str]
+    recent_variant_summary: dict[str, dict[str, Any]]
+    recent_runs: list[dict[str, Any]]
+
+
+class StrategyFamilyReviewOut(BaseModel):
+    family: str
+    label: str
+    posture: str
+    configured: bool
+    review_enabled: bool
+    primary_surface: str
+    description: str
+    disabled_reason: str | None = None
 
 
 class PolymarketWatchAssetOut(BaseModel):
@@ -387,10 +430,13 @@ class PaginatedFeatureRunsOut(BaseModel):
 
 
 class PolymarketIngestStatusOut(BaseModel):
+    enabled: bool
     connected: bool
     connection_started_at: datetime | None = None
     current_connection_id: uuid.UUID | None = None
     last_event_received_at: datetime | None = None
+    heartbeat_freshness_seconds: int | None = None
+    continuity_status: str
     active_watch_count: int
     watched_asset_count: int
     active_subscription_count: int
@@ -415,6 +461,8 @@ class PolymarketIngestStatusOut(BaseModel):
     features: PolymarketFeatureStatusOut
     execution_policy: PolymarketExecutionPolicyStatusOut
     maker_economics: PolymarketMakerStatusOut
+    replay: PolymarketReplayStatusOut
+    strategy_families: list[StrategyFamilyReviewOut]
     structure_engine: dict[str, Any]
 
 
@@ -632,6 +680,8 @@ async def get_polymarket_ingest_status(db: AsyncSession = Depends(get_db)):
     status["features"] = await fetch_polymarket_feature_status(db)
     status["execution_policy"] = await fetch_polymarket_execution_policy_status(db)
     status["maker_economics"] = await fetch_polymarket_maker_status(db)
+    status["replay"] = await fetch_polymarket_replay_status(db)
+    status["strategy_families"] = build_strategy_family_reviews()
     status["structure_engine"] = await fetch_market_structure_status(db)
     return status
 

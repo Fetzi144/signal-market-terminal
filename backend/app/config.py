@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     polymarket_stream_reconnect_base_seconds: float = 1.0
     polymarket_stream_reconnect_max_seconds: float = 30.0
     polymarket_stream_ping_interval_seconds: int = 10
+    polymarket_stream_max_message_bytes: int = 8 * 1024 * 1024
     polymarket_watch_reconcile_interval_seconds: int = 30
     polymarket_gap_suspect_after_seconds: int = 30
     polymarket_malformed_burst_threshold: int = 5
@@ -81,6 +82,7 @@ class Settings(BaseSettings):
     polymarket_book_recon_auto_resync_enabled: bool = True
     polymarket_book_recon_stale_after_seconds: int = 900
     polymarket_book_recon_resync_cooldown_seconds: int = 60
+    polymarket_snapshot_max_watched_assets: int = 1000
     polymarket_book_recon_max_watched_assets: int = 500
     polymarket_book_recon_bbo_tolerance: float = 0.0
     polymarket_book_recon_bootstrap_lookback_hours: int = 48
@@ -391,6 +393,7 @@ class Settings(BaseSettings):
         "strategy_review_lookback_days",
         "strategy_review_recent_mistakes_limit",
         "polymarket_malformed_burst_threshold",
+        "polymarket_snapshot_max_watched_assets",
         "polymarket_book_recon_max_watched_assets",
         "polymarket_book_recon_bootstrap_lookback_hours",
         "polymarket_features_lookback_hours",

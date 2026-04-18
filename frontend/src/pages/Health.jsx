@@ -265,6 +265,10 @@ export default function Health() {
   const replayStatus = health?.polymarket_phase11 || null;
   const phase12Status = health?.polymarket_phase12 || null;
   const structureStatus = health?.polymarket_phase8a || streamStatus?.structure_engine || null;
+  const schedulerLease = health?.scheduler_lease || null;
+  const defaultStrategyRuntime = health?.default_strategy_runtime || null;
+  const runtimeInvariants = health?.runtime_invariants || [];
+  const strategyFamilies = health?.strategy_families || streamStatus?.strategy_families || [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -309,9 +313,105 @@ export default function Health() {
         />
       </div>
 
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+        <div style={panelStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Benchmark Runtime</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              Lease freshness, backlog, and evaluator guardrails for the frozen default strategy.
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 12,
+            }}
+          >
+            <StatCard label="Lease Owner" value={shortId(schedulerLease?.owner_token)} />
+            <StatCard label="Lease Heartbeat" value={formatFreshness(schedulerLease?.heartbeat_freshness_seconds)} />
+            <StatCard label="Lease Expiry" value={formatFreshness(schedulerLease?.expires_in_seconds)} />
+            <StatCard label="Overdue Trades" value={defaultStrategyRuntime?.overdue_open_trades ?? 0} />
+            <StatCard label="Last Backfill" value={formatShortDateTime(defaultStrategyRuntime?.last_resolution_backfill_at)} />
+            <StatCard label="Backfill Count" value={defaultStrategyRuntime?.last_resolution_backfill_count ?? 0} />
+            <StatCard label="Clamp Count (24h)" value={defaultStrategyRuntime?.evaluation_clamp_count_24h ?? 0} />
+            <StatCard label="Last Eval Failure" value={formatShortDateTime(defaultStrategyRuntime?.last_evaluation_failure_at)} />
+          </div>
+          {schedulerLease?.owner_token && (
+            <div style={{ marginTop: 12, fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--mono)" }}>
+              Owner token {schedulerLease.owner_token}
+            </div>
+          )}
+        </div>
+
+        <div style={panelStyle}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Unattended Invariants</div>
+            <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+              These checks should stay green if the worker is safe to leave unattended.
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {runtimeInvariants.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>No runtime invariants reported yet.</div>
+            ) : (
+              runtimeInvariants.map((invariant) => (
+                <div
+                  key={invariant.key}
+                  style={{
+                    background: "rgba(255, 255, 255, 0.02)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 10,
+                    padding: 12,
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600 }}>{invariant.label}</div>
+                    <span style={strategyPostureStyle(invariant.status)}>
+                      {formatStrategyPosture(invariant.status)}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                    {invariant.detail}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </section>
+
       <section>
         <h3 style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Notifications</h3>
         <PushNotificationToggle />
+      </section>
+
+      <section style={panelStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 600 }}>Strategy Families</div>
+          <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
+            Default benchmark stays frozen while structure and maker research advance.
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          {strategyFamilies.map((family) => (
+            <div key={family.family} style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{family.label}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>{family.primary_surface}</div>
+                </div>
+                <span style={strategyPostureStyle(family.posture)}>
+                  {formatStrategyPosture(family.posture)}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>{family.description}</div>
+              {family.disabled_reason && (
+                <div style={{ fontSize: 11, color: "var(--yellow)", marginTop: 8 }}>{family.disabled_reason}</div>
+              )}
+            </div>
+          ))}
+        </div>
       </section>
 
       <section style={panelStyle}>
@@ -320,9 +420,12 @@ export default function Health() {
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <h3 style={{ fontSize: 14, fontWeight: 600 }}>Polymarket Stream</h3>
               <StatusPill connected={streamStatus?.connected} />
+              <span style={strategyPostureStyle(streamStatus?.continuity_status)}>
+                {formatContinuityStatus(streamStatus?.continuity_status)}
+              </span>
             </div>
             <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
-              Connection {shortId(streamStatus?.current_connection_id)} | Last event {formatDateTime(streamStatus?.last_event_received_at)}
+              Connection {shortId(streamStatus?.current_connection_id)} | Last event {formatDateTime(streamStatus?.last_event_received_at)} | Heartbeat {formatFreshness(streamStatus?.heartbeat_freshness_seconds)}
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -370,6 +473,7 @@ export default function Health() {
           <StatCard label="Reconnects" value={streamStatus?.reconnect_count ?? 0} />
           <StatCard label="Gap Suspicions" value={streamStatus?.gap_suspected_count ?? 0} />
           <StatCard label="Malformed" value={streamStatus?.malformed_message_count ?? 0} />
+          <StatCard label="Continuity" value={formatContinuityStatus(streamStatus?.continuity_status)} />
           <StatCard label="Last Resync" value={formatShortDateTime(streamStatus?.last_successful_resync_at)} />
           <StatCard
             label="Watched / Subscribed"
@@ -444,9 +548,9 @@ export default function Health() {
               label="Raw Watermark"
               value={`${rawStorage?.last_projected_raw_event_id ?? 0} / ${rawStorage?.latest_relevant_raw_event_id ?? 0}`}
             />
-            <StatCard label="Book Snapshots" value={formatShortDateTime(rawStorage?.last_successful_book_snapshot_at)} />
-            <StatCard label="Trade Backfill" value={formatShortDateTime(rawStorage?.last_successful_trade_backfill_at)} />
-            <StatCard label="OI Poll" value={formatShortDateTime(rawStorage?.last_successful_oi_poll_at)} />
+            <StatCard label="Book Snapshots" value={`${formatShortDateTime(rawStorage?.last_successful_book_snapshot_at)} | ${formatFreshness(rawStorage?.book_snapshot_freshness_seconds)}`} />
+            <StatCard label="Trade Backfill" value={`${formatShortDateTime(rawStorage?.last_successful_trade_backfill_at)} | ${formatFreshness(rawStorage?.trade_backfill_freshness_seconds)}`} />
+            <StatCard label="OI Poll" value={`${formatShortDateTime(rawStorage?.last_successful_oi_poll_at)} | ${formatFreshness(rawStorage?.oi_poll_freshness_seconds)}`} />
             <StatCard
               label="Rows 24h"
               value={`${rawStorage?.rows_inserted_24h?.book_snapshots ?? 0}/${rawStorage?.rows_inserted_24h?.book_deltas ?? 0}/${rawStorage?.rows_inserted_24h?.trade_tape ?? 0}`}
@@ -528,6 +632,7 @@ export default function Health() {
               value={`${bookReconstruction?.live_book_count ?? 0} / ${bookReconstruction?.watched_asset_count ?? 0}`}
             />
             <StatCard label="Drifted" value={bookReconstruction?.drifted_asset_count ?? 0} />
+            <StatCard label="Stale" value={bookReconstruction?.stale_asset_count ?? 0} />
             <StatCard label="Resyncing" value={bookReconstruction?.resyncing_asset_count ?? 0} />
             <StatCard label="Degraded" value={bookReconstruction?.degraded_asset_count ?? 0} />
             <StatCard label="Incidents (24h)" value={bookReconstruction?.recent_incident_count ?? 0} />
@@ -899,6 +1004,9 @@ export default function Health() {
               label="Window / Timeout"
               value={replayStatus ? `${replayStatus.default_window_minutes}m / ${replayStatus.passive_fill_timeout_seconds}s` : "-"}
             />
+            <StatCard label="Coverage Mode" value={replayStatus?.coverage_mode || "-"} />
+            <StatCard label="Supported Detectors" value={(replayStatus?.supported_detectors || []).join(" | ") || "-"} />
+            <StatCard label="Unsupported Detectors" value={(replayStatus?.unsupported_detectors || []).join(" | ") || "-"} />
           </div>
           <div
             style={{
@@ -1324,6 +1432,51 @@ function formatActionMix(value) {
   return Object.entries(value)
     .map(([action, count]) => `${action}:${count}`)
     .join(" | ");
+}
+
+function formatFreshness(value) {
+  if (value == null || Number.isNaN(Number(value))) return "-";
+  return `${Number(value)}s`;
+}
+
+function formatContinuityStatus(value) {
+  if (!value) return "Unknown";
+  return String(value).replace(/_/g, " ");
+}
+
+function formatStrategyPosture(value) {
+  if (!value) return "unknown";
+  return String(value).replace(/_/g, " ");
+}
+
+function strategyPostureStyle(value) {
+  const normalized = String(value || "").toLowerCase();
+  const isGood = normalized === "healthy" || normalized === "research_active" || normalized === "passing";
+  const isWarning = normalized === "stale" || normalized === "advisory_only" || normalized === "benchmark_only" || normalized === "awaiting_events" || normalized === "not_applicable";
+  const isBad = normalized === "disabled" || normalized === "disconnected" || normalized === "failing" || normalized === "failed";
+  const borderColor = isGood
+    ? "rgba(0, 214, 143, 0.35)"
+    : isBad
+      ? "rgba(255, 112, 112, 0.35)"
+      : "rgba(255, 214, 61, 0.35)";
+  const color = isGood ? "var(--green)" : isBad ? "var(--red)" : "var(--yellow)";
+  const background = isGood
+    ? "rgba(0, 214, 143, 0.08)"
+    : isBad
+      ? "rgba(255, 112, 112, 0.08)"
+      : "rgba(255, 214, 61, 0.08)";
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    borderRadius: 999,
+    padding: "4px 10px",
+    fontSize: 11,
+    fontWeight: 600,
+    textTransform: "uppercase",
+    border: `1px solid ${borderColor}`,
+    color,
+    background,
+  };
 }
 
 function formatUsd(value) {

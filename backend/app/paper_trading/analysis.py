@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import math
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.backtesting.comparison import compare_strategy_measurement_modes, empty_strategy_measurement_modes
@@ -20,6 +21,7 @@ from app.metrics import (
     default_strategy_pending_decision_max_age_seconds,
 )
 from app.models.execution_decision import ExecutionDecision
+from app.models.market import Market
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
 from app.signals.probability import brier_score
@@ -306,6 +308,28 @@ def _publish_pending_decision_metrics(pending_watch: dict) -> None:
     default_strategy_pending_decision_max_age_seconds.set(float(pending_watch.get("max_age_seconds", 0.0) or 0.0))
 
 
+async def get_overdue_open_trade_count(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None = None,
+) -> int:
+    now = datetime.now(timezone.utc)
+    query = (
+        select(func.count(PaperTrade.id))
+        .join(Market, Market.id == PaperTrade.market_id)
+        .where(
+            PaperTrade.status == "open",
+            or_(
+                Market.active.is_(False),
+                Market.end_date < now,
+            ),
+        )
+    )
+    if strategy_run_id is not None:
+        query = query.where(PaperTrade.strategy_run_id == strategy_run_id)
+    return int((await session.execute(query)).scalar_one() or 0)
+
+
 async def get_default_strategy_run_lookup(session: AsyncSession) -> dict:
     strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
     launch_boundary = get_default_strategy_launch_boundary()
@@ -581,7 +605,7 @@ async def get_strategy_health(session: AsyncSession) -> dict:
             "trade_funnel": scope["trade_funnel"],
             "pending_decision_watch": scope["pending_decision_watch"],
             "skip_reasons": [],
-            "headline": {"open_exposure": 0.0, "open_trades": 0, "resolved_trades": 0, "resolved_signals": 0, "missing_resolutions": 0, "cumulative_pnl": 0.0, "avg_clv": None, "profit_factor": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "drawdown_pct": None, "current_equity": None, "peak_equity": None, "brier_score": None},
+            "headline": {"open_exposure": 0.0, "open_trades": 0, "resolved_trades": 0, "resolved_signals": 0, "missing_resolutions": 0, "overdue_open_trades": 0, "cumulative_pnl": 0.0, "avg_clv": None, "profit_factor": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "drawdown_pct": None, "current_equity": None, "peak_equity": None, "brier_score": None},
             "execution_realism": {"shadow_cumulative_pnl": 0.0, "shadow_profit_factor": 0.0, "liquidity_constrained_trades": 0, "trades_missing_orderbook_context": 0},
             "risk_blocks": scope["risk_block_summary"],
             "run_integrity": {"pre_launch_candidate_signals": 0, "excluded_pre_launch_trades": 0, "excluded_legacy_trades": 0, "trades_missing_orderbook_context": 0, "integrity_errors": [], "debug_drawdown": {"reconstructed_max_drawdown": 0.0, "reconstructed_current_equity": None}},
@@ -632,6 +656,10 @@ async def get_strategy_health(session: AsyncSession) -> dict:
 
     minimum_days = settings.default_strategy_min_observation_days
     remaining_days = max(0, math.ceil(minimum_days - days_tracked)) if days_tracked is not None and days_tracked < minimum_days else 0
+    overdue_open_trades = await get_overdue_open_trade_count(
+        session,
+        strategy_run_id=strategy_run.id,
+    )
     return {
         "strategy": contract,
         "strategy_run": serialize_strategy_run(strategy_run),
@@ -641,7 +669,7 @@ async def get_strategy_health(session: AsyncSession) -> dict:
         "trade_funnel": scope["trade_funnel"],
         "pending_decision_watch": scope["pending_decision_watch"],
         "skip_reasons": scope["skip_reasons"],
-        "headline": {"open_exposure": float(portfolio["open_exposure"]), "open_trades": len(portfolio["open_trades"]), "resolved_trades": metrics["total_trades"], "resolved_signals": scope["trade_funnel"]["resolved_signals"], "missing_resolutions": scope["trade_funnel"]["unresolved_traded_signals"], "cumulative_pnl": metrics["cumulative_pnl"], "avg_clv": _safe_float(avg_clv.quantize(Decimal("0.000001"))) if avg_clv is not None else None, "profit_factor": metrics["profit_factor"], "win_rate": metrics["win_rate"], "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None, "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None, "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None, "peak_equity": float(strategy_run.peak_equity) if strategy_run.peak_equity is not None else None, "brier_score": _safe_float(default_brier.quantize(Decimal("0.000001"))) if default_brier is not None else None},
+        "headline": {"open_exposure": float(portfolio["open_exposure"]), "open_trades": len(portfolio["open_trades"]), "resolved_trades": metrics["total_trades"], "resolved_signals": scope["trade_funnel"]["resolved_signals"], "missing_resolutions": scope["trade_funnel"]["unresolved_traded_signals"], "overdue_open_trades": overdue_open_trades, "cumulative_pnl": metrics["cumulative_pnl"], "avg_clv": _safe_float(avg_clv.quantize(Decimal("0.000001"))) if avg_clv is not None else None, "profit_factor": metrics["profit_factor"], "win_rate": metrics["win_rate"], "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None, "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None, "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None, "peak_equity": float(strategy_run.peak_equity) if strategy_run.peak_equity is not None else None, "brier_score": _safe_float(default_brier.quantize(Decimal("0.000001"))) if default_brier is not None else None},
         "execution_realism": {"shadow_cumulative_pnl": metrics["shadow_cumulative_pnl"], "shadow_profit_factor": metrics["shadow_profit_factor"], "liquidity_constrained_trades": metrics["liquidity_constrained_trades"], "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"]},
         "risk_blocks": scope["risk_block_summary"],
         "run_integrity": {"pre_launch_candidate_signals": scope["trade_funnel"]["pre_launch_candidate_signals"], "excluded_pre_launch_trades": scope["trade_funnel"]["excluded_pre_launch_trades"], "excluded_legacy_trades": scope["trade_funnel"]["excluded_legacy_trades"], "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"], "integrity_errors": scope["trade_funnel"]["integrity_errors"], "debug_drawdown": {"reconstructed_max_drawdown": metrics["max_drawdown"], "reconstructed_current_equity": round(float(settings.default_bankroll) + metrics["cumulative_pnl"], 2)}},

@@ -5,7 +5,7 @@ from contextlib import suppress
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.config import settings
 from app.db import async_session
@@ -245,11 +245,17 @@ async def _run_paper_trading(session, signals):
     from app.models.execution_decision import ExecutionDecision
     from app.models.signal import Signal
     from app.paper_trading.engine import attempt_open_trade, ensure_pending_execution_decision
+    from app.paper_trading.reconciliation import (
+        backfill_execution_decisions_from_strategy_metadata,
+        hydrate_strategy_run_state,
+        load_missing_qualified_signals,
+    )
     from app.strategy_runs.service import get_active_strategy_run
 
     count = 0
     candidate_count = 0
     retry_candidates = 0
+    backlog_candidates = 0
     skip_counts: dict[str, int] = {}
     strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
     if strategy_run is None:
@@ -259,8 +265,24 @@ async def _run_paper_trading(session, signals):
             len(signals),
         )
         return
+    state_rehydrated = await hydrate_strategy_run_state(session, strategy_run)
     baseline_start_at = strategy_run.started_at.isoformat() if strategy_run.started_at else None
     fresh_signal_ids = {signal.id for signal in signals}
+    missing_backlog_signals = await load_missing_qualified_signals(
+        session,
+        strategy_run,
+        exclude_signal_ids=fresh_signal_ids,
+    )
+    backfilled_signal_ids = await backfill_execution_decisions_from_strategy_metadata(
+        session,
+        strategy_run,
+        signals=missing_backlog_signals,
+    )
+    backlog_retry_signals = [
+        signal
+        for signal in missing_backlog_signals
+        if signal.id not in backfilled_signal_ids
+    ]
     pending_signal_result = await session.execute(
         select(Signal)
         .join(ExecutionDecision, ExecutionDecision.signal_id == Signal.id)
@@ -275,20 +297,25 @@ async def _run_paper_trading(session, signals):
         for signal in pending_signal_result.scalars().all()
         if signal.id not in fresh_signal_ids
     ]
-    work_items = ([(signal, False) for signal in signals]
-                  + [(signal, True) for signal in pending_retry_signals])
+    work_items = (
+        [(signal, "fresh_signal") for signal in signals]
+        + [(signal, "retry") for signal in pending_retry_signals]
+        + [(signal, "backlog_repair") for signal in backlog_retry_signals]
+    )
 
-    for signal, is_retry in work_items:
+    for signal, attempt_kind in work_items:
         evaluation = evaluate_default_strategy_signal(signal, started_at=strategy_run.started_at)
         if not evaluation.signal_type_match or not evaluation.in_window:
             continue
 
         candidate_count += 1
-        if is_retry:
+        if attempt_kind == "retry":
             retry_candidates += 1
+        elif attempt_kind == "backlog_repair":
+            backlog_candidates += 1
         market_question = (signal.details or {}).get("market_question", "")
         attempted_at = datetime.now(timezone.utc).isoformat()
-        if evaluation.eligible and not is_retry:
+        if evaluation.eligible and attempt_kind != "retry":
             await ensure_pending_execution_decision(
                 session=session,
                 signal_id=signal.id,
@@ -321,7 +348,7 @@ async def _run_paper_trading(session, signals):
             "strategy_run_id": str(strategy_run.id),
             "baseline_start_at": baseline_start_at,
             "evaluated_at": attempted_at,
-            "attempt_kind": "retry" if is_retry else "fresh_signal",
+            "attempt_kind": attempt_kind,
             "eligible": evaluation.eligible,
             "decision": result.decision,
             "reason_code": result.reason_code,
@@ -340,8 +367,18 @@ async def _run_paper_trading(session, signals):
             reason_code = strategy_details.get("reason_code") or "unknown"
             skip_counts[reason_code] = skip_counts.get(reason_code, 0) + 1
 
-    if candidate_count > 0:
+    if candidate_count > 0 or state_rehydrated or backfilled_signal_ids:
         await session.commit()
+        if state_rehydrated:
+            logger.warning(
+                "Paper trading rehydrated incomplete risk state for strategy run %s",
+                strategy_run.id,
+            )
+        if backfilled_signal_ids:
+            logger.warning(
+                "Paper trading backfilled %d historical execution decision(s) from stored signal metadata",
+                len(backfilled_signal_ids),
+            )
         logger.info(
             "Paper trading: opened %d trades from %d in-window default-strategy signal(s)",
             count,
@@ -351,6 +388,11 @@ async def _run_paper_trading(session, signals):
             logger.info(
                 "Paper trading: retried %d pending execution decision(s)",
                 retry_candidates,
+            )
+        if backlog_candidates:
+            logger.info(
+                "Paper trading: repaired %d qualified signal(s) that were missing execution decisions",
+                backlog_candidates,
             )
         if skip_counts:
             logger.info("Paper trading skips by reason: %s", skip_counts)
@@ -469,47 +511,201 @@ async def _run_resolution():
             )
             session.add(run)
             await session.flush()
+            connector = None
+            backfill_run = None
             try:
                 connector = get_connector(platform)
                 resolved_markets = await connector.fetch_resolved_markets(since_hours=24)
+                overdue_open_trade_resolutions = await _fetch_overdue_open_trade_resolutions(
+                    session,
+                    connector,
+                    platform=platform,
+                )
+                if platform == "kalshi":
+                    backfill_run = IngestionRun(
+                        run_type="resolution_backfill",
+                        platform=platform,
+                        status="success",
+                        markets_processed=len(overdue_open_trade_resolutions),
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                    session.add(backfill_run)
+                if overdue_open_trade_resolutions:
+                    resolved_markets.extend(overdue_open_trade_resolutions)
                 count = 0
                 if resolved_markets:
                     count = await resolve_signals(session, platform, resolved_markets)
                     total += count
                     # Resolve paper trades for settled markets
-                    await _resolve_paper_trades(session, resolved_markets)
-                await connector.close()
+                    await _resolve_paper_trades(session, resolved_markets, platform=platform)
                 run.status = "success"
                 run.markets_processed = count
             except Exception:
                 logger.error("Job: resolution failed for %s", platform, exc_info=True)
                 run.status = "error"
+                if platform == "kalshi" and backfill_run is None:
+                    backfill_run = IngestionRun(
+                        run_type="resolution_backfill",
+                        platform=platform,
+                        status="error",
+                    )
+                    session.add(backfill_run)
+                if backfill_run is not None and backfill_run.status != "success":
+                    backfill_run.status = "error"
+                    backfill_run.finished_at = datetime.now(timezone.utc)
                 import traceback
-                run.error = traceback.format_exc()[-500:]
+                error_summary = traceback.format_exc()[-500:]
+                run.error = error_summary
+                if backfill_run is not None and backfill_run.error is None:
+                    backfill_run.error = error_summary
+            finally:
+                if connector is not None:
+                    try:
+                        await connector.close()
+                    except Exception:
+                        logger.warning("Failed to close %s connector after resolution job", platform, exc_info=True)
             run.finished_at = datetime.now(timezone.utc)
             await session.commit()
         logger.info("Job: resolution done, %d signals resolved", total)
 
 
-async def _resolve_paper_trades(session, resolved_markets):
-    """Resolve paper trades when markets settle."""
+async def _resolved_trade_outcomes_for_market_data(session, market_data, *, platform: str | None = None):
     import uuid
+
+    from app.models.market import Market, Outcome
+
+    resolved_outcomes: list[tuple[uuid.UUID, bool]] = []
+    for outcome in market_data.get("outcomes", []):
+        outcome_id = outcome.get("id") or outcome.get("outcome_id")
+        won = outcome.get("won", False)
+        if not outcome_id:
+            continue
+        try:
+            resolved_outcomes.append((uuid.UUID(str(outcome_id)), bool(won)))
+        except ValueError:
+            continue
+
+    if resolved_outcomes or platform is None:
+        return resolved_outcomes
+
+    platform_id = market_data.get("platform_id")
+    winner = market_data.get("winning_outcome")
+    if winner is None:
+        winner = market_data.get("winner")
+    if not platform_id or winner is None:
+        return []
+
+    market_result = await session.execute(
+        select(Market).where(
+            Market.platform == platform,
+            Market.platform_id == str(platform_id),
+        )
+    )
+    market = market_result.scalar_one_or_none()
+    if market is None:
+        return []
+
+    outcome_result = await session.execute(select(Outcome).where(Outcome.market_id == market.id))
+    outcomes = outcome_result.scalars().all()
+    if not outcomes:
+        return []
+
+    winner_text = str(winner).strip().lower()
+    winning_outcome_ids = {
+        outcome.id
+        for outcome in outcomes
+        if (outcome.name or "").strip().lower() == winner_text
+        or (outcome.platform_outcome_id or "").strip().lower() == winner_text
+        or (platform == "kalshi" and (outcome.platform_outcome_id or "").strip().lower().endswith(f"_{winner_text}"))
+    }
+    if not winning_outcome_ids:
+        return []
+
+    return [(outcome.id, outcome.id in winning_outcome_ids) for outcome in outcomes]
+
+
+async def _fetch_overdue_open_trade_resolutions(session, connector, *, platform: str) -> list[dict]:
+    if platform != "kalshi":
+        return []
+
+    from app.models.market import Market
+    from app.models.paper_trade import PaperTrade
+
+    now = datetime.now(timezone.utc)
+    ticker_result = await session.execute(
+        select(Market.platform_id)
+        .join(PaperTrade, PaperTrade.market_id == Market.id)
+        .where(
+            Market.platform == platform,
+            PaperTrade.status == "open",
+            Market.platform_id.is_not(None),
+            or_(
+                Market.active.is_(False),
+                Market.end_date < now,
+            ),
+        )
+        .distinct()
+    )
+    tickers = [ticker for ticker in ticker_result.scalars().all() if ticker]
+    if not tickers:
+        return []
+
+    resolved_markets: list[dict] = []
+    for start in range(0, len(tickers), 200):
+        batch = tickers[start : start + 200]
+        try:
+            response = await connector._request_with_retry(
+                "get",
+                f"{connector.api_base}/markets",
+                params={"tickers": ",".join(batch)},
+            )
+        except Exception:
+            logger.warning(
+                "Kalshi overdue open-trade resolution fetch failed for tickers %s",
+                batch,
+                exc_info=True,
+            )
+            continue
+
+        for market_data in response.json().get("markets") or []:
+            status = str(market_data.get("status") or "").strip().lower()
+            result = market_data.get("result")
+            if status not in {"settled", "finalized"} or result is None:
+                continue
+            resolved_markets.append(
+                {
+                    "platform_id": market_data.get("ticker", ""),
+                    "winning_outcome": result,
+                }
+            )
+
+    if resolved_markets:
+        logger.info(
+            "Kalshi overdue open-trade backfill found %d resolved markets",
+            len(resolved_markets),
+        )
+
+    return resolved_markets
+
+
+async def _resolve_paper_trades(session, resolved_markets, *, platform: str | None = None):
+    """Resolve paper trades when markets settle."""
 
     from app.paper_trading.engine import resolve_trades
 
     total = 0
     for market_data in resolved_markets:
-        outcomes = market_data.get("outcomes", [])
-        for outcome in outcomes:
-            outcome_id = outcome.get("id") or outcome.get("outcome_id")
-            won = outcome.get("won", False)
-            if outcome_id:
-                try:
-                    oid = uuid.UUID(str(outcome_id))
-                    count = await resolve_trades(session, oid, won)
-                    total += count
-                except (ValueError, Exception):
-                    continue
+        resolved_outcomes = await _resolved_trade_outcomes_for_market_data(
+            session,
+            market_data,
+            platform=platform,
+        )
+        for outcome_id, won in resolved_outcomes:
+            try:
+                count = await resolve_trades(session, outcome_id, won)
+                total += count
+            except Exception:
+                continue
 
     if total > 0:
         await session.commit()
@@ -518,14 +714,39 @@ async def _resolve_paper_trades(session, resolved_markets):
 
 async def _run_evaluation():
     from app.evaluation.evaluator import evaluate_signals
+    from app.models.ingestion import IngestionRun
 
     logger.info("Job: evaluation starting")
     async with async_session() as session:
+        run = IngestionRun(
+            run_type="evaluation",
+            platform="system",
+            status="running",
+        )
+        session.add(run)
+        await session.flush()
         try:
             count = await evaluate_signals(session)
+            stats = session.sync_session.info.pop("signal_evaluation_stats", {})
+            failed = int(stats.get("failed", 0) or 0)
+            run.markets_processed = count
+            if failed > 0:
+                run.status = "error"
+                run.error = f"{failed} signal evaluation horizon(s) failed"
+                logger.warning(
+                    "Job: evaluation completed with %d failed signal horizon(s)",
+                    failed,
+                )
+            else:
+                run.status = "success"
             logger.info("Job: evaluation done, %d evaluations", count)
         except Exception:
             logger.error("Job: evaluation failed", exc_info=True)
+            run.status = "error"
+            import traceback
+            run.error = traceback.format_exc()[-500:]
+        run.finished_at = _utcnow()
+        await session.commit()
 
 
 async def _run_cleanup():

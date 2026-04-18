@@ -46,6 +46,10 @@ class ReplayStatusOut(BaseModel):
     recent_scenario_count_24h: int
     recent_coverage_limited_run_count_24h: int
     recent_failed_run_count_24h: int
+    coverage_mode: str
+    configured_supported_detectors: list[str]
+    supported_detectors: list[str]
+    unsupported_detectors: list[str]
     recent_variant_summary: dict[str, dict[str, Any]]
     recent_runs: list[dict[str, Any]]
 

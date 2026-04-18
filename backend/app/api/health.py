@@ -5,11 +5,12 @@ from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
+from app.models.scheduler_lease import SchedulerLease
 from app.execution.polymarket_control_plane import fetch_pilot_status
 from app.execution.polymarket_live_state import fetch_polymarket_live_status
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
@@ -21,13 +22,18 @@ from app.ingestion.polymarket_microstructure import fetch_polymarket_feature_sta
 from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.ingestion.polymarket_risk_graph import fetch_polymarket_risk_graph_status
 from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
+from app.ingestion.polymarket_stream import fetch_polymarket_stream_status
 from app.ingestion.structure_engine import fetch_market_structure_status
 from app.models.ingestion import IngestionRun
 from app.models.market import Market
-from app.models.signal import Signal
+from app.models.signal import Signal, SignalEvaluation
+from app.paper_trading.analysis import get_overdue_open_trade_count
+from app.strategy_families import build_strategy_family_reviews
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
 _pilot_evidence = PolymarketPilotEvidenceService()
+DEFAULT_SCHEDULER_LEASE_NAME = "default"
+MAX_HEALTH_PRICE_CHANGE_PCT = Decimal("9999.9999")
 
 
 class IngestionStatus(BaseModel):
@@ -35,6 +41,23 @@ class IngestionStatus(BaseModel):
     last_status: str | None
     last_run: datetime | None
     markets_processed: int | None
+
+
+class PolymarketPhase1Status(BaseModel):
+    enabled: bool
+    connected: bool
+    continuity_status: str
+    connection_started_at: datetime | None = None
+    current_connection_id: str | None = None
+    last_event_received_at: datetime | None = None
+    heartbeat_freshness_seconds: int | None = None
+    watched_asset_count: int
+    subscribed_asset_count: int
+    reconnect_count: int
+    resync_count: int
+    gap_suspected_count: int
+    malformed_message_count: int
+    last_successful_resync_at: datetime | None = None
 
 
 class PolymarketPhase2Status(BaseModel):
@@ -60,6 +83,9 @@ class PolymarketPhase3Status(BaseModel):
     last_successful_book_snapshot_at: datetime | None = None
     last_successful_trade_backfill_at: datetime | None = None
     last_successful_oi_poll_at: datetime | None = None
+    book_snapshot_freshness_seconds: int | None = None
+    trade_backfill_freshness_seconds: int | None = None
+    oi_poll_freshness_seconds: int | None = None
     rows_inserted_24h: dict[str, int]
 
 
@@ -74,6 +100,7 @@ class PolymarketPhase4Status(BaseModel):
     watched_asset_count: int
     live_book_count: int
     drifted_asset_count: int
+    stale_asset_count: int
     resyncing_asset_count: int
     degraded_asset_count: int
     last_successful_resync_at: datetime | None = None
@@ -260,6 +287,10 @@ class PolymarketPhase11Status(BaseModel):
     recent_scenario_count_24h: int
     recent_coverage_limited_run_count_24h: int
     recent_failed_run_count_24h: int
+    coverage_mode: str
+    configured_supported_detectors: list[str]
+    supported_detectors: list[str]
+    unsupported_detectors: list[str]
     recent_variant_summary: dict[str, dict[str, Any]]
 
 
@@ -284,6 +315,38 @@ class PolymarketPhase12Status(BaseModel):
     kill_switch_enabled: bool
 
 
+class StrategyFamilyReviewOut(BaseModel):
+    family: str
+    label: str
+    posture: str
+    configured: bool
+    review_enabled: bool
+    primary_surface: str
+    description: str
+    disabled_reason: str | None = None
+
+
+class SchedulerLeaseStatus(BaseModel):
+    owner_token: str | None = None
+    heartbeat_freshness_seconds: int | None = None
+    expires_in_seconds: int | None = None
+
+
+class DefaultStrategyRuntimeStatus(BaseModel):
+    overdue_open_trades: int
+    last_resolution_backfill_at: datetime | None = None
+    last_resolution_backfill_count: int
+    evaluation_clamp_count_24h: int
+    last_evaluation_failure_at: datetime | None = None
+
+
+class RuntimeInvariantStatus(BaseModel):
+    key: str
+    label: str
+    status: str
+    detail: str
+
+
 class HealthOut(BaseModel):
     status: str
     now: datetime
@@ -293,6 +356,7 @@ class HealthOut(BaseModel):
     recent_alerts_24h: int
     alert_threshold: float
     ingestion: list[IngestionStatus]
+    polymarket_phase1: PolymarketPhase1Status
     polymarket_phase2: PolymarketPhase2Status
     polymarket_phase3: PolymarketPhase3Status
     polymarket_phase4: PolymarketPhase4Status
@@ -304,6 +368,136 @@ class HealthOut(BaseModel):
     polymarket_phase10: PolymarketPhase10Status
     polymarket_phase11: PolymarketPhase11Status
     polymarket_phase12: PolymarketPhase12Status
+    scheduler_lease: SchedulerLeaseStatus
+    default_strategy_runtime: DefaultStrategyRuntimeStatus
+    runtime_invariants: list[RuntimeInvariantStatus]
+    strategy_families: list[StrategyFamilyReviewOut]
+
+
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _age_seconds(*, now: datetime, value: datetime | None) -> int | None:
+    value_utc = _ensure_utc(value)
+    if value_utc is None:
+        return None
+    return max(0, int((now - value_utc).total_seconds()))
+
+
+def _expires_in_seconds(*, now: datetime, value: datetime | None) -> int | None:
+    value_utc = _ensure_utc(value)
+    if value_utc is None:
+        return None
+    return max(0, int((value_utc - now).total_seconds()))
+
+
+def _build_runtime_invariants(
+    *,
+    now: datetime,
+    scheduler_lease: SchedulerLeaseStatus,
+    runtime_status: DefaultStrategyRuntimeStatus,
+) -> list[RuntimeInvariantStatus]:
+    invariants: list[RuntimeInvariantStatus] = []
+    lease_heartbeat_threshold = max(1, settings.scheduler_lease_renew_interval_seconds * 2)
+    lease_observed = any(
+        value is not None
+        for value in (
+            scheduler_lease.owner_token,
+            scheduler_lease.heartbeat_freshness_seconds,
+            scheduler_lease.expires_in_seconds,
+        )
+    )
+
+    if not settings.scheduler_enabled and not lease_observed:
+        invariants.append(RuntimeInvariantStatus(
+            key="scheduler_lease_fresh",
+            label="Scheduler Lease Fresh",
+            status="not_applicable",
+            detail="Scheduler is disabled in this environment.",
+        ))
+    else:
+        owner_token = scheduler_lease.owner_token
+        heartbeat_freshness = scheduler_lease.heartbeat_freshness_seconds
+        expires_in = scheduler_lease.expires_in_seconds
+
+        if not owner_token:
+            lease_status = "failing"
+            lease_detail = "Scheduler is enabled but no owner token is registered."
+        elif expires_in is None or expires_in <= 0:
+            lease_status = "failing"
+            lease_detail = (
+                f"Lease owner {owner_token} is expired "
+                f"(heartbeat {heartbeat_freshness if heartbeat_freshness is not None else '?'}s ago)."
+            )
+        elif heartbeat_freshness is None or heartbeat_freshness > lease_heartbeat_threshold:
+            lease_status = "failing"
+            lease_detail = (
+                f"Lease owner {owner_token} heartbeat is stale at "
+                f"{heartbeat_freshness if heartbeat_freshness is not None else '?'}s "
+                f"(threshold {lease_heartbeat_threshold}s)."
+            )
+        else:
+            lease_status = "passing"
+            lease_detail = (
+                f"Owner {owner_token} heartbeat {heartbeat_freshness}s ago, "
+                f"expires in {expires_in}s."
+            )
+
+        invariants.append(RuntimeInvariantStatus(
+            key="scheduler_lease_fresh",
+            label="Scheduler Lease Fresh",
+            status=lease_status,
+            detail=lease_detail,
+        ))
+
+    overdue_trades = runtime_status.overdue_open_trades
+    invariants.append(RuntimeInvariantStatus(
+        key="overdue_open_trades_zero",
+        label="Overdue Open Trades",
+        status="passing" if overdue_trades == 0 else "failing",
+        detail=(
+            "No overdue open trades remain past market end."
+            if overdue_trades == 0
+            else f"{overdue_trades} overdue open trade(s) remain past market end."
+        ),
+    ))
+
+    last_evaluation_failure = _ensure_utc(runtime_status.last_evaluation_failure_at)
+    evaluation_failure_recent = (
+        last_evaluation_failure is not None
+        and last_evaluation_failure >= now - timedelta(hours=24)
+    )
+    invariants.append(RuntimeInvariantStatus(
+        key="evaluation_failures_24h_zero",
+        label="Evaluation Failures (24h)",
+        status="failing" if evaluation_failure_recent else "passing",
+        detail=(
+            f"Latest evaluation failure at {last_evaluation_failure.isoformat()}."
+            if evaluation_failure_recent and last_evaluation_failure is not None
+            else "No evaluation failures recorded in the last 24 hours."
+        ),
+    ))
+
+    return invariants
+
+
+async def _latest_ingestion_run(
+    db: AsyncSession,
+    *,
+    run_type: str,
+    status: str | None = None,
+) -> IngestionRun | None:
+    query = select(IngestionRun).where(IngestionRun.run_type == run_type)
+    if status is not None:
+        query = query.where(IngestionRun.status == status)
+    query = query.order_by(IngestionRun.started_at.desc(), IngestionRun.finished_at.desc())
+    result = await db.execute(query.limit(1))
+    return result.scalar_one_or_none()
 
 
 @router.get("/health", response_model=HealthOut)
@@ -346,6 +540,7 @@ async def health(db: AsyncSession = Depends(get_db)):
         ))
 
     polymarket_phase2 = await fetch_polymarket_meta_sync_status(db)
+    polymarket_phase1 = await fetch_polymarket_stream_status(db)
     polymarket_phase3 = await fetch_polymarket_raw_storage_status(db)
     polymarket_phase4 = await fetch_polymarket_book_recon_status(db)
     polymarket_phase5 = await fetch_polymarket_feature_status(db)
@@ -357,9 +552,68 @@ async def health(db: AsyncSession = Depends(get_db)):
     polymarket_phase11 = await fetch_polymarket_replay_status(db)
     polymarket_phase12_pilot = await fetch_pilot_status(db)
     polymarket_phase12_evidence = await _pilot_evidence.fetch_pilot_evidence_summary(db)
+    scheduler_lease = await db.get(SchedulerLease, DEFAULT_SCHEDULER_LEASE_NAME)
+    overdue_open_trades = await get_overdue_open_trade_count(db)
+    latest_backfill_run = await _latest_ingestion_run(db, run_type="resolution_backfill")
+    latest_evaluation_failure = await _latest_ingestion_run(
+        db,
+        run_type="evaluation",
+        status="error",
+    )
+    evaluation_clamp_count = int(
+        (
+            await db.execute(
+                select(func.count(SignalEvaluation.id)).where(
+                    SignalEvaluation.evaluated_at >= now - timedelta(hours=24),
+                    or_(
+                        SignalEvaluation.price_change_pct == MAX_HEALTH_PRICE_CHANGE_PCT,
+                        SignalEvaluation.price_change_pct == -MAX_HEALTH_PRICE_CHANGE_PCT,
+                    ),
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    strategy_families = build_strategy_family_reviews()
+    scheduler_lease_status = SchedulerLeaseStatus(
+        owner_token=scheduler_lease.owner_token if scheduler_lease is not None else None,
+        heartbeat_freshness_seconds=_age_seconds(
+            now=now,
+            value=scheduler_lease.heartbeat_at if scheduler_lease is not None else None,
+        ),
+        expires_in_seconds=_expires_in_seconds(
+            now=now,
+            value=scheduler_lease.expires_at if scheduler_lease is not None else None,
+        ),
+    )
+    default_strategy_runtime = DefaultStrategyRuntimeStatus(
+        overdue_open_trades=overdue_open_trades,
+        last_resolution_backfill_at=(
+            latest_backfill_run.finished_at or latest_backfill_run.started_at
+            if latest_backfill_run is not None
+            else None
+        ),
+        last_resolution_backfill_count=(
+            latest_backfill_run.markets_processed
+            if latest_backfill_run is not None
+            else 0
+        ),
+        evaluation_clamp_count_24h=evaluation_clamp_count,
+        last_evaluation_failure_at=(
+            latest_evaluation_failure.finished_at or latest_evaluation_failure.started_at
+            if latest_evaluation_failure is not None
+            else None
+        ),
+    )
+    runtime_invariants = _build_runtime_invariants(
+        now=now,
+        scheduler_lease=scheduler_lease_status,
+        runtime_status=default_strategy_runtime,
+    )
+    overall_status = "degraded" if any(row.status == "failing" for row in runtime_invariants) else "ok"
 
     return HealthOut(
-        status="ok",
+        status=overall_status,
         now=now,
         active_markets=active_markets,
         total_signals=total_signals,
@@ -367,6 +621,26 @@ async def health(db: AsyncSession = Depends(get_db)):
         recent_alerts_24h=recent_alerts,
         alert_threshold=settings.alert_rank_threshold,
         ingestion=ingestion_statuses,
+        polymarket_phase1=PolymarketPhase1Status(**{
+            "enabled": polymarket_phase1["enabled"],
+            "connected": polymarket_phase1["connected"],
+            "continuity_status": polymarket_phase1["continuity_status"],
+            "connection_started_at": polymarket_phase1["connection_started_at"],
+            "current_connection_id": (
+                str(polymarket_phase1["current_connection_id"])
+                if polymarket_phase1["current_connection_id"] is not None
+                else None
+            ),
+            "last_event_received_at": polymarket_phase1["last_event_received_at"],
+            "heartbeat_freshness_seconds": polymarket_phase1["heartbeat_freshness_seconds"],
+            "watched_asset_count": polymarket_phase1["watched_asset_count"],
+            "subscribed_asset_count": polymarket_phase1["subscribed_asset_count"],
+            "reconnect_count": polymarket_phase1["reconnect_count"],
+            "resync_count": polymarket_phase1["resync_count"],
+            "gap_suspected_count": polymarket_phase1["gap_suspected_count"],
+            "malformed_message_count": polymarket_phase1["malformed_message_count"],
+            "last_successful_resync_at": polymarket_phase1["last_successful_resync_at"],
+        }),
         polymarket_phase2=PolymarketPhase2Status(**{
             key: polymarket_phase2[key]
             for key in (
@@ -394,6 +668,9 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "last_successful_book_snapshot_at",
                 "last_successful_trade_backfill_at",
                 "last_successful_oi_poll_at",
+                "book_snapshot_freshness_seconds",
+                "trade_backfill_freshness_seconds",
+                "oi_poll_freshness_seconds",
                 "rows_inserted_24h",
             )
         }),
@@ -410,6 +687,7 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "watched_asset_count",
                 "live_book_count",
                 "drifted_asset_count",
+                "stale_asset_count",
                 "resyncing_asset_count",
                 "degraded_asset_count",
                 "last_successful_resync_at",
@@ -601,6 +879,10 @@ async def health(db: AsyncSession = Depends(get_db)):
                 "recent_scenario_count_24h",
                 "recent_coverage_limited_run_count_24h",
                 "recent_failed_run_count_24h",
+                "coverage_mode",
+                "configured_supported_detectors",
+                "supported_detectors",
+                "unsupported_detectors",
                 "recent_variant_summary",
             )
         }),
@@ -632,4 +914,8 @@ async def health(db: AsyncSession = Depends(get_db)):
             last_reconcile_success_at=polymarket_phase7a["last_reconcile_success_at"],
             kill_switch_enabled=polymarket_phase12_pilot["kill_switch_enabled"],
         ),
+        scheduler_lease=scheduler_lease_status,
+        default_strategy_runtime=default_strategy_runtime,
+        runtime_invariants=runtime_invariants,
+        strategy_families=[StrategyFamilyReviewOut(**row) for row in strategy_families],
     )

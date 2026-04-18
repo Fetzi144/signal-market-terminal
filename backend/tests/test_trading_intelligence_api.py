@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.config import settings
-from app.jobs.scheduler import _resolve_paper_trades, _run_paper_trading
+from app.jobs.scheduler import _fetch_overdue_open_trade_resolutions, _resolve_paper_trades, _run_paper_trading
 from app.metrics import default_strategy_scheduler_no_active_run
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
@@ -113,6 +113,9 @@ async def test_signal_api_exposes_phase0_timing_and_source_fields(client, sessio
     assert data["source_platform"] == "polymarket"
     assert data["source_token_id"] == outcome.token_id
     assert data["source_event_type"] == "confluence_fusion"
+    assert data["display_signal_type"] == "confluence"
+    assert data["review_family"] == "default_strategy"
+    assert data["review_family_posture"] == "benchmark_only"
 
 
 @pytest.mark.asyncio
@@ -386,6 +389,214 @@ async def test_scheduler_paper_trade_lifecycle_reflected_in_api(client, session)
 
 
 @pytest.mark.asyncio
+async def test_scheduler_resolves_paper_trade_from_polymarket_flat_payload(session):
+    market = make_market(session, platform="polymarket", platform_id="pm-flat-market", question="Flat payload market")
+    outcome_yes = make_outcome(session, market.id, name="Yes")
+    make_outcome(session, market.id, name="No")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome_yes.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Flat payload market", "outcome_name": "Yes"},
+    )
+    trade = _make_paper_trade(session, signal.id, outcome_yes.id, market.id)
+    await session.commit()
+
+    await _resolve_paper_trades(
+        session,
+        [{"platform_id": "pm-flat-market", "winner": "Yes", "winning_outcome_id": "Yes"}],
+        platform="polymarket",
+    )
+
+    await session.refresh(trade)
+    assert trade.status == "resolved"
+    assert trade.exit_price == Decimal("1.000000")
+    assert trade.pnl == Decimal("750.00")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_resolves_paper_trade_from_kalshi_flat_payload(session):
+    market = make_market(session, platform="kalshi", platform_id="KXTEST-SETTLED", question="Kalshi flat payload market")
+    outcome_yes = make_outcome(session, market.id, name="Yes", platform_outcome_id="KXTEST-SETTLED_yes")
+    make_outcome(session, market.id, name="No", platform_outcome_id="KXTEST-SETTLED_no")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome_yes.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Kalshi flat payload market", "outcome_name": "Yes"},
+    )
+    trade = _make_paper_trade(session, signal.id, outcome_yes.id, market.id)
+    await session.commit()
+
+    await _resolve_paper_trades(
+        session,
+        [{"platform_id": "KXTEST-SETTLED", "winning_outcome": "yes"}],
+        platform="kalshi",
+    )
+
+    await session.refresh(trade)
+    assert trade.status == "resolved"
+    assert trade.exit_price == Decimal("1.000000")
+    assert trade.pnl == Decimal("750.00")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_fetches_targeted_overdue_kalshi_resolutions(session):
+    now = datetime.now(timezone.utc)
+    overdue_market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXOVERDUE-SETTLED",
+        question="Overdue Kalshi market",
+        end_date=now - timedelta(days=2),
+        active=True,
+    )
+    overdue_outcome = make_outcome(
+        session,
+        overdue_market.id,
+        name="Yes",
+        platform_outcome_id="KXOVERDUE-SETTLED_yes",
+    )
+    overdue_signal = make_signal(
+        session,
+        overdue_market.id,
+        overdue_outcome.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Overdue Kalshi market", "outcome_name": "Yes"},
+    )
+    overdue_trade = _make_paper_trade(session, overdue_signal.id, overdue_outcome.id, overdue_market.id)
+
+    fresh_market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXFUTURE-OPEN",
+        question="Future Kalshi market",
+        end_date=now + timedelta(days=2),
+        active=True,
+    )
+    fresh_outcome = make_outcome(
+        session,
+        fresh_market.id,
+        name="Yes",
+        platform_outcome_id="KXFUTURE-OPEN_yes",
+    )
+    fresh_signal = make_signal(
+        session,
+        fresh_market.id,
+        fresh_outcome.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Future Kalshi market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(session, fresh_signal.id, fresh_outcome.id, fresh_market.id)
+    await session.commit()
+
+    class _FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeKalshiConnector:
+        api_base = "https://example.test"
+
+        def __init__(self):
+            self.calls = []
+
+        async def _request_with_retry(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            return _FakeResponse(
+                {
+                    "markets": [
+                        {
+                            "ticker": "KXOVERDUE-SETTLED",
+                            "status": "finalized",
+                            "result": "yes",
+                        }
+                    ]
+                }
+            )
+
+    connector = _FakeKalshiConnector()
+    resolved_markets = await _fetch_overdue_open_trade_resolutions(
+        session,
+        connector,
+        platform="kalshi",
+    )
+
+    assert resolved_markets == [{"platform_id": "KXOVERDUE-SETTLED", "winning_outcome": "yes"}]
+    assert len(connector.calls) == 1
+    assert "KXOVERDUE-SETTLED" in connector.calls[0][2]["params"]["tickers"]
+    assert "KXFUTURE-OPEN" not in connector.calls[0][2]["params"]["tickers"]
+
+    await _resolve_paper_trades(session, resolved_markets, platform="kalshi")
+    await session.refresh(overdue_trade)
+    assert overdue_trade.status == "resolved"
+    assert overdue_trade.exit_price == Decimal("1.000000")
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_overdue_backlog_clears_after_resolution_pass(client, session):
+    now = datetime.now(timezone.utc)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(days=1))
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXBACKLOG-CLEAR",
+        question="Backlog clear market",
+        end_date=now - timedelta(hours=2),
+        active=True,
+    )
+    outcome_yes = make_outcome(
+        session,
+        market.id,
+        name="Yes",
+        platform_outcome_id="KXBACKLOG-CLEAR_yes",
+    )
+    make_outcome(
+        session,
+        market.id,
+        name="No",
+        platform_outcome_id="KXBACKLOG-CLEAR_no",
+    )
+    signal = make_signal(
+        session,
+        market.id,
+        outcome_yes.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Backlog clear market", "outcome_name": "Yes"},
+    )
+    trade = _make_paper_trade(
+        session,
+        signal.id,
+        outcome_yes.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        status="open",
+    )
+    await session.commit()
+
+    before = await client.get("/api/v1/paper-trading/strategy-health")
+    assert before.status_code == 200
+    assert before.json()["headline"]["overdue_open_trades"] == 1
+
+    await _resolve_paper_trades(
+        session,
+        [{"platform_id": "KXBACKLOG-CLEAR", "winning_outcome": "yes"}],
+        platform="kalshi",
+    )
+
+    after = await client.get("/api/v1/paper-trading/strategy-health")
+    assert after.status_code == 200
+    assert after.json()["headline"]["overdue_open_trades"] == 0
+
+    await session.refresh(trade)
+    assert trade.status == "resolved"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_only_auto_trades_default_strategy_signals(client, session):
     market = make_market(session, question="Default strategy gate")
     outcome = make_outcome(session, market.id, name="Yes")
@@ -536,6 +747,164 @@ async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
     )
     assert execution_decision is not None
     assert execution_decision.reason_code == "ev_below_threshold"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_backfills_missing_execution_decision_from_signal_metadata(session):
+    market = make_market(session, question="Metadata backfill market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Metadata backfill market", "outcome_name": "Yes"},
+    )
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=signal.fired_at - timedelta(minutes=1))
+    signal.details = {
+        **(signal.details or {}),
+        "default_strategy": {
+            "strategy_name": settings.default_strategy_name,
+            "strategy_run_id": str(strategy_run.id),
+            "baseline_start_at": strategy_run.started_at.isoformat(),
+            "evaluated_at": signal.fired_at.isoformat(),
+            "eligible": True,
+            "decision": "skipped",
+            "reason_code": "risk_total_exposure",
+            "reason_label": "Total exposure limit reached",
+            "detail": "Total exposure limit reached ($3000.00 / $3000.00)",
+            "trade_id": None,
+            "diagnostics": {
+                "direction": "buy_yes",
+                "approved_size_usd": "0",
+                "recommended_size_usd": "500.00",
+                "drawdown_active": False,
+            },
+        },
+    }
+    await session.commit()
+
+    await _run_paper_trading(session, [])
+
+    execution_decision = await session.scalar(
+        select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id)
+    )
+    assert execution_decision is not None
+    assert execution_decision.decision_status == "skipped"
+    assert execution_decision.reason_code == "risk_total_exposure"
+    assert execution_decision.details["risk_result"]["risk_scope"] == "local_paper_book"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_backfills_opened_execution_decision_and_links_trade_from_signal_metadata(session):
+    market = make_market(session, question="Opened metadata backfill market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Opened metadata backfill market", "outcome_name": "Yes"},
+    )
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=signal.fired_at - timedelta(minutes=1))
+    trade = _make_paper_trade(
+        session,
+        signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        execution_decision_id=None,
+        status="open",
+        entry_price=Decimal("0.410000"),
+        size_usd=Decimal("250.00"),
+        shares=Decimal("609.7561"),
+        opened_at=signal.fired_at,
+    )
+    signal.details = {
+        **(signal.details or {}),
+        "default_strategy": {
+            "strategy_name": settings.default_strategy_name,
+            "strategy_run_id": str(strategy_run.id),
+            "baseline_start_at": strategy_run.started_at.isoformat(),
+            "evaluated_at": signal.fired_at.isoformat(),
+            "eligible": True,
+            "decision": "opened",
+            "reason_code": "opened",
+            "reason_label": "Trade opened",
+            "detail": None,
+            "trade_id": str(trade.id),
+            "diagnostics": {
+                "direction": "buy_yes",
+                "approved_size_usd": "250.00",
+                "recommended_size_usd": "250.00",
+                "ev_per_share": "0.120000",
+                "missing_orderbook_context": False,
+            },
+        },
+    }
+    await session.commit()
+
+    await _run_paper_trading(session, [])
+    await session.refresh(trade)
+
+    execution_decision = await session.scalar(
+        select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id)
+    )
+    assert execution_decision is not None
+    assert execution_decision.decision_status == "opened"
+    assert execution_decision.reason_code == "opened"
+    assert trade.execution_decision_id == execution_decision.id
+
+
+@pytest.mark.asyncio
+async def test_scheduler_repairs_missing_execution_decision_backlog_for_qualified_signal(session):
+    market = make_market(session, question="Backlog repair market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Backlog repair market", "outcome_name": "Yes"},
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at,
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
+    )
+    await open_default_strategy_run(session, launch_boundary_at=fired_at - timedelta(minutes=1))
+    await session.commit()
+
+    await _run_paper_trading(session, [])
+    await session.refresh(signal)
+
+    execution_decision = await session.scalar(
+        select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id)
+    )
+    assert execution_decision is not None
+    assert execution_decision.reason_code == "opened"
+    assert signal.details["default_strategy"]["attempt_kind"] == "backlog_repair"
 
 
 @pytest.mark.asyncio
@@ -974,6 +1343,7 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
     assert data["execution_realism"]["shadow_cumulative_pnl"] == 100.0
     assert data["headline"]["resolved_trades"] == 1
     assert data["headline"]["resolved_signals"] == 1
+    assert data["headline"]["overdue_open_trades"] == 0
     assert data["headline"]["avg_clv"] == pytest.approx(0.05)
     assert data["headline"]["brier_score"] is not None
     assert data["benchmark"]["resolved_signals"] >= 1

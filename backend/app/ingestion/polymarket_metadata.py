@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
 
 import httpx
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
@@ -60,6 +60,9 @@ STREAM_NEW_MARKET_SOURCE = "stream_new_market"
 STREAM_TICK_SIZE_SOURCE = "stream_tick_size_change"
 STREAM_RESOLUTION_SOURCE = "stream_market_resolved"
 BOOK_SEED_SOURCE = "rest_book_seed"
+META_SYNC_ADVISORY_LOCK_KEY = 104_202_604_170
+META_SYNC_PROGRESS_BATCH_SIZE = 5
+META_SYNC_BOOK_SEED_BATCH_SIZE = 250
 
 
 @dataclass(slots=True)
@@ -73,6 +76,19 @@ class MetaSyncCounters:
     fee_rows_inserted: int = 0
     reward_rows_inserted: int = 0
     error_count: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class MetaSyncRunContext:
+    sync_run_id: uuid.UUID
+    include_closed: bool
+    target_asset_ids: list[str]
+
+
+def _chunk_values(values: list[Any], size: int) -> list[list[Any]]:
+    if size <= 0:
+        raise ValueError("Chunk size must be positive")
+    return [values[index:index + size] for index in range(0, len(values), size)]
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -890,12 +906,31 @@ async def _update_event_from_market_resolution(
         await session.flush()
 
 
+async def meta_sync_run_in_progress(session: AsyncSession) -> bool:
+    result = await session.execute(
+        select(PolymarketMetaSyncRun.id)
+        .where(
+            PolymarketMetaSyncRun.status == "running",
+            PolymarketMetaSyncRun.completed_at.is_(None),
+        )
+        .order_by(PolymarketMetaSyncRun.started_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
 async def apply_stream_event_to_registry(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     raw_event_id: int,
 ) -> None:
     async with session_factory() as session:
+        if await meta_sync_run_in_progress(session):
+            logger.debug(
+                "Skipping stream registry update for raw event %s while metadata sync is running",
+                raw_event_id,
+            )
+            return
         raw_event = await session.get(PolymarketMarketEvent, raw_event_id)
         if raw_event is None or not isinstance(raw_event.payload, dict):
             return
@@ -1063,6 +1098,7 @@ class PolymarketMetaSyncService:
         self._session_factory = session_factory
         self._client_factory = client_factory or self._default_client_factory
         self._client: httpx.AsyncClient | None = None
+        self._bind = self._session_factory.kw.get("bind")
 
     def _default_client_factory(self) -> httpx.AsyncClient:
         return httpx.AsyncClient(timeout=settings.connector_timeout_seconds)
@@ -1076,15 +1112,103 @@ class PolymarketMetaSyncService:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
 
+    async def _acquire_sync_lock(self):
+        if self._bind is None or self._bind.dialect.name != "postgresql":
+            return None
+        connection = await self._bind.connect()
+        result = await connection.execute(
+            text("select pg_try_advisory_lock(:key)"),
+            {"key": META_SYNC_ADVISORY_LOCK_KEY},
+        )
+        acquired = bool(result.scalar())
+        if not acquired:
+            await connection.close()
+            return None
+        return connection
+
+    async def _release_sync_lock(self, connection) -> None:
+        if connection is None:
+            return
+        try:
+            await connection.execute(
+                text("select pg_advisory_unlock(:key)"),
+                {"key": META_SYNC_ADVISORY_LOCK_KEY},
+            )
+        finally:
+            await connection.close()
+
+    async def _latest_running_sync(self) -> dict[str, Any] | None:
+        async with self._session_factory() as session:
+            result = await session.execute(
+                select(PolymarketMetaSyncRun)
+                .where(PolymarketMetaSyncRun.status == "running")
+                .order_by(PolymarketMetaSyncRun.started_at.desc())
+                .limit(1)
+            )
+            run = result.scalar_one_or_none()
+            return _serialize_sync_run(run) if run is not None else None
+
+    async def _update_run_progress(
+        self,
+        session: AsyncSession,
+        *,
+        context: MetaSyncRunContext,
+        counters: MetaSyncCounters,
+        status: str,
+        error: str | None = None,
+        completed: bool = False,
+    ) -> None:
+        run = await session.get(PolymarketMetaSyncRun, context.sync_run_id)
+        if run is None:
+            return
+        run.status = status
+        if completed:
+            run.completed_at = utcnow()
+        run.events_seen = counters.events_seen
+        run.markets_seen = counters.markets_seen
+        run.assets_upserted = counters.assets_upserted
+        run.events_upserted = counters.events_upserted
+        run.markets_upserted = counters.markets_upserted
+        run.param_rows_inserted = counters.param_rows_inserted
+        run.error_count = counters.error_count
+        details = dict(run.details_json or {})
+        details.update(
+            {
+                "target_asset_ids": context.target_asset_ids or None,
+                "include_closed": context.include_closed,
+                "fee_rows_inserted": counters.fee_rows_inserted,
+                "reward_rows_inserted": counters.reward_rows_inserted,
+            }
+        )
+        if error:
+            details["error"] = error
+        elif "error" in details:
+            details.pop("error")
+        run.details_json = details
+
+    async def _commit_progress(
+        self,
+        session: AsyncSession,
+        *,
+        context: MetaSyncRunContext,
+        counters: MetaSyncCounters,
+    ) -> None:
+        await self._update_run_progress(
+            session,
+            context=context,
+            counters=counters,
+            status="running",
+        )
+        await session.commit()
+
     async def _iter_keyset_pages(
         self,
         *,
         path: str,
         root_key: str,
         params: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+    ):
         client = await self._get_client()
-        items: list[dict[str, Any]] = []
         next_cursor: str | None = None
         while True:
             request_params = dict(params)
@@ -1096,13 +1220,10 @@ class PolymarketMetaSyncService:
             page_items = payload.get(root_key) if isinstance(payload, dict) else None
             if not isinstance(page_items, list):
                 break
-            for item in page_items:
-                if isinstance(item, dict):
-                    items.append(item)
+            yield [item for item in page_items if isinstance(item, dict)]
             next_cursor = payload.get("next_cursor") if isinstance(payload, dict) else None
             if not next_cursor or not page_items:
                 break
-        return items
 
     def _event_limit(self) -> int:
         return max(1, min(settings.polymarket_meta_sync_page_size, 500))
@@ -1114,33 +1235,44 @@ class PolymarketMetaSyncService:
         self,
         session: AsyncSession,
         *,
+        context: MetaSyncRunContext,
         counters: MetaSyncCounters,
         include_closed: bool,
     ) -> None:
         for closed_flag in ([False, True] if include_closed else [False]):
-            items = await self._iter_keyset_pages(
+            processed_since_commit = 0
+            async for items in self._iter_keyset_pages(
                 path="/events/keyset",
                 root_key="events",
                 params={
                     "limit": self._event_limit(),
                     "closed": str(closed_flag).lower(),
                 },
-            )
-            for event_payload in items:
-                counters.events_seen += 1
-                _, changed = await _upsert_event_dim(
-                    session,
-                    payload=event_payload,
-                    observed_at_local=utcnow(),
-                    source_kind=GAMMA_EVENT_SOURCE,
-                )
-                if changed:
-                    counters.events_upserted += 1
+            ):
+                if not items:
+                    continue
+                for event_payload in items:
+                    counters.events_seen += 1
+                    _, changed = await _upsert_event_dim(
+                        session,
+                        payload=event_payload,
+                        observed_at_local=utcnow(),
+                        source_kind=GAMMA_EVENT_SOURCE,
+                    )
+                    if changed:
+                        counters.events_upserted += 1
+                    processed_since_commit += 1
+                    if processed_since_commit >= META_SYNC_PROGRESS_BATCH_SIZE:
+                        await self._commit_progress(session, context=context, counters=counters)
+                        processed_since_commit = 0
+            if processed_since_commit:
+                await self._commit_progress(session, context=context, counters=counters)
 
     async def _sync_gamma_markets(
         self,
         session: AsyncSession,
         *,
+        context: MetaSyncRunContext,
         counters: MetaSyncCounters,
         include_closed: bool,
         target_asset_ids: list[str] | None,
@@ -1154,83 +1286,92 @@ class PolymarketMetaSyncService:
             }
             if target_asset_ids:
                 params["clob_token_ids"] = target_asset_ids
-            items = await self._iter_keyset_pages(
+            processed_since_commit = 0
+            async for items in self._iter_keyset_pages(
                 path="/markets/keyset",
                 root_key="markets",
                 params=params,
-            )
-            for market_payload in items:
-                counters.markets_seen += 1
-                observed_at_local = utcnow()
-
-                event_dim = None
-                events = market_payload.get("events")
-                if isinstance(events, list) and events:
-                    primary_event = next((item for item in events if isinstance(item, dict)), None)
-                    if primary_event is not None:
-                        event_dim, event_changed = await _upsert_event_dim(
-                            session,
-                            payload=primary_event,
-                            observed_at_local=observed_at_local,
-                            source_kind=GAMMA_MARKET_SOURCE,
-                        )
-                        if event_changed:
-                            counters.events_upserted += 1
-
-                market_dim, market_changed = await _upsert_market_dim(
-                    session,
-                    payload=market_payload,
-                    event_dim=event_dim,
-                    observed_at_local=observed_at_local,
-                    source_kind=GAMMA_MARKET_SOURCE,
-                )
-                if market_changed:
-                    counters.markets_upserted += 1
-
-                if market_dim is None:
-                    counters.error_count += 1
+            ):
+                if not items:
                     continue
+                for market_payload in items:
+                    counters.markets_seen += 1
+                    observed_at_local = utcnow()
 
-                asset_dims, asset_upserted = await _upsert_asset_dims(
-                    session,
-                    market_dim=market_dim,
-                    payload=market_payload,
-                    observed_at_local=observed_at_local,
-                    source_kind=GAMMA_MARKET_SOURCE,
-                )
-                counters.assets_upserted += asset_upserted
+                    event_dim = None
+                    events = market_payload.get("events")
+                    if isinstance(events, list) and events:
+                        primary_event = next((item for item in events if isinstance(item, dict)), None)
+                        if primary_event is not None:
+                            event_dim, event_changed = await _upsert_event_dim(
+                                session,
+                                payload=primary_event,
+                                observed_at_local=observed_at_local,
+                                source_kind=GAMMA_MARKET_SOURCE,
+                            )
+                            if event_changed:
+                                counters.events_upserted += 1
 
-                counters.param_rows_inserted += await _seed_params_from_market_payload(
-                    session,
-                    market_dim=market_dim,
-                    asset_dims=asset_dims,
-                    payload=market_payload,
-                    source_kind=GAMMA_MARKET_SOURCE,
-                    effective_at_exchange=_market_effective_at(market_payload),
-                    received_at_local=observed_at_local,
-                    observed_at_local=observed_at_local,
-                    sync_run_id=sync_run_id,
-                    raw_event_id=None,
-                )
-                counters.fee_rows_inserted += await self._sync_market_fee_history(
-                    session,
-                    market_dim=market_dim,
-                    asset_dims=asset_dims,
-                    observed_at_local=observed_at_local,
-                    sync_run_id=sync_run_id,
-                    market_payload=market_payload,
-                )
-                counters.reward_rows_inserted += await self._sync_market_reward_history(
-                    session,
-                    market_dim=market_dim,
-                    observed_at_local=observed_at_local,
-                    sync_run_id=sync_run_id,
-                    reward_payload=(
-                        reward_configs_by_condition.get(market_dim.condition_id)
-                        if reward_configs_by_condition is not None
-                        else None
-                    ),
-                )
+                    market_dim, market_changed = await _upsert_market_dim(
+                        session,
+                        payload=market_payload,
+                        event_dim=event_dim,
+                        observed_at_local=observed_at_local,
+                        source_kind=GAMMA_MARKET_SOURCE,
+                    )
+                    if market_changed:
+                        counters.markets_upserted += 1
+
+                    if market_dim is None:
+                        counters.error_count += 1
+                        continue
+
+                    asset_dims, asset_upserted = await _upsert_asset_dims(
+                        session,
+                        market_dim=market_dim,
+                        payload=market_payload,
+                        observed_at_local=observed_at_local,
+                        source_kind=GAMMA_MARKET_SOURCE,
+                    )
+                    counters.assets_upserted += asset_upserted
+
+                    counters.param_rows_inserted += await _seed_params_from_market_payload(
+                        session,
+                        market_dim=market_dim,
+                        asset_dims=asset_dims,
+                        payload=market_payload,
+                        source_kind=GAMMA_MARKET_SOURCE,
+                        effective_at_exchange=_market_effective_at(market_payload),
+                        received_at_local=observed_at_local,
+                        observed_at_local=observed_at_local,
+                        sync_run_id=sync_run_id,
+                        raw_event_id=None,
+                    )
+                    counters.fee_rows_inserted += await self._sync_market_fee_history(
+                        session,
+                        market_dim=market_dim,
+                        asset_dims=asset_dims,
+                        observed_at_local=observed_at_local,
+                        sync_run_id=sync_run_id,
+                        market_payload=market_payload,
+                    )
+                    counters.reward_rows_inserted += await self._sync_market_reward_history(
+                        session,
+                        market_dim=market_dim,
+                        observed_at_local=observed_at_local,
+                        sync_run_id=sync_run_id,
+                        reward_payload=(
+                            reward_configs_by_condition.get(market_dim.condition_id)
+                            if reward_configs_by_condition is not None
+                            else None
+                        ),
+                    )
+                    processed_since_commit += 1
+                    if processed_since_commit >= META_SYNC_PROGRESS_BATCH_SIZE:
+                        await self._commit_progress(session, context=context, counters=counters)
+                        processed_since_commit = 0
+            if processed_since_commit:
+                await self._commit_progress(session, context=context, counters=counters)
 
     async def _normalize_books_response(self, data: Any, asset_ids: list[str]) -> list[dict[str, Any]]:
         if isinstance(data, list):
@@ -1272,6 +1413,13 @@ class PolymarketMetaSyncService:
             if next_cursor:
                 params["next_cursor"] = next_cursor
             response = await client.get(f"{settings.polymarket_api_base}/rewards/markets/current", params=params)
+            if next_cursor and response.status_code in {400, 500, 502, 503, 504}:
+                logger.warning(
+                    "Polymarket current rewards pagination stopped after cursor %s returned HTTP %s",
+                    next_cursor,
+                    response.status_code,
+                )
+                break
             response.raise_for_status()
             payload = response.json()
             rows: list[dict[str, Any]] = []
@@ -1416,6 +1564,7 @@ class PolymarketMetaSyncService:
         self,
         session: AsyncSession,
         *,
+        context: MetaSyncRunContext,
         counters: MetaSyncCounters,
         sync_run_id: uuid.UUID,
         explicit_asset_ids: list[str] | None,
@@ -1423,26 +1572,31 @@ class PolymarketMetaSyncService:
         target_asset_ids = await self._watched_assets_missing_metadata(session, explicit_asset_ids=explicit_asset_ids)
         if not target_asset_ids:
             return
-        payloads = await self._fetch_books_batch(target_asset_ids)
-        payloads_by_asset = {
-            str(_coalesce(payload.get("asset_id"), payload.get("assetId"))): payload
-            for payload in payloads
-            if isinstance(payload, dict) and _coalesce(payload.get("asset_id"), payload.get("assetId")) is not None
-        }
-        for asset_id in target_asset_ids:
-            payload = payloads_by_asset.get(asset_id)
-            if payload is None:
-                counters.error_count += 1
-                continue
-            observed_at_local = utcnow()
-            counters.param_rows_inserted += await seed_registry_from_book_snapshot(
-                session,
-                payload=payload,
-                observed_at_local=observed_at_local,
-                sync_run_id=sync_run_id,
-                raw_event_id=None,
-                source_kind=BOOK_SEED_SOURCE,
-            )
+        processed_since_commit = 0
+        for asset_batch in _chunk_values(target_asset_ids, META_SYNC_BOOK_SEED_BATCH_SIZE):
+            payloads = await self._fetch_books_batch(asset_batch)
+            payloads_by_asset = {
+                str(_coalesce(payload.get("asset_id"), payload.get("assetId"))): payload
+                for payload in payloads
+                if isinstance(payload, dict) and _coalesce(payload.get("asset_id"), payload.get("assetId")) is not None
+            }
+            for asset_id in asset_batch:
+                payload = payloads_by_asset.get(asset_id)
+                if payload is None:
+                    counters.error_count += 1
+                    continue
+                observed_at_local = utcnow()
+                counters.param_rows_inserted += await seed_registry_from_book_snapshot(
+                    session,
+                    payload=payload,
+                    observed_at_local=observed_at_local,
+                    sync_run_id=sync_run_id,
+                    raw_event_id=None,
+                    source_kind=BOOK_SEED_SOURCE,
+                )
+                processed_since_commit += 1
+            await self._commit_progress(session, context=context, counters=counters)
+            processed_since_commit = 0
 
     async def sync_metadata(
         self,
@@ -1454,111 +1608,113 @@ class PolymarketMetaSyncService:
         include_closed_value = settings.polymarket_meta_sync_include_closed if include_closed is None else include_closed
         sync_run_id = uuid.uuid4()
         target_asset_ids = unique_preserving_order([str(asset_id) for asset_id in (asset_ids or []) if asset_id])
+        context = MetaSyncRunContext(
+            sync_run_id=sync_run_id,
+            include_closed=include_closed_value,
+            target_asset_ids=target_asset_ids,
+        )
+        lock_connection = await self._acquire_sync_lock()
+        if self._bind is not None and self._bind.dialect.name == "postgresql" and lock_connection is None:
+            existing_run = await self._latest_running_sync()
+            if existing_run is not None:
+                logger.info(
+                    "Polymarket metadata sync already running; skipping %s request and returning run %s",
+                    reason,
+                    existing_run["id"],
+                )
+                return existing_run
+            raise RuntimeError("Polymarket metadata sync lock unavailable")
 
-        async with self._session_factory() as session:
-            run = PolymarketMetaSyncRun(
-                id=sync_run_id,
-                status="running",
-                reason=reason,
-                include_closed=include_closed_value,
-                details_json={"target_asset_ids": target_asset_ids or None},
-            )
-            session.add(run)
-            await session.commit()
-
-        counters = MetaSyncCounters()
-        failure_exc: Exception | None = None
         try:
             async with self._session_factory() as session:
-                reward_configs_by_condition = (
-                    await self._fetch_current_reward_configs()
-                    if settings.polymarket_reward_history_enabled
-                    else None
+                run = PolymarketMetaSyncRun(
+                    id=sync_run_id,
+                    status="running",
+                    reason=reason,
+                    include_closed=include_closed_value,
+                    details_json={"target_asset_ids": target_asset_ids or None},
                 )
-                if not target_asset_ids:
-                    await self._sync_gamma_events(
+                session.add(run)
+                await session.commit()
+
+            counters = MetaSyncCounters()
+            failure_exc: BaseException | None = None
+            async with self._session_factory() as session:
+                try:
+                    reward_configs_by_condition = (
+                        await self._fetch_current_reward_configs()
+                        if settings.polymarket_reward_history_enabled
+                        else None
+                    )
+                    if not target_asset_ids:
+                        await self._sync_gamma_events(
+                            session,
+                            context=context,
+                            counters=counters,
+                            include_closed=include_closed_value,
+                        )
+                    await self._sync_gamma_markets(
                         session,
+                        context=context,
                         counters=counters,
                         include_closed=include_closed_value,
+                        target_asset_ids=target_asset_ids or None,
+                        sync_run_id=sync_run_id,
+                        reward_configs_by_condition=reward_configs_by_condition,
                     )
-                await self._sync_gamma_markets(
-                    session,
-                    counters=counters,
-                    include_closed=include_closed_value,
-                    target_asset_ids=target_asset_ids or None,
-                    sync_run_id=sync_run_id,
-                    reward_configs_by_condition=reward_configs_by_condition,
-                )
-                await self._seed_missing_book_metadata(
-                    session,
-                    counters=counters,
-                    sync_run_id=sync_run_id,
-                    explicit_asset_ids=target_asset_ids or None,
-                )
+                    await self._seed_missing_book_metadata(
+                        session,
+                        context=context,
+                        counters=counters,
+                        sync_run_id=sync_run_id,
+                        explicit_asset_ids=target_asset_ids or None,
+                    )
+                    await self._update_run_progress(
+                        session,
+                        context=context,
+                        counters=counters,
+                        status="completed" if counters.error_count == 0 else "partial",
+                        completed=True,
+                    )
+                    await session.commit()
+                except BaseException as exc:
+                    failure_exc = exc
+                    counters.error_count += 1
+                    async with self._session_factory() as failure_session:
+                        await self._update_run_progress(
+                            failure_session,
+                            context=context,
+                            counters=counters,
+                            status="cancelled" if isinstance(exc, asyncio.CancelledError) else "failed",
+                            error=str(exc),
+                            completed=True,
+                        )
+                        await failure_session.commit()
 
-                run = await session.get(PolymarketMetaSyncRun, sync_run_id)
-                assert run is not None
-                run.completed_at = utcnow()
-                run.status = "completed" if counters.error_count == 0 else "partial"
-                run.events_seen = counters.events_seen
-                run.markets_seen = counters.markets_seen
-                run.assets_upserted = counters.assets_upserted
-                run.events_upserted = counters.events_upserted
-                run.markets_upserted = counters.markets_upserted
-                run.param_rows_inserted = counters.param_rows_inserted
-                run.error_count = counters.error_count
-                run.details_json = {
-                    "target_asset_ids": target_asset_ids or None,
-                    "include_closed": include_closed_value,
-                    "fee_rows_inserted": counters.fee_rows_inserted,
-                    "reward_rows_inserted": counters.reward_rows_inserted,
-                }
-                await session.commit()
-        except Exception as exc:
-            failure_exc = exc
             async with self._session_factory() as session:
                 run = await session.get(PolymarketMetaSyncRun, sync_run_id)
-                if run is not None:
-                    run.completed_at = utcnow()
-                    run.status = "failed"
-                    run.events_seen = counters.events_seen
-                    run.markets_seen = counters.markets_seen
-                    run.assets_upserted = counters.assets_upserted
-                    run.events_upserted = counters.events_upserted
-                    run.markets_upserted = counters.markets_upserted
-                    run.param_rows_inserted = counters.param_rows_inserted
-                    run.error_count = counters.error_count + 1
-                    run.details_json = {
-                        "target_asset_ids": target_asset_ids or None,
-                        "include_closed": include_closed_value,
-                        "fee_rows_inserted": counters.fee_rows_inserted,
-                        "reward_rows_inserted": counters.reward_rows_inserted,
-                        "error": str(exc),
-                    }
-                    await session.commit()
+                assert run is not None
+                serialized = _serialize_sync_run(run)
+                status = run.status
 
-        async with self._session_factory() as session:
-            run = await session.get(PolymarketMetaSyncRun, sync_run_id)
-            assert run is not None
-            serialized = _serialize_sync_run(run)
-            status = run.status
+            polymarket_meta_sync_runs.labels(reason=reason, status=status).inc()
+            if status in {"failed", "partial", "cancelled"}:
+                polymarket_meta_sync_failures.inc()
+            polymarket_meta_events_upserted.inc(counters.events_upserted)
+            polymarket_meta_markets_upserted.inc(counters.markets_upserted)
+            polymarket_meta_assets_upserted.inc(counters.assets_upserted)
+            polymarket_meta_param_rows_inserted.inc(counters.param_rows_inserted)
 
-        polymarket_meta_sync_runs.labels(reason=reason, status=status).inc()
-        if status in {"failed", "partial"}:
-            polymarket_meta_sync_failures.inc()
-        polymarket_meta_events_upserted.inc(counters.events_upserted)
-        polymarket_meta_markets_upserted.inc(counters.markets_upserted)
-        polymarket_meta_assets_upserted.inc(counters.assets_upserted)
-        polymarket_meta_param_rows_inserted.inc(counters.param_rows_inserted)
+            if status in {"completed", "partial"} and serialized["completed_at"] is not None:
+                completed_at = serialized["completed_at"]
+                polymarket_meta_last_successful_sync_timestamp.set(completed_at.timestamp())
+                polymarket_meta_last_successful_sync_age_seconds.set(0)
 
-        if status in {"completed", "partial"} and serialized["completed_at"] is not None:
-            completed_at = serialized["completed_at"]
-            polymarket_meta_last_successful_sync_timestamp.set(completed_at.timestamp())
-            polymarket_meta_last_successful_sync_age_seconds.set(0)
-
-        if failure_exc is not None:
-            raise failure_exc
-        return serialized
+            if failure_exc is not None:
+                raise failure_exc
+            return serialized
+        finally:
+            await self._release_sync_lock(lock_connection)
 
     async def run(self, stop_event: asyncio.Event) -> None:
         if not settings.polymarket_meta_sync_enabled:
