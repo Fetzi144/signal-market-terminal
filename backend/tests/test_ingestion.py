@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from app.connectors.base import RawMarket, RawOutcome
 from app.ingestion.markets import _upsert_market
-from app.models.market import Market, Outcome
+from app.models.market import Market, Outcome, normalize_question_slug
 from app.models.snapshot import PriceSnapshot
 from tests.conftest import make_market, make_outcome, make_price_snapshot
 
@@ -117,6 +117,43 @@ class TestMarketUpsert:
         )
         outcomes = outcome_result.scalars().all()
         assert len(outcomes) == 2
+
+    async def test_insert_market_truncates_long_question_slug_without_losing_determinism(self, session):
+        long_question = (
+            "Will any member of the Cabinet defined as the Vice President Secretary of State "
+            "Secretary of the Treasury Secretary of Defense Attorney General Secretary of the Interior "
+            "Secretary of Agriculture Secretary of Commerce Secretary of Labor Secretary of Health and Human Services "
+            "Secretary of Housing and Urban Development Secretary of Transportation Secretary of Energy "
+            "Secretary of Education Secretary of Veterans Affairs Secretary of Homeland Security "
+            "Director of National Intelligence Trade Representative Administrator of the Small Business Administration "
+            "White House Chief of Staff be impeached before Jul 1 2026 and if so under what surrounding political circumstances?"
+        )
+        rm = RawMarket(
+            platform="kalshi",
+            platform_id="KXIMPEACHCABINET-26JUL01",
+            slug="kximpeachcabinet-26jul01",
+            question=long_question,
+            category="Politics",
+            end_date="2026-07-01T14:00:00Z",
+            active=True,
+            outcomes=[
+                RawOutcome(platform_outcome_id="KXIMPEACHCABINET-26JUL01_yes", name="Yes", token_id=None, price=None),
+                RawOutcome(platform_outcome_id="KXIMPEACHCABINET-26JUL01_no", name="No", token_id=None, price=None),
+            ],
+            volume_24h=Decimal("511.62"),
+            liquidity=Decimal("34991.24"),
+            metadata={"event_ticker": "KXIMPEACHCABINET"},
+        )
+
+        await _upsert_market(session, rm)
+        await session.flush()
+
+        result = await session.execute(select(Market).where(Market.platform_id == "KXIMPEACHCABINET-26JUL01"))
+        market = result.scalar_one()
+
+        assert market.question == long_question
+        assert market.question_slug == normalize_question_slug(long_question)
+        assert len(market.question_slug) <= 512
 
 
 @pytest.mark.asyncio

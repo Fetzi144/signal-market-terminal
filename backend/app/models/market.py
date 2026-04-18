@@ -1,4 +1,5 @@
 import re
+from hashlib import sha1
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -9,13 +10,34 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
+MAX_MARKET_SLUG_LENGTH = 512
+MAX_QUESTION_SLUG_LENGTH = 512
+_TRUNCATION_HASH_LENGTH = 12
+
+
+def _truncate_with_hash(value: str, *, max_length: int) -> str:
+    if len(value) <= max_length:
+        return value
+
+    suffix = sha1(value.encode("utf-8")).hexdigest()[:_TRUNCATION_HASH_LENGTH]
+    prefix_length = max_length - len(suffix) - 1
+    if prefix_length <= 0:
+        return suffix[:max_length]
+    return f"{value[:prefix_length]}-{suffix}"
+
 
 def normalize_question_slug(question: str) -> str:
     """Normalize a market question to a lowercase slug for cross-platform matching."""
     slug = question.lower()
     slug = re.sub(r"[^\w\s]", "", slug)  # strip punctuation
     slug = re.sub(r"\s+", " ", slug).strip()  # collapse whitespace
-    return slug
+    return _truncate_with_hash(slug, max_length=MAX_QUESTION_SLUG_LENGTH)
+
+
+def normalize_market_slug(slug: str | None) -> str | None:
+    if slug is None:
+        return None
+    return _truncate_with_hash(slug.strip(), max_length=MAX_MARKET_SLUG_LENGTH)
 
 
 class Market(Base):
