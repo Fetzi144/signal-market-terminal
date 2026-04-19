@@ -79,8 +79,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
-          cpus: "1.0"
+          memory: 1G
+          cpus: "2.0"
     networks:
       - smt-net
 
