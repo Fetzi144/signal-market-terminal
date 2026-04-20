@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 SCHEDULER_LEASE_NAME = "default"
+PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE = 1000
 PAPER_TRADING_PENDING_RETRY_BATCH_SIZE = 100
 PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE = 100
 
@@ -249,6 +250,7 @@ async def _run_paper_trading(session, signals):
     from app.paper_trading.engine import attempt_open_trade, ensure_pending_execution_decision
     from app.paper_trading.reconciliation import (
         backfill_execution_decisions_from_strategy_metadata,
+        expire_stale_pending_execution_decisions,
         hydrate_strategy_run_state,
         load_missing_qualified_signals,
     )
@@ -258,6 +260,7 @@ async def _run_paper_trading(session, signals):
     candidate_count = 0
     retry_candidates = 0
     backlog_candidates = 0
+    expired_pending_decisions = 0
     skip_counts: dict[str, int] = {}
     strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
     if strategy_run is None:
@@ -280,6 +283,11 @@ async def _run_paper_trading(session, signals):
         session,
         strategy_run,
         signals=missing_backlog_signals,
+    )
+    expired_pending_decisions = await expire_stale_pending_execution_decisions(
+        session,
+        strategy_run,
+        limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
     )
     backlog_retry_signals = [
         signal
@@ -370,7 +378,7 @@ async def _run_paper_trading(session, signals):
             reason_code = strategy_details.get("reason_code") or "unknown"
             skip_counts[reason_code] = skip_counts.get(reason_code, 0) + 1
 
-    if candidate_count > 0 or state_rehydrated or backfilled_signal_ids:
+    if candidate_count > 0 or state_rehydrated or backfilled_signal_ids or expired_pending_decisions:
         await session.commit()
         if state_rehydrated:
             logger.warning(
@@ -381,6 +389,18 @@ async def _run_paper_trading(session, signals):
             logger.warning(
                 "Paper trading backfilled %d historical execution decision(s) from stored signal metadata",
                 len(backfilled_signal_ids),
+            )
+        if expired_pending_decisions:
+            logger.warning(
+                "Paper trading expired %d stale pending execution decision(s) older than %d seconds",
+                expired_pending_decisions,
+                settings.paper_trading_pending_decision_max_age_seconds,
+            )
+        if expired_pending_decisions == PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE:
+            logger.info(
+                "Paper trading pending-expiry backlog capped at %d execution decision(s) for strategy run %s",
+                PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
+                strategy_run.id,
             )
         if len(pending_retry_signals) == PAPER_TRADING_PENDING_RETRY_BATCH_SIZE:
             logger.info(

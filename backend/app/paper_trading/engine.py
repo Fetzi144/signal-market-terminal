@@ -42,6 +42,7 @@ ONE = Decimal("1")
 HALF = Decimal("0.5")
 REASON_LABELS = {
     "pending_decision": "Pending decision",
+    "pending_decision_expired": "Pending decision retry window expired",
     "paper_trading_disabled": "Paper trading disabled",
     "already_recorded": "Already recorded in run",
     "already_open": "Already open",

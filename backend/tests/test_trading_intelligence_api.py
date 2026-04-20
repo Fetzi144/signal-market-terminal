@@ -752,6 +752,105 @@ async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
 
 
 @pytest.mark.asyncio
+async def test_scheduler_expires_stale_pending_execution_decisions_before_retry(session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    market = make_market(session, question="Pending expiry market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(hours=1))
+
+    stale_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        timeframe="stale_pending",
+        fired_at=now - timedelta(minutes=25),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Pending expiry market", "outcome_name": "Yes"},
+    )
+    retry_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        timeframe="retry_pending",
+        fired_at=now - timedelta(minutes=4),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Pending expiry market", "outcome_name": "Yes"},
+    )
+    await session.flush()
+
+    session.add_all(
+        [
+            ExecutionDecision(
+                id=uuid.uuid4(),
+                signal_id=stale_signal.id,
+                strategy_run_id=strategy_run.id,
+                decision_at=now - timedelta(minutes=20),
+                decision_status="pending_decision",
+                action="pending",
+                reason_code="execution_missing_orderbook_context",
+                missing_orderbook_context=True,
+                details={"reason_label": "Missing orderbook context", "detail": "Waiting for orderbook context"},
+            ),
+            ExecutionDecision(
+                id=uuid.uuid4(),
+                signal_id=retry_signal.id,
+                strategy_run_id=strategy_run.id,
+                decision_at=now - timedelta(minutes=2),
+                decision_status="pending_decision",
+                action="pending",
+                reason_code="execution_missing_orderbook_context",
+                missing_orderbook_context=True,
+                details={"reason_label": "Missing orderbook context", "detail": "Waiting for orderbook context"},
+            ),
+        ]
+    )
+    await session.commit()
+
+    monkeypatch.setattr(settings, "paper_trading_pending_decision_max_age_seconds", 300)
+
+    await _run_paper_trading(session, [])
+
+    stale_decision = await session.scalar(
+        select(ExecutionDecision).where(ExecutionDecision.signal_id == stale_signal.id)
+    )
+    retry_decision = await session.scalar(
+        select(ExecutionDecision).where(ExecutionDecision.signal_id == retry_signal.id)
+    )
+    await session.refresh(stale_signal)
+    await session.refresh(retry_signal)
+
+    assert stale_decision is not None
+    assert stale_decision.decision_status == "skipped"
+    assert stale_decision.reason_code == "pending_decision_expired"
+    assert stale_decision.details["expired_pending_reason_code"] == "execution_missing_orderbook_context"
+    assert stale_decision.details["diagnostics"]["retry_window_seconds"] == 300
+
+    stale_metadata = stale_signal.details["default_strategy"]
+    assert stale_metadata["attempt_kind"] == "pending_expiry"
+    assert stale_metadata["eligible"] is True
+    assert stale_metadata["decision"] == "skipped"
+    assert stale_metadata["reason_code"] == "pending_decision_expired"
+    assert stale_metadata["diagnostics"]["expired_pending_reason_code"] == "execution_missing_orderbook_context"
+
+    assert retry_decision is not None
+    assert retry_decision.decision_status == "pending_decision"
+    assert retry_decision.reason_code == "execution_missing_orderbook_context"
+
+    retry_metadata = retry_signal.details["default_strategy"]
+    assert retry_metadata["attempt_kind"] == "retry"
+    assert retry_metadata["decision"] == "pending_decision"
+    assert retry_metadata["reason_code"] == "execution_missing_orderbook_context"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_limits_paper_trading_retry_and_repair_backlogs(session, monkeypatch):
     market = make_market(session, question="Backlog throttle market")
     outcome = make_outcome(session, market.id, name="Yes")

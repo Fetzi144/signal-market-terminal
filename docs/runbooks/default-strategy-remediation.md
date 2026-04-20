@@ -62,6 +62,7 @@ Minimum operator checks:
 - `trade_funnel.integrity_errors` is empty
 - `pending_decision` counts come from stored decision rows, not from missing-row inference
 - `pending_decision_watch.max_age_seconds` is reviewed so stale pending rows do not accumulate silently
+- retryable pending decisions older than the configured retry window surface as `pending_decision_expired` skips instead of sitting in the funnel indefinitely
 - `risk_blocks.local_paper_book_blocks` and `risk_blocks.shared_global_blocks` are reviewed separately
 - `headline.current_equity`, `headline.peak_equity`, and `headline.drawdown_pct` move consistently with resolved trades
 - `comparison_modes.signal_level.unit = "per_share"`

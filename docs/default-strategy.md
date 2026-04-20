@@ -64,6 +64,8 @@ For every qualified signal after the run boundary, exactly one of the following 
 
 `pending_decision_watch` exposes the oldest pending decision timestamp, current pending count, and max pending age so stale pending rows are visible instead of silent.
 
+Retryable execution-context pending decisions are not immortal. The scheduler retries them only within the configured `paper_trading_pending_decision_max_age_seconds` window. Once that window expires, the row is converted to `skipped` with `reason_code = "pending_decision_expired"` while preserving the last retryable reason in decision diagnostics.
+
 The core invariant is:
 
 ```text

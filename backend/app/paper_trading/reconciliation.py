@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Iterable, Sequence
 
@@ -24,6 +24,14 @@ from app.paper_trading.strategy_run_state import (
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
+RETRYABLE_PENDING_DECISION_REASON_CODES = (
+    "pending_decision",
+    "execution_missing_orderbook_context",
+    "execution_stale_orderbook_context",
+    "execution_no_fill",
+    "execution_partial_fill_below_minimum",
+    "execution_ev_below_threshold",
+)
 
 
 def _ensure_utc(value: datetime | None) -> datetime | None:
@@ -304,3 +312,116 @@ async def backfill_execution_decisions_from_strategy_metadata(
         )
 
     return backfilled_signal_ids
+
+
+async def expire_stale_pending_execution_decisions(
+    session: AsyncSession,
+    strategy_run: StrategyRun,
+    *,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> int:
+    current = _ensure_utc(now) or datetime.now(timezone.utc)
+    expiry_window_seconds = settings.paper_trading_pending_decision_max_age_seconds
+    cutoff = current - timedelta(seconds=expiry_window_seconds)
+    baseline_start_at = strategy_run.started_at.isoformat() if strategy_run.started_at else None
+    expired_reason_code = "pending_decision_expired"
+    expired_reason_label = _reason_label(expired_reason_code)
+
+    query = (
+        select(ExecutionDecision, Signal)
+        .join(Signal, Signal.id == ExecutionDecision.signal_id)
+        .where(
+            ExecutionDecision.strategy_run_id == strategy_run.id,
+            ExecutionDecision.decision_status == "pending_decision",
+            ExecutionDecision.reason_code.in_(RETRYABLE_PENDING_DECISION_REASON_CODES),
+            ExecutionDecision.decision_at < cutoff,
+        )
+        .order_by(ExecutionDecision.decision_at.asc(), ExecutionDecision.id.asc())
+    )
+    if limit is not None:
+        query = query.limit(limit)
+
+    rows = (await session.execute(query)).all()
+    if not rows:
+        return 0
+
+    expired_at = current.isoformat()
+    for decision, signal in rows:
+        original_decision_at = _ensure_utc(decision.decision_at) or current
+        pending_age_seconds = max(0, int((current - original_decision_at).total_seconds()))
+        original_reason_code = decision.reason_code
+        original_reason_label = _reason_label(original_reason_code)
+        detail = (
+            f"Pending execution decision expired after {pending_age_seconds} seconds "
+            f"without resolving {original_reason_label.lower()}."
+        )
+
+        decision_diagnostics = dict((decision.details or {}).get("diagnostics") or {})
+        decision_diagnostics.update(
+            {
+                "expired_pending_decision": True,
+                "expired_pending_reason_code": original_reason_code,
+                "expired_pending_reason_label": original_reason_label,
+                "expired_pending_decision_at": original_decision_at.isoformat(),
+                "expired_at": expired_at,
+                "pending_age_seconds": pending_age_seconds,
+                "retry_window_seconds": expiry_window_seconds,
+            }
+        )
+
+        decision_details = dict(decision.details or {})
+        decision_details.update(
+            _json_safe(
+                {
+                    "reason_label": expired_reason_label,
+                    "detail": detail,
+                    "diagnostics": decision_diagnostics,
+                    "expired_pending_reason_code": original_reason_code,
+                    "expired_pending_reason_label": original_reason_label,
+                    "expired_pending_decision_at": original_decision_at,
+                    "expired_at": current,
+                }
+            )
+        )
+
+        decision.decision_status = "skipped"
+        decision.action = "skip"
+        decision.reason_code = expired_reason_code
+        decision.details = decision_details
+
+        signal_details = dict(signal.details or {})
+        strategy_details = dict(signal_details.get("default_strategy") or {})
+        signal_diagnostics = dict(strategy_details.get("diagnostics") or {})
+        signal_diagnostics.update(
+            {
+                "expired_pending_decision": True,
+                "expired_pending_reason_code": original_reason_code,
+                "expired_pending_reason_label": original_reason_label,
+                "expired_pending_decision_at": original_decision_at.isoformat(),
+                "expired_at": expired_at,
+                "pending_age_seconds": pending_age_seconds,
+                "retry_window_seconds": expiry_window_seconds,
+            }
+        )
+        strategy_details.update(
+            {
+                "strategy_name": settings.default_strategy_name,
+                "strategy_run_id": str(strategy_run.id),
+                "baseline_start_at": baseline_start_at,
+                "evaluated_at": expired_at,
+                "attempt_kind": "pending_expiry",
+                "eligible": strategy_details.get("eligible", True),
+                "decision": "skipped",
+                "reason_code": expired_reason_code,
+                "reason_label": expired_reason_label,
+                "detail": detail,
+                "trade_id": None,
+                "diagnostics": signal_diagnostics,
+            }
+        )
+        signal_details["default_strategy"] = strategy_details
+        signal.details = signal_details
+
+    await session.flush()
+    return len(rows)

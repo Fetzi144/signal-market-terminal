@@ -17,6 +17,7 @@ class DefaultStrategyEvaluation:
 
 SKIP_REASON_LABELS = {
     "pending_decision": "Pending decision",
+    "pending_decision_expired": "Pending decision retry window expired",
     "before_baseline_start": "Before baseline start",
     "missing_outcome_id": "Missing outcome",
     "missing_probability": "Missing probability",
@@ -168,6 +169,7 @@ def get_default_strategy_contract(*, started_at: datetime | None = None) -> dict
         "preferred_observation_days": settings.default_strategy_preferred_observation_days,
         "legacy_benchmark_rank_threshold": settings.legacy_benchmark_rank_threshold,
         "paper_trading_enabled": settings.paper_trading_enabled,
+        "paper_trading_pending_decision_max_age_seconds": settings.paper_trading_pending_decision_max_age_seconds,
     }
 
 

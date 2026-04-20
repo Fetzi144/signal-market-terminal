@@ -244,6 +244,7 @@ class Settings(BaseSettings):
     max_cluster_exposure_pct: float = 0.15  # 15% of bankroll per correlated cluster
     drawdown_circuit_breaker_pct: float = 0.15  # pause at -15% from peak
     paper_trading_enabled: bool = True
+    paper_trading_pending_decision_max_age_seconds: int = 900
     shadow_execution_max_staleness_seconds: int = 180
     shadow_execution_max_forward_seconds: int = 30
     shadow_execution_min_fill_pct: float = 0.20
@@ -383,6 +384,7 @@ class Settings(BaseSettings):
         "market_pagination_cap",
         "orderbook_sample_size",
         "cleanup_interval_hours",
+        "paper_trading_pending_decision_max_age_seconds",
         "shadow_execution_max_staleness_seconds",
         "shadow_execution_max_forward_seconds",
         "scheduler_lease_seconds",
