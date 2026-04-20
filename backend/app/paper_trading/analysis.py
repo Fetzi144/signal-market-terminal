@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -13,7 +14,6 @@ from app.backtesting.comparison import compare_strategy_measurement_modes, empty
 from app.config import settings
 from app.default_strategy import (
     default_strategy_skip_label,
-    evaluate_default_strategy_signal,
     get_default_strategy_contract,
 )
 from app.metrics import (
@@ -24,6 +24,11 @@ from app.models.execution_decision import ExecutionDecision
 from app.models.market import Market
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
+from app.paper_trading.portfolio_views import (
+    _get_metrics as _get_trade_metrics,
+    _get_pnl_curve as _get_trade_pnl_curve,
+    _get_portfolio_state as _get_trade_portfolio_state,
+)
 from app.signals.probability import brier_score
 from app.strategy_runs.service import (
     get_active_strategy_run,
@@ -33,6 +38,16 @@ from app.strategy_runs.service import (
 
 ZERO = Decimal("0")
 PENDING_DECISION_EXAMPLE_LIMIT = 5
+
+
+@dataclass(frozen=True)
+class DecisionSummary:
+    id: uuid.UUID
+    signal_id: uuid.UUID
+    decision_at: datetime | None
+    decision_status: str
+    reason_code: str | None
+    details: dict | None = None
 
 
 def _safe_float(value):
@@ -338,6 +353,153 @@ async def get_default_strategy_run_lookup(session: AsyncSession) -> dict:
     return {"state": "active_run", "strategy_run": serialize_strategy_run(strategy_run), "bootstrap_required": False, "suggested_launch_boundary_at": launch_boundary.isoformat() if launch_boundary is not None else None}
 
 
+def _default_strategy_signal_filters(
+    *,
+    launch_at: datetime,
+    qualified_only: bool = False,
+    before_launch: bool = False,
+) -> list:
+    filters = []
+    if settings.default_strategy_signal_type:
+        filters.append(Signal.signal_type == settings.default_strategy_signal_type)
+    filters.append(Signal.fired_at < launch_at if before_launch else Signal.fired_at >= launch_at)
+    if qualified_only:
+        min_ev_threshold = Decimal(str(settings.min_ev_threshold))
+        filters.extend(
+            [
+                Signal.outcome_id.is_not(None),
+                Signal.estimated_probability.is_not(None),
+                Signal.price_at_fire.is_not(None),
+                Signal.expected_value.is_not(None),
+                func.abs(Signal.expected_value) >= min_ev_threshold,
+            ]
+        )
+    return filters
+
+
+async def _count_default_strategy_signals(
+    session: AsyncSession,
+    *,
+    launch_at: datetime,
+    qualified_only: bool = False,
+    before_launch: bool = False,
+) -> int:
+    result = await session.execute(
+        select(func.count(Signal.id)).where(
+            *_default_strategy_signal_filters(
+                launch_at=launch_at,
+                qualified_only=qualified_only,
+                before_launch=before_launch,
+            )
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def _load_qualified_default_strategy_signal_ids(
+    session: AsyncSession,
+    *,
+    launch_at: datetime,
+) -> list[uuid.UUID]:
+    result = await session.execute(
+        select(Signal.id)
+        .where(
+            *_default_strategy_signal_filters(
+                launch_at=launch_at,
+                qualified_only=True,
+            )
+        )
+        .order_by(Signal.fired_at.asc(), Signal.id.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def _load_strategy_trade_rows(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID,
+) -> list[tuple[PaperTrade, Signal]]:
+    result = await session.execute(
+        select(PaperTrade, Signal)
+        .join(Signal, Signal.id == PaperTrade.signal_id)
+        .where(PaperTrade.strategy_run_id == strategy_run_id)
+        .order_by(PaperTrade.opened_at.desc())
+    )
+    return result.all()
+
+
+async def _load_qualified_decision_rows(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID,
+    launch_at: datetime,
+) -> list[DecisionSummary]:
+    result = await session.execute(
+        select(
+            ExecutionDecision.id,
+            ExecutionDecision.signal_id,
+            ExecutionDecision.decision_at,
+            ExecutionDecision.decision_status,
+            ExecutionDecision.reason_code,
+            ExecutionDecision.details,
+        )
+        .join(Signal, Signal.id == ExecutionDecision.signal_id)
+        .where(
+            ExecutionDecision.strategy_run_id == strategy_run_id,
+            *_default_strategy_signal_filters(
+                launch_at=launch_at,
+                qualified_only=True,
+            ),
+        )
+        .order_by(ExecutionDecision.decision_at.asc(), ExecutionDecision.id.asc())
+    )
+    return [
+        DecisionSummary(
+            id=decision_id,
+            signal_id=signal_id,
+            decision_at=decision_at,
+            decision_status=decision_status,
+            reason_code=reason_code,
+            details=details if isinstance(details, dict) else {},
+        )
+        for decision_id, signal_id, decision_at, decision_status, reason_code, details in result.all()
+    ]
+
+
+async def _count_excluded_pre_launch_trades(
+    session: AsyncSession,
+    *,
+    launch_at: datetime,
+) -> int:
+    if not settings.default_strategy_signal_type:
+        return 0
+    result = await session.execute(
+        select(func.count(PaperTrade.id))
+        .join(Signal, Signal.id == PaperTrade.signal_id)
+        .where(
+            Signal.signal_type == settings.default_strategy_signal_type,
+            Signal.fired_at < launch_at,
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def _count_excluded_legacy_trades(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID,
+) -> int:
+    result = await session.execute(
+        select(func.count(PaperTrade.id)).where(
+            or_(
+                PaperTrade.strategy_run_id.is_(None),
+                PaperTrade.strategy_run_id != strategy_run_id,
+            )
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
 async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     lookup = await get_default_strategy_run_lookup(session)
     strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
@@ -400,21 +562,23 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
 
     launch_at = _ensure_utc(strategy_run.started_at)
     now = datetime.now(timezone.utc)
-    signal_query = select(Signal)
-    if settings.default_strategy_signal_type:
-        signal_query = signal_query.where(Signal.signal_type == settings.default_strategy_signal_type)
-    all_candidate_signals = (await session.execute(signal_query)).scalars().all()
-    all_candidate_signals.sort(key=_signal_sort_key)
-    pre_launch_candidate_signals = [signal for signal in all_candidate_signals if (_ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)) < launch_at]
-    candidate_signals = [signal for signal in all_candidate_signals if (_ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)) >= launch_at]
-    candidate_evaluations = [(signal, evaluate_default_strategy_signal(signal, started_at=launch_at)) for signal in candidate_signals]
-    qualified_signals = [signal for signal, evaluation in candidate_evaluations if evaluation.eligible]
+    candidate_signal_count = await _count_default_strategy_signals(session, launch_at=launch_at)
+    pre_launch_candidate_signals = await _count_default_strategy_signals(
+        session,
+        launch_at=launch_at,
+        before_launch=True,
+    )
+    qualified_signal_ids = await _load_qualified_default_strategy_signal_ids(session, launch_at=launch_at)
 
-    all_trade_rows = (await session.execute(select(PaperTrade, Signal).join(Signal, Signal.id == PaperTrade.signal_id).order_by(PaperTrade.opened_at.desc()))).all()
-    strategy_trade_rows = [(trade, signal) for trade, signal in all_trade_rows if trade.strategy_run_id == strategy_run.id]
+    strategy_trade_rows = await _load_strategy_trade_rows(session, strategy_run_id=strategy_run.id)
     strategy_trade_rows.sort(key=_trade_opened_sort_key, reverse=True)
     trades_by_signal_id = {signal.id: trade for trade, signal in strategy_trade_rows}
-    decision_rows = (await session.execute(select(ExecutionDecision).where(ExecutionDecision.strategy_run_id == strategy_run.id).order_by(ExecutionDecision.decision_at.asc(), ExecutionDecision.id.asc()))).scalars().all()
+
+    decision_rows = await _load_qualified_decision_rows(
+        session,
+        strategy_run_id=strategy_run.id,
+        launch_at=launch_at,
+    )
     decisions_by_signal_id = {row.signal_id: row for row in decision_rows}
     pending_watch = _pending_decision_watch(decision_rows, now=now)
     _publish_pending_decision_metrics(pending_watch)
@@ -429,15 +593,15 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     shared_upstream_reason_counts: dict[str, int] = {}
     execution_liquidity_reason_counts: dict[str, int] = {}
     shared_global_examples: list[dict] = []
-    for signal in qualified_signals:
-        trade = trades_by_signal_id.get(signal.id)
-        decision = decisions_by_signal_id.get(signal.id)
+    for signal_id in qualified_signal_ids:
+        trade = trades_by_signal_id.get(signal_id)
+        decision = decisions_by_signal_id.get(signal_id)
         if decision is None:
-            integrity_errors.append({"signal_id": str(signal.id), "error": "missing_execution_decision"})
+            integrity_errors.append({"signal_id": str(signal_id), "error": "missing_execution_decision"})
             continue
         if trade is not None:
             if decision.decision_status != "opened":
-                integrity_errors.append({"signal_id": str(signal.id), "error": "trade_decision_status_mismatch", "decision_status": decision.decision_status})
+                integrity_errors.append({"signal_id": str(signal_id), "error": "trade_decision_status_mismatch", "decision_status": decision.decision_status})
                 continue
             opened_trade_signals += 1
             continue
@@ -445,10 +609,10 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
             pending_decision_signals += 1
             continue
         if decision.decision_status == "opened":
-            integrity_errors.append({"signal_id": str(signal.id), "error": "opened_without_trade"})
+            integrity_errors.append({"signal_id": str(signal_id), "error": "opened_without_trade"})
             continue
         if decision.decision_status != "skipped":
-            integrity_errors.append({"signal_id": str(signal.id), "error": "unrecognized_decision_status", "decision_status": decision.decision_status})
+            integrity_errors.append({"signal_id": str(signal_id), "error": "unrecognized_decision_status", "decision_status": decision.decision_status})
             continue
         skipped_signals += 1
         reason_code, reason_label = _skip_reason_row(decision)
@@ -462,7 +626,7 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
             if len(shared_global_examples) < 3:
                 shared_global_examples.append(
                     {
-                        "signal_id": str(signal.id),
+                        "signal_id": str(signal_id),
                         "decision_id": str(decision.id),
                         "reason_code": reason_code,
                         "reason_label": reason_label,
@@ -482,25 +646,21 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     resolved_trade_signal_ids = {signal.id for signal in resolved_trade_signals}
     traded_signal_ids = {signal.id for _trade, signal in strategy_trade_rows}
     first_trade_at = min((_ensure_utc(trade.opened_at) for trade, _signal in strategy_trade_rows), default=None)
-    portfolio = _portfolio_from_trade_rows(strategy_trade_rows)
-    metrics = _metrics_from_trade_rows(strategy_trade_rows)
+    portfolio = await _get_trade_portfolio_state(session, strategy_run_id=strategy_run.id)
+    metrics = await _get_trade_metrics(session, strategy_run_id=strategy_run.id)
+    pnl_curve = await _get_trade_pnl_curve(session, strategy_run_id=strategy_run.id)
     comparison_modes = await compare_strategy_measurement_modes(
         session,
         start_date=strategy_run.started_at,
         end_date=now,
         strategy_run_id=strategy_run.id,
     )
-
-    excluded_pre_launch_trades = sum(
-        1
-        for trade, signal in all_trade_rows
-        if settings.default_strategy_signal_type
-        and signal.signal_type == settings.default_strategy_signal_type
-        and ((_ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)) < launch_at)
-    )
+    excluded_pre_launch_trades = await _count_excluded_pre_launch_trades(session, launch_at=launch_at)
+    excluded_legacy_trades = await _count_excluded_legacy_trades(session, strategy_run_id=strategy_run.id)
+    qualified_signal_count = len(qualified_signal_ids)
     trade_funnel = {
-        "candidate_signals": len(candidate_signals),
-        "qualified_signals": len(qualified_signals),
+        "candidate_signals": candidate_signal_count,
+        "qualified_signals": qualified_signal_count,
         "opened_trade_signals": opened_trade_signals,
         "skipped_signals": skipped_signals,
         "pending_decision_signals": pending_decision_signals,
@@ -510,23 +670,23 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         "resolved_trades": metrics["total_trades"],
         "resolved_signals": len(resolved_trade_signal_ids),
         "unresolved_traded_signals": max(0, len(traded_signal_ids) - len(resolved_trade_signal_ids)),
-        "pre_launch_candidate_signals": len(pre_launch_candidate_signals),
+        "pre_launch_candidate_signals": pre_launch_candidate_signals,
         "excluded_pre_launch_trades": excluded_pre_launch_trades,
-        "excluded_legacy_trades": sum(1 for trade, _signal in all_trade_rows if trade.strategy_run_id != strategy_run.id),
+        "excluded_legacy_trades": excluded_legacy_trades,
         "integrity_errors": integrity_errors,
-        "conservation_holds": len(qualified_signals) == (opened_trade_signals + skipped_signals + pending_decision_signals),
+        "conservation_holds": qualified_signal_count == (opened_trade_signals + skipped_signals + pending_decision_signals),
     }
     return {
         "lookup": lookup,
         "strategy_run": strategy_run,
-        "candidate_signals": candidate_signals,
-        "qualified_signals": qualified_signals,
+        "candidate_signals": [],
+        "qualified_signals": [],
         "strategy_trade_rows": strategy_trade_rows,
         "resolved_trade_rows": resolved_trade_rows,
         "resolved_trade_signals": resolved_trade_signals,
         "portfolio": portfolio,
         "metrics": metrics,
-        "pnl_curve": _pnl_curve_from_trade_rows(strategy_trade_rows),
+        "pnl_curve": pnl_curve,
         "trade_funnel": trade_funnel,
         "started_at": launch_at,
         "launch_at": launch_at,
@@ -549,15 +709,24 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
 
 
 async def get_strategy_portfolio_state(session: AsyncSession) -> dict:
-    return (await _get_default_strategy_scope(session))["portfolio"]
+    strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    if strategy_run is None:
+        return _empty_portfolio()
+    return await _get_trade_portfolio_state(session, strategy_run_id=strategy_run.id)
 
 
 async def get_strategy_metrics(session: AsyncSession) -> dict:
-    return (await _get_default_strategy_scope(session))["metrics"]
+    strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    if strategy_run is None:
+        return _empty_metrics()
+    return await _get_trade_metrics(session, strategy_run_id=strategy_run.id)
 
 
 async def get_strategy_pnl_curve(session: AsyncSession) -> list[dict]:
-    return (await _get_default_strategy_scope(session))["pnl_curve"]
+    strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    if strategy_run is None:
+        return []
+    return await _get_trade_pnl_curve(session, strategy_run_id=strategy_run.id)
 
 
 async def get_strategy_history(
@@ -568,18 +737,29 @@ async def get_strategy_history(
     page: int = 1,
     page_size: int = 50,
 ) -> dict:
-    trade_rows = (await _get_default_strategy_scope(session))["strategy_trade_rows"]
-    filtered_trades = []
-    for trade, _signal in trade_rows:
-        if status and trade.status != status:
-            continue
-        if direction and trade.direction != direction:
-            continue
-        filtered_trades.append(trade)
-    total = len(filtered_trades)
-    start = (page - 1) * page_size
-    end = start + page_size
-    return {"trades": filtered_trades[start:end], "total": total, "page": page, "page_size": page_size}
+    strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    if strategy_run is None:
+        return {"trades": [], "total": 0, "page": page, "page_size": page_size}
+
+    query = select(PaperTrade).where(PaperTrade.strategy_run_id == strategy_run.id)
+    count_query = select(func.count(PaperTrade.id)).where(PaperTrade.strategy_run_id == strategy_run.id)
+    if status:
+        query = query.where(PaperTrade.status == status)
+        count_query = count_query.where(PaperTrade.status == status)
+    if direction:
+        query = query.where(PaperTrade.direction == direction)
+        count_query = count_query.where(PaperTrade.direction == direction)
+
+    total = int((await session.execute(count_query)).scalar_one() or 0)
+    result = await session.execute(
+        query.order_by(PaperTrade.opened_at.desc()).offset((page - 1) * page_size).limit(page_size)
+    )
+    return {
+        "trades": result.scalars().all(),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 
 async def get_default_strategy_pending_decision_watch(session: AsyncSession) -> dict:
@@ -622,15 +802,20 @@ async def get_strategy_health(session: AsyncSession) -> dict:
     default_predictions = [(signal.estimated_probability, signal.resolved_correctly) for signal in resolved_default_signals if signal.estimated_probability is not None and signal.resolved_correctly is not None]
     default_brier = brier_score(default_predictions) if default_predictions else None
 
-    all_trade_rows = (await session.execute(select(PaperTrade, Signal).join(Signal, Signal.id == PaperTrade.signal_id).order_by(PaperTrade.opened_at.desc()))).all()
     recent_mistakes, trade_counts_by_type, trade_pnl_by_type = [], {}, {}
-    for trade, signal in all_trade_rows:
-        fired_at = _ensure_utc(signal.fired_at) or datetime.min.replace(tzinfo=timezone.utc)
-        if fired_at < scope["launch_at"]:
-            continue
-        trade_counts_by_type[signal.signal_type] = trade_counts_by_type.get(signal.signal_type, 0) + 1
-        if trade.pnl is not None:
-            trade_pnl_by_type[signal.signal_type] = trade_pnl_by_type.get(signal.signal_type, ZERO) + trade.pnl
+    trade_impact_rows = await session.execute(
+        select(
+            Signal.signal_type,
+            func.count(PaperTrade.id),
+            func.sum(PaperTrade.pnl),
+        )
+        .join(Signal, Signal.id == PaperTrade.signal_id)
+        .where(Signal.fired_at >= scope["launch_at"])
+        .group_by(Signal.signal_type)
+    )
+    for signal_type, trade_count, total_pnl in trade_impact_rows.all():
+        trade_counts_by_type[signal_type] = int(trade_count or 0)
+        trade_pnl_by_type[signal_type] = total_pnl or ZERO
     for trade, signal in sorted(scope["strategy_trade_rows"], key=_trade_resolved_sort_key, reverse=True):
         if len(recent_mistakes) >= settings.strategy_review_recent_mistakes_limit:
             break

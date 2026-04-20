@@ -19,6 +19,7 @@ All notable changes to Signal Market Terminal are documented here.
 - Backend/frontend dev defaults are aligned across API base and CORS settings
 - Backend app version metadata and repo docs now reflect the current `v0.4.0` baseline instead of stale `v0.2.0` labels
 - Polymarket watch-registry bootstrap now caps Postgres insert batches so large active universes do not crash `/api/v1/health` with asyncpg bind-limit failures
+- Default-strategy scoped portfolio/history/metrics/curve reads and `strategy-health` now avoid loading the full live signal universe into memory on every request
 - `scripts/smt-monitor.cron` is normalized for LF-only installs so cron can pick it up reliably on Linux hosts
 
 ## [0.4.1] - 2026-04-15

@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
+import app.paper_trading.analysis as analysis_module
 import app.paper_trading.engine as engine_module
 from app.backtesting.comparison import compare_strategy_measurement_modes
 from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
@@ -80,6 +81,60 @@ async def test_default_strategy_run_requires_explicit_bootstrap(client, session)
 
     run_count = int((await session.execute(select(func.count(StrategyRun.id)))).scalar_one() or 0)
     assert run_count == 1
+
+
+@pytest.mark.asyncio
+async def test_default_strategy_scoped_reads_bypass_heavy_health_scope(client, session, monkeypatch):
+    started_at = datetime.now(timezone.utc) - timedelta(days=1)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=started_at)
+    market = make_market(session, question="Scoped read market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=started_at + timedelta(hours=2),
+        estimated_probability=Decimal("0.6400"),
+        probability_adjustment=Decimal("0.1400"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.140000"),
+        details={"direction": "up", "market_question": "Scoped read market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        status="resolved",
+        pnl=Decimal("75.00"),
+        shadow_pnl=Decimal("55.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=started_at + timedelta(hours=3),
+        opened_at=started_at + timedelta(hours=2),
+        details={"market_question": "Scoped read market"},
+    )
+    await session.commit()
+
+    async def _unexpected_scope(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("scoped portfolio reads should not use the heavyweight strategy-health scope")
+
+    monkeypatch.setattr(analysis_module, "_get_default_strategy_scope", _unexpected_scope)
+
+    portfolio = await client.get("/api/v1/paper-trading/portfolio?scope=default_strategy")
+    history = await client.get("/api/v1/paper-trading/history?scope=default_strategy")
+    metrics = await client.get("/api/v1/paper-trading/metrics?scope=default_strategy")
+    pnl_curve = await client.get("/api/v1/paper-trading/pnl-curve?scope=default_strategy")
+
+    assert portfolio.status_code == 200
+    assert portfolio.json()["total_resolved"] == 1
+    assert history.status_code == 200
+    assert history.json()["total"] == 1
+    assert metrics.status_code == 200
+    assert metrics.json()["cumulative_pnl"] == 75.0
+    assert pnl_curve.status_code == 200
+    assert pnl_curve.json()[0]["trade_pnl"] == 75.0
 
 
 @pytest.mark.asyncio

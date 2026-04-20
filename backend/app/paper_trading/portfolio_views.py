@@ -55,31 +55,45 @@ async def _get_portfolio_state(
 
 
 async def get_metrics(session: AsyncSession) -> dict:
+    return await _get_metrics(session)
+
+
+def _empty_metrics() -> dict:
+    return {
+        "total_trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "win_rate": 0.0,
+        "cumulative_pnl": 0.0,
+        "shadow_cumulative_pnl": 0.0,
+        "avg_pnl": 0.0,
+        "max_drawdown": 0.0,
+        "sharpe_ratio": 0.0,
+        "profit_factor": 0.0,
+        "shadow_profit_factor": 0.0,
+        "best_trade": 0.0,
+        "worst_trade": 0.0,
+        "liquidity_constrained_trades": 0,
+        "trades_missing_orderbook_context": 0,
+    }
+
+
+async def _get_metrics(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None = None,
+) -> dict:
+    query = select(PaperTrade).where(PaperTrade.status == "resolved")
+    if strategy_run_id is not None:
+        query = query.where(PaperTrade.strategy_run_id == strategy_run_id)
+
     result = await session.execute(
-        select(PaperTrade)
-        .where(PaperTrade.status == "resolved")
-        .order_by(PaperTrade.resolved_at.asc())
+        query.order_by(PaperTrade.resolved_at.asc())
     )
     resolved = result.scalars().all()
 
     if not resolved:
-        return {
-            "total_trades": 0,
-            "wins": 0,
-            "losses": 0,
-            "win_rate": 0.0,
-            "cumulative_pnl": 0.0,
-            "shadow_cumulative_pnl": 0.0,
-            "avg_pnl": 0.0,
-            "max_drawdown": 0.0,
-            "sharpe_ratio": 0.0,
-            "profit_factor": 0.0,
-            "shadow_profit_factor": 0.0,
-            "best_trade": 0.0,
-            "worst_trade": 0.0,
-            "liquidity_constrained_trades": 0,
-            "trades_missing_orderbook_context": 0,
-        }
+        return _empty_metrics()
 
     pnls = [float(trade.pnl) for trade in resolved if trade.pnl is not None]
     shadow_pnls = [float(trade.shadow_pnl) for trade in resolved if trade.shadow_pnl is not None]
@@ -155,10 +169,20 @@ async def get_metrics(session: AsyncSession) -> dict:
 
 
 async def get_pnl_curve(session: AsyncSession) -> list[dict]:
+    return await _get_pnl_curve(session)
+
+
+async def _get_pnl_curve(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None = None,
+) -> list[dict]:
+    query = select(PaperTrade).where(PaperTrade.status == "resolved")
+    if strategy_run_id is not None:
+        query = query.where(PaperTrade.strategy_run_id == strategy_run_id)
+
     result = await session.execute(
-        select(PaperTrade)
-        .where(PaperTrade.status == "resolved")
-        .order_by(PaperTrade.resolved_at.asc())
+        query.order_by(PaperTrade.resolved_at.asc())
     )
     resolved = result.scalars().all()
 
@@ -182,6 +206,9 @@ async def get_pnl_curve(session: AsyncSession) -> list[dict]:
 
 
 __all__ = [
+    "_empty_metrics",
+    "_get_metrics",
+    "_get_pnl_curve",
     "_get_portfolio_state",
     "get_metrics",
     "get_pnl_curve",
