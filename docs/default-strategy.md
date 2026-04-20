@@ -220,6 +220,45 @@ Both artifacts should carry the same `review_verdict` payload so operator reads,
 
 `GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `latest_review_artifact` metadata object. It surfaces the newest generated review artifact status, timestamp, recoverable verdict, and repo-relative artifact paths without generating a review or mutating run state.
 
+## Evidence Freshness Surface
+
+`GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `evidence_freshness` object.
+
+Its job is narrow: show whether the latest review artifact is still current relative to active-run activity and whether stale pending decisions are already degrading the evidence loop.
+
+Current `evidence_freshness.status` values are:
+
+- `no_active_run`
+- `missing_review`
+- `fresh`
+- `stale`
+
+Important fields:
+
+- `latest_review_generated_at`
+- `latest_review_generation_status`
+- `review_age_seconds`
+- `review_lag_seconds`
+- `review_outdated`
+- `last_activity_at`
+- `last_activity_kind`
+- `pending_decision_count`
+- `pending_decision_max_age_seconds`
+- `pending_decisions_stale`
+- `pending_decision_stale_after_seconds`
+
+Semantics:
+
+- `review_outdated = true` means the newest review artifact predates the newest active-run activity currently visible on the read path.
+- `last_activity_kind` currently resolves to the newest of:
+  - `strategy_run_started`
+  - `paper_trade`
+  - `execution_decision`
+- `pending_decisions_stale = true` means pending decisions are past the configured retry window and should be treated as evidence degradation, not as silently acceptable backlog.
+- `missing_review` is explicit. The read path must not generate a review just to clear that state.
+
+This surface is instrumentation only. It helps operators understand evidence freshness, but it does not mutate the run, create artifacts, or override the blocker-first `review_verdict` contract.
+
 ## Evidence vs Instrumentation
 
 Evidence is the narrow set of outputs that can support a keep/watch/cut decision on the frozen baseline:

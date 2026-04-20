@@ -84,7 +84,9 @@ async def test_strategy_health_surfaces_missing_latest_review_artifact_without_m
     assert latest_review["generated_at"] is None
     assert latest_review["verdict"] is None
     assert latest_review["artifact_paths"] == {"markdown": None, "json": None}
+    assert health.json()["evidence_freshness"]["status"] == "no_active_run"
     assert dashboard.json()["strategy_health"]["latest_review_artifact"] == latest_review
+    assert dashboard.json()["strategy_health"]["evidence_freshness"] == health.json()["evidence_freshness"]
 
 
 @pytest.mark.asyncio
@@ -124,6 +126,119 @@ async def test_default_strategy_dashboard_surfaces_latest_review_artifact_metada
         "markdown": "docs/strategy-reviews/2026-04-19-default-strategy-baseline.md",
         "json": "docs/strategy-reviews/2026-04-19-default-strategy-baseline.json",
     }
+    assert response.json()["strategy_health"]["evidence_freshness"]["status"] == "no_active_run"
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_surfaces_fresh_evidence_for_current_review_artifact(client, session, monkeypatch, tmp_path):
+    import json
+
+    import app.reports.strategy_review as review_module
+
+    now = datetime.now(timezone.utc)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(days=2))
+    await session.commit()
+
+    review_dir = tmp_path / "docs" / "strategy-reviews"
+    review_dir.mkdir(parents=True)
+    generated_at = now.isoformat()
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.md").write_text(
+        "# Default Strategy Review\n\n"
+        f"**Date:** {now.date().isoformat()}\n\n"
+        "## Operator Verdict\n\n"
+        "- Verdict: `watch`\n",
+        encoding="utf-8",
+    )
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.json").write_text(
+        json.dumps(
+            {
+                "generated_at": generated_at,
+                "review_verdict": {"verdict": "watch"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(review_module, "_repo_root", lambda: tmp_path)
+
+    response = await client.get("/api/v1/paper-trading/strategy-health")
+
+    assert response.status_code == 200
+    freshness = response.json()["evidence_freshness"]
+    assert freshness["status"] == "fresh"
+    assert freshness["latest_review_generated_at"] == generated_at
+    assert freshness["review_outdated"] is False
+    assert freshness["last_activity_kind"] == "strategy_run_started"
+    assert freshness["review_lag_seconds"] == 0
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_surfaces_stale_evidence_when_review_lags_run_activity(client, session, monkeypatch, tmp_path):
+    import json
+
+    import app.reports.strategy_review as review_module
+
+    now = datetime.now(timezone.utc)
+    monkeypatch.setattr(analysis_module.settings, "paper_trading_pending_decision_max_age_seconds", 300)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(days=2))
+    market = make_market(session, question="Evidence freshness market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(hours=1),
+        dedupe_bucket=(now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6200"),
+        probability_adjustment=Decimal("0.1200"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.120000"),
+        details={"direction": "up", "market_question": "Evidence freshness market", "outcome_name": "Yes"},
+    )
+    await session.flush()
+    session.add(
+        ExecutionDecision(
+            signal_id=signal.id,
+            strategy_run_id=strategy_run.id,
+            decision_at=now - timedelta(minutes=30),
+            decision_status="pending_decision",
+            action="skip",
+            reason_code="pending_decision",
+            details={"reason_label": "Pending decision"},
+        )
+    )
+    await session.commit()
+
+    review_dir = tmp_path / "docs" / "strategy-reviews"
+    review_dir.mkdir(parents=True)
+    review_generated_at = (now - timedelta(hours=3)).isoformat()
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.md").write_text(
+        "# Default Strategy Review\n\n"
+        f"**Date:** {now.date().isoformat()}\n\n"
+        "## Operator Verdict\n\n"
+        "- Verdict: `watch`\n",
+        encoding="utf-8",
+    )
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.json").write_text(
+        json.dumps(
+            {
+                "generated_at": review_generated_at,
+                "review_verdict": {"verdict": "watch"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(review_module, "_repo_root", lambda: tmp_path)
+
+    response = await client.get("/api/v1/paper-trading/default-strategy/dashboard")
+
+    assert response.status_code == 200
+    freshness = response.json()["strategy_health"]["evidence_freshness"]
+    assert freshness["status"] == "stale"
+    assert freshness["review_outdated"] is True
+    assert freshness["pending_decisions_stale"] is True
+    assert freshness["last_activity_kind"] == "execution_decision"
+    assert freshness["review_lag_seconds"] == 9000
 
 
 @pytest.mark.asyncio

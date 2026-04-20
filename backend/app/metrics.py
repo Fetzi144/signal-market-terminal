@@ -30,6 +30,21 @@ default_strategy_pending_decision_max_age_seconds = Gauge(
     "Age in seconds of the oldest pending execution decision for the active default-strategy run",
 )
 
+default_strategy_latest_review_generated_at_timestamp = Gauge(
+    "smt_default_strategy_latest_review_generated_at_timestamp",
+    "Unix timestamp of the latest discovered default-strategy review artifact generation time",
+)
+
+default_strategy_latest_review_age_seconds = Gauge(
+    "smt_default_strategy_latest_review_age_seconds",
+    "Age in seconds of the latest discovered default-strategy review artifact",
+)
+
+default_strategy_review_outdated = Gauge(
+    "smt_default_strategy_review_outdated",
+    "Whether the latest discovered default-strategy review artifact lags current run activity (1=yes, 0=no)",
+)
+
 # Alerts
 alerts_sent = Counter(
     "smt_alerts_sent_total",

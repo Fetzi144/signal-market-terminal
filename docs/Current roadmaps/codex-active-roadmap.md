@@ -52,6 +52,11 @@ The following hardening work is already in place and should be treated as the ne
    - stable machine-readable verdict metadata for precedence, threshold version, and reason code
    - explicit docs/examples for blocker precedence and keep/watch/cut transitions
 
+5. Evidence-path observability and alerts
+   - shared read-only `evidence_freshness` payload on default-strategy health/dashboard surfaces
+   - explicit visibility when the latest review artifact lags active-run activity
+   - compact Paper Trading freshness visibility without adding a notification subsystem
+
 These slices reduced read-path waste and turned the prove-the-edge contract into an explicit operator-visible verdict.
 
 ## Active priority order
@@ -216,8 +221,8 @@ Validation baseline for most slices:
 
 ## Current recommended next task
 
-**Evidence-path observability and alerts**
+**Read-path/query hardening follow-up**
 
 Concrete prompt seed for Codex:
 
-> Improve operator trust in the prove-the-edge loop by surfacing evidence freshness and stale-state risk more explicitly. Keep the work read-only, narrow, and honest about coverage, and do not introduce a broad notification subsystem.
+> Inspect the default-strategy dashboard and review surfaces for any remaining redundant reads or recomputation, then eliminate one measured overlap without changing benchmark semantics or widening scope.

@@ -86,6 +86,24 @@ function artifactGenerationLabel(status) {
   return "Missing";
 }
 
+function evidenceFreshnessColor(status) {
+  if (status === "fresh") return "var(--green)";
+  if (status === "stale" || status === "missing_review") return "var(--yellow)";
+  return "var(--text-dim)";
+}
+
+function evidenceFreshnessLabel(status) {
+  if (status === "fresh") return "Fresh";
+  if (status === "stale") return "Stale";
+  if (status === "missing_review") return "Missing Review";
+  return "No Active Run";
+}
+
+function fmtSeconds(value) {
+  if (value == null) return "-";
+  return `${fmtWhole(value)}s`;
+}
+
 function observationMeta(status) {
   switch (status) {
     case "live_waiting_for_trades":
@@ -503,10 +521,11 @@ function ArtifactPathRow({ label, value }) {
   );
 }
 
-function LatestReviewArtifactPanel({ artifact }) {
+function LatestReviewArtifactPanel({ artifact, freshness }) {
   if (!artifact) return <EmptyState text="Latest review artifact metadata unavailable." />;
   const color = artifactGenerationColor(artifact.generation_status);
   const paths = artifact.artifact_paths || {};
+  const freshnessColor = evidenceFreshnessColor(freshness?.status);
 
   return (
     <div
@@ -551,6 +570,50 @@ function LatestReviewArtifactPanel({ artifact }) {
           </div>
         </div>
       </div>
+
+      {freshness && (
+        <div
+          style={{
+            borderRadius: 10,
+            border: "1px solid var(--border)",
+            background: "var(--bg)",
+            padding: 14,
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 800,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                padding: "4px 10px",
+                borderRadius: 999,
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                color: freshnessColor,
+              }}
+            >
+              {evidenceFreshnessLabel(freshness.status)}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              Last activity {freshness.last_activity_at ? fmtDate(freshness.last_activity_at) : "-"}
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.6, marginBottom: 10 }}>
+            {freshness.summary}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+            <ArtifactPathRow label="Review Age" value={fmtSeconds(freshness.review_age_seconds)} />
+            <ArtifactPathRow label="Review Lag" value={fmtSeconds(freshness.review_lag_seconds)} />
+            <ArtifactPathRow
+              label="Pending Decision Max Age"
+              value={`${fmtSeconds(freshness.pending_decision_max_age_seconds)} / stale after ${fmtSeconds(freshness.pending_decision_stale_after_seconds)}`}
+            />
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
         <ArtifactPathRow label="Markdown Artifact" value={paths.markdown} />
@@ -1457,7 +1520,7 @@ export default function PaperTrading() {
           <OperatorBrief health={strategyHealth} />
           <ObservationBanner observation={strategyHealth.observation} />
           <ReviewVerdictPanel health={strategyHealth} />
-          <LatestReviewArtifactPanel artifact={strategyHealth.latest_review_artifact} />
+          <LatestReviewArtifactPanel artifact={strategyHealth.latest_review_artifact} freshness={strategyHealth.evidence_freshness} />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 28 }}>
             {summaryCards.map((card) => (
               <SummaryCard

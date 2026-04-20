@@ -17,14 +17,18 @@ from app.default_strategy import (
     get_default_strategy_contract,
 )
 from app.metrics import (
+    default_strategy_latest_review_age_seconds,
+    default_strategy_latest_review_generated_at_timestamp,
     default_strategy_pending_decision_count,
     default_strategy_pending_decision_max_age_seconds,
+    default_strategy_review_outdated,
 )
 from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.models.execution_decision import ExecutionDecision
 from app.models.market import Market
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
+from app.paper_trading.evidence_freshness import build_evidence_freshness
 from app.paper_trading.portfolio_views import (
     _get_metrics as _get_trade_metrics,
     _get_pnl_curve as _get_trade_pnl_curve,
@@ -325,6 +329,17 @@ def _publish_pending_decision_metrics(pending_watch: dict) -> None:
     default_strategy_pending_decision_max_age_seconds.set(float(pending_watch.get("max_age_seconds", 0.0) or 0.0))
 
 
+def _publish_evidence_freshness_metrics(evidence_freshness: dict) -> None:
+    generated_at = evidence_freshness.get("latest_review_generated_at")
+    if generated_at:
+        parsed = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+        default_strategy_latest_review_generated_at_timestamp.set(parsed.timestamp())
+    else:
+        default_strategy_latest_review_generated_at_timestamp.set(0.0)
+    default_strategy_latest_review_age_seconds.set(float(evidence_freshness.get("review_age_seconds") or 0.0))
+    default_strategy_review_outdated.set(1.0 if evidence_freshness.get("review_outdated") else 0.0)
+
+
 def _serialize_replay_review_status(replay_status: dict | None) -> dict:
     replay = replay_status or {}
     return {
@@ -585,6 +600,8 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
             "started_at": None,
             "launch_at": launch_boundary,
             "first_trade_at": None,
+            "latest_trade_activity_at": None,
+            "latest_decision_at": None,
             "observed_at": now,
             "pending_decision_watch": pending_watch,
             "comparison_modes": empty_strategy_measurement_modes(),
@@ -677,6 +694,16 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
     resolved_trade_signal_ids = {signal.id for signal in resolved_trade_signals}
     traded_signal_ids = {signal.id for _trade, signal in strategy_trade_rows}
     first_trade_at = min((_ensure_utc(trade.opened_at) for trade, _signal in strategy_trade_rows), default=None)
+    latest_trade_activity_at = max(
+        (
+            value
+            for trade, _signal in strategy_trade_rows
+            for value in (_ensure_utc(trade.opened_at), _ensure_utc(trade.resolved_at))
+            if value is not None
+        ),
+        default=None,
+    )
+    latest_decision_at = max((_ensure_utc(row.decision_at) for row in decision_rows if row.decision_at is not None), default=None)
     portfolio = await _get_trade_portfolio_state(session, strategy_run_id=strategy_run.id)
     metrics = await _get_trade_metrics(session, strategy_run_id=strategy_run.id)
     pnl_curve = await _get_trade_pnl_curve(session, strategy_run_id=strategy_run.id)
@@ -722,6 +749,8 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         "started_at": launch_at,
         "launch_at": launch_at,
         "first_trade_at": first_trade_at,
+        "latest_trade_activity_at": latest_trade_activity_at,
+        "latest_decision_at": latest_decision_at,
         "observed_at": now,
         "pending_decision_watch": pending_watch,
         "skip_reasons": sorted(skip_reason_counts.values(), key=lambda row: (-row["count"], row["reason_label"])),
@@ -810,6 +839,16 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
     started_at = scope["started_at"]
     replay = _serialize_replay_review_status(scope.get("replay"))
     latest_review_artifact = get_latest_default_strategy_review_artifact_metadata()
+    evidence_freshness = build_evidence_freshness(
+        observed_at=now,
+        run_state=scope["run_state"],
+        latest_review_artifact=latest_review_artifact,
+        started_at=scope.get("started_at"),
+        latest_trade_activity_at=scope.get("latest_trade_activity_at"),
+        latest_decision_at=scope.get("latest_decision_at"),
+        pending_watch=scope["pending_decision_watch"],
+    )
+    _publish_evidence_freshness_metrics(evidence_freshness)
     days_tracked = round((now - started_at).total_seconds() / 86400, 1) if started_at is not None else None
     if strategy_run is None:
         observation = {"started_at": None, "baseline_start_at": contract.get("baseline_start_at"), "first_trade_at": None, "days_tracked": None, "status": "no_active_run", "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": settings.default_strategy_min_observation_days}
@@ -842,6 +881,7 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
             "replay": replay,
             "review_verdict": review_verdict,
             "latest_review_artifact": latest_review_artifact,
+            "evidence_freshness": evidence_freshness,
             "detector_review": [],
             "recent_mistakes": [],
             "review_questions": ["Has a fresh default-strategy run been explicitly bootstrapped?", "Are read-only verification surfaces still non-mutating?", "What evidence will exist once a run is active?"],
@@ -926,6 +966,7 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
         "replay": replay,
         "review_verdict": review_verdict,
         "latest_review_artifact": latest_review_artifact,
+        "evidence_freshness": evidence_freshness,
         "detector_review": detector_review,
         "recent_mistakes": recent_mistakes,
         "review_questions": ["Did the default strategy make money after execution realism and risk controls?", "Does the qualified funnel reconcile exactly into opened, skipped, and pending decisions?", "Are shared/global risk controls contaminating what looks like local paper-book skips?", "How does the signal-level cohort compare with the legacy rank-threshold baseline?", "How much execution-adjusted evidence do we actually have?"],
