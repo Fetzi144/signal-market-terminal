@@ -1,4 +1,6 @@
 """Generate prove-the-edge review artifacts from the active strategy run."""
+import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,9 +10,138 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.backtesting.comparison import compare_locked_modes
 from app.paper_trading.analysis import get_strategy_health
 
+_REVIEW_ARTIFACT_NAME_RE = re.compile(
+    r"(?P<review_date>\d{4}-\d{2}-\d{2})-default-strategy-baseline\.(?P<extension>json|md)$"
+)
+_REVIEW_DATE_LINE_RE = re.compile(r"^\*\*Date:\*\*\s*(?P<review_date>\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
+_REVIEW_VERDICT_LINE_RE = re.compile(r"^- Verdict:\s*`(?P<verdict>[^`]+)`\s*$", re.MULTILINE)
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
+
+
+def _repo_relative_path(path: Path | None, *, repo_root: Path) -> str | None:
+    if path is None:
+        return None
+    try:
+        return path.relative_to(repo_root).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _latest_artifact_mtime_iso(*paths: Path | None) -> str | None:
+    mtimes: list[float] = []
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            mtimes.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    if not mtimes:
+        return None
+    return datetime.fromtimestamp(max(mtimes), tz=timezone.utc).isoformat()
+
+
+def _parse_review_markdown_metadata(path: Path | None) -> dict[str, str | None]:
+    if path is None:
+        return {"review_date": None, "verdict": None}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {"review_date": None, "verdict": None}
+    review_date_match = _REVIEW_DATE_LINE_RE.search(text)
+    verdict_match = _REVIEW_VERDICT_LINE_RE.search(text)
+    return {
+        "review_date": review_date_match.group("review_date") if review_date_match else None,
+        "verdict": verdict_match.group("verdict") if verdict_match else None,
+    }
+
+
+def get_latest_default_strategy_review_artifact_metadata() -> dict:
+    repo_root = _repo_root()
+    review_dir = repo_root / "docs" / "strategy-reviews"
+    grouped_artifacts: dict[str, dict[str, Path]] = {}
+
+    if review_dir.exists():
+        for path in review_dir.iterdir():
+            if not path.is_file():
+                continue
+            match = _REVIEW_ARTIFACT_NAME_RE.fullmatch(path.name)
+            if match is None:
+                continue
+            review_date = match.group("review_date")
+            extension = match.group("extension")
+            grouped_artifacts.setdefault(review_date, {})[extension] = path
+
+    if not grouped_artifacts:
+        return {
+            "generation_status": "missing",
+            "status_detail": "No default-strategy review artifacts have been generated yet.",
+            "review_date": None,
+            "generated_at": None,
+            "verdict": None,
+            "artifact_paths": {
+                "markdown": None,
+                "json": None,
+            },
+        }
+
+    latest_review_date = max(grouped_artifacts)
+    artifacts = grouped_artifacts[latest_review_date]
+    markdown_path = artifacts.get("md")
+    json_path = artifacts.get("json")
+
+    review_payload = None
+    json_error = None
+    if json_path is not None:
+        try:
+            review_payload = json.loads(json_path.read_text(encoding="utf-8"))
+        except OSError:
+            json_error = "unreadable"
+        except json.JSONDecodeError:
+            json_error = "invalid"
+
+    markdown_metadata = _parse_review_markdown_metadata(markdown_path)
+    review_verdict = (review_payload or {}).get("review_verdict") or {}
+    generated_at = (review_payload or {}).get("generated_at") or _latest_artifact_mtime_iso(markdown_path, json_path)
+    verdict = review_verdict.get("verdict") or markdown_metadata.get("verdict")
+    review_date = markdown_metadata.get("review_date") or latest_review_date
+
+    if json_error == "unreadable":
+        generation_status = "invalid"
+        status_detail = (
+            "The latest review JSON artifact could not be read. "
+            "Showing markdown fallback metadata when available."
+        )
+    elif json_error == "invalid":
+        generation_status = "invalid"
+        status_detail = (
+            "The latest review JSON artifact could not be parsed. "
+            "Showing markdown fallback metadata when available."
+        )
+    elif markdown_path is not None and json_path is not None:
+        generation_status = "complete"
+        status_detail = "Markdown and JSON review artifacts are present."
+    elif markdown_path is not None:
+        generation_status = "partial"
+        status_detail = "Markdown review artifact exists, but the JSON artifact is missing."
+    else:
+        generation_status = "partial"
+        status_detail = "JSON review artifact exists, but the markdown artifact is missing."
+
+    return {
+        "generation_status": generation_status,
+        "status_detail": status_detail,
+        "review_date": review_date,
+        "generated_at": generated_at,
+        "verdict": verdict,
+        "artifact_paths": {
+            "markdown": _repo_relative_path(markdown_path, repo_root=repo_root),
+            "json": _repo_relative_path(json_path, repo_root=repo_root),
+        },
+    }
 
 
 def _fmt_money(value) -> str:
@@ -31,10 +162,12 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
     evidence_boundary = contract_snapshot.get("evidence_boundary") or {}
     observation = health.get("observation") or {}
     headline = health.get("headline") or {}
+    review_verdict = health.get("review_verdict") or {}
     execution_realism = health.get("execution_realism") or {}
     funnel = health.get("trade_funnel") or {}
     pending_watch = health.get("pending_decision_watch") or {}
     risk_blocks = health.get("risk_blocks") or {}
+    replay = health.get("replay") or {}
     signal_level = comparison.get("signal_level") or {}
     signal_level_default = signal_level.get("default_strategy") or {}
     signal_level_benchmark = signal_level.get("benchmark") or {}
@@ -71,6 +204,9 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
     detector_lines = "- No detector verdicts yet." if not detector_review else "\n".join(
         f"- `{row['signal_type']}`: {row['verdict']} - {row['note']}" for row in detector_review[:6]
     )
+    review_blocker_lines = "- No active verdict blockers." if not review_verdict.get("blockers") else "\n".join(
+        f"- `{row['code']}`: {row['detail']}" for row in review_verdict.get("blockers", [])
+    )
     empty_state = "" if funnel.get("opened_trade_signals", 0) else (
         "\n## Empty State\n\n"
         "No active-run paper trades have resolved yet. Keep the baseline frozen, "
@@ -94,6 +230,15 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
 - Immutable launch boundary: {observation.get('baseline_start_at') or '-'}
 - Days tracked: {observation.get('days_tracked') if observation.get('days_tracked') is not None else '-'}
 - Observation status: `{observation.get('status', '-')}`
+
+## Operator Verdict
+
+- Verdict: `{review_verdict.get('verdict', '-')}`
+- Summary: {review_verdict.get('summary', '-')}
+
+### Active blockers
+
+{review_blocker_lines}
 
 ## Current Health Snapshot
 
@@ -175,6 +320,12 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
 - Default strategy shadow P&L: {_fmt_money(execution_adjusted_default.get('shadow_cumulative_pnl'))}
 - Legacy execution-adjusted benchmark: unavailable in this remediation slice
 
+## Replay Coverage
+
+- Coverage mode: `{replay.get('coverage_mode', '-')}`
+- Supported detectors: {", ".join(replay.get('supported_detectors') or []) or '-'}
+- Unsupported detectors: {", ".join(replay.get('unsupported_detectors') or []) or '-'}
+
 ## Execution Realism Caveat
 
 - Liquidity-constrained trades: {execution_realism.get('liquidity_constrained_trades', 0)}
@@ -182,6 +333,21 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
 - Shadow execution uses a conservative half-spread penalty and near-touch depth checks. It is a realism overlay, not a full market-impact model.
 {empty_state}
 """
+
+
+def _review_artifact_payload(health: dict, comparison: dict, *, as_of: datetime) -> dict:
+    return {
+        "generated_at": as_of.isoformat(),
+        "strategy_run": health.get("strategy_run"),
+        "review_verdict": health.get("review_verdict"),
+        "observation": health.get("observation"),
+        "headline": health.get("headline"),
+        "trade_funnel": health.get("trade_funnel"),
+        "pending_decision_watch": health.get("pending_decision_watch"),
+        "run_integrity": health.get("run_integrity"),
+        "replay": health.get("replay"),
+        "comparison_modes": comparison,
+    }
 
 
 def _render_analysis_markdown(health: dict, comparison: dict, *, as_of: datetime) -> str:
@@ -247,15 +413,22 @@ async def generate_default_strategy_review(session: AsyncSession) -> dict:
 
     repo_root = _repo_root()
     review_path = repo_root / "docs" / "strategy-reviews" / f"{as_of.date().isoformat()}-default-strategy-baseline.md"
+    review_json_path = repo_root / "docs" / "strategy-reviews" / f"{as_of.date().isoformat()}-default-strategy-baseline.json"
     analysis_path = repo_root / "docs" / "paper-trading-analysis-v0.5.md"
     review_path.parent.mkdir(parents=True, exist_ok=True)
     analysis_path.parent.mkdir(parents=True, exist_ok=True)
 
     review_path.write_text(_render_review_markdown(health, comparison, as_of=as_of), encoding="utf-8")
+    review_json_path.write_text(
+        json.dumps(_review_artifact_payload(health, comparison, as_of=as_of), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     analysis_path.write_text(_render_analysis_markdown(health, comparison, as_of=as_of), encoding="utf-8")
     return {
         "review_path": str(review_path),
+        "review_json_path": str(review_json_path),
         "analysis_path": str(analysis_path),
         "strategy_run": strategy_run,
+        "review_verdict": health.get("review_verdict"),
         "comparison": comparison,
     }

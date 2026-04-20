@@ -8,11 +8,14 @@ This document defines the measurement surfaces only. It does not authorize new d
 
 The following endpoints are read-only when `scope=default_strategy` is used:
 
+- `GET /api/v1/paper-trading/default-strategy/dashboard`
 - `GET /api/v1/paper-trading/portfolio?scope=default_strategy`
 - `GET /api/v1/paper-trading/history?scope=default_strategy`
 - `GET /api/v1/paper-trading/metrics?scope=default_strategy`
 - `GET /api/v1/paper-trading/pnl-curve?scope=default_strategy`
 - `GET /api/v1/paper-trading/strategy-health`
+
+`GET /api/v1/paper-trading/default-strategy/dashboard` is a read-only snapshot of the same scoped portfolio, metrics, P&L-curve, and strategy-health surfaces. It exists to reduce duplicate dashboard read pressure, not to change benchmark semantics.
 
 These endpoints must never create a `strategy_run`. If there is no active default-strategy run, the read path returns:
 
@@ -140,6 +143,82 @@ Interpretation:
 - `no_detector_activity`: no qualifying detector activity was present in the inspected window
 
 Partial replay coverage is instrumentation, not proof. It must never be presented as full-system evidence.
+
+## Operator Verdict Surface
+
+`GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` now expose a shared `review_verdict` object for the prove-the-edge phase.
+
+The verdict enum is intentionally narrow:
+
+- `not_ready`
+- `watch`
+- `keep`
+- `cut`
+
+`review_verdict.blockers` is the explicit evidence gate. It surfaces the blocking reason directly instead of expecting operators to infer it from raw funnel or replay fields. Current blocker families are:
+
+- `no_active_run`
+- `insufficient_observation_days`
+- `stale_pending_decisions`
+- `funnel_conservation_failure`
+- `integrity_errors`
+- `replay_coverage_limited`
+
+`review_verdict.threshold_version` is the stable contract tag for downstream automation/reporting. The current value is `default_strategy_review_v1`.
+
+`review_verdict.reason_code` is the compact machine-readable outcome reason. Current values are:
+
+- `blocked`
+- `positive_consensus`
+- `negative_consensus`
+- `no_resolved_trades`
+- `insufficient_consensus`
+- `mixed_evidence`
+
+`review_verdict.precedence` is currently `blockers_first`.
+
+Verdict precedence is intentionally strict:
+
+1. If any blocker is present, verdict is `not_ready` even if P&L or CLV looks positive.
+2. Otherwise verdict is `keep` only when all of the following are true:
+   - `resolved_trades > 0`
+   - execution-adjusted default-strategy P&L is positive
+   - signal-level default-strategy P&L per share is positive
+   - average CLV is positive
+3. Otherwise verdict is `cut` only when all of the following are true:
+   - `resolved_trades > 0`
+   - execution-adjusted default-strategy P&L is negative
+   - signal-level default-strategy P&L per share is negative
+   - average CLV is negative
+4. Otherwise verdict is `watch`.
+
+Examples:
+
+- `not_ready`
+  - the run is still inside the minimum observation window
+  - a stale pending decision remains open
+  - replay coverage is limited
+- `watch`
+  - blockers are clear but there are still zero resolved trades
+  - blockers are clear but one input is flat or missing
+  - blockers are clear but P&L and CLV disagree
+- `keep`
+  - blockers are clear, there is at least one resolved trade, and execution-adjusted P&L, signal-level P&L, and CLV are all positive
+- `cut`
+  - blockers are clear, there is at least one resolved trade, and execution-adjusted P&L, signal-level P&L, and CLV are all negative
+
+The verdict remains default-strategy scoped. It may use legacy/benchmark comparison data for context, but it must not widen the pilot family, relax fail-closed behavior, or treat pilot/live readiness as prove-the-edge evidence.
+
+## Review Artifacts
+
+The strategy review flow now emits both markdown and JSON artifacts under `docs/strategy-reviews/`, anchored to the active `strategy_run.id`.
+
+- Markdown review: `YYYY-MM-DD-default-strategy-baseline.md`
+- JSON review artifact: `YYYY-MM-DD-default-strategy-baseline.json`
+
+Both artifacts should carry the same `review_verdict` payload so operator reads, generated reviews, and downstream automation do not drift into separate verdict semantics.
+
+`GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `latest_review_artifact` metadata object. It surfaces the newest generated review artifact status, timestamp, recoverable verdict, and repo-relative artifact paths without generating a review or mutating run state.
 
 ## Evidence vs Instrumentation
 

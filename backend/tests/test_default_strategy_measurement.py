@@ -36,6 +36,7 @@ async def test_default_strategy_read_endpoints_do_not_create_rows_without_active
         await client.get("/api/v1/paper-trading/strategy-health"),
         await client.get("/api/v1/paper-trading/pnl-curve?scope=default_strategy"),
         await client.get("/api/v1/paper-trading/default-strategy/run"),
+        await client.get("/api/v1/paper-trading/default-strategy/dashboard"),
     ]
 
     after = await _count_rows(session)
@@ -49,12 +50,80 @@ async def test_default_strategy_read_endpoints_do_not_create_rows_without_active
 
     health = responses[3].json()
     lookup = responses[5].json()
+    dashboard = responses[6].json()
     assert health["observation"]["status"] == "no_active_run"
     assert health["strategy_run"] is None
     assert health["headline"]["overdue_open_trades"] == 0
     assert lookup["state"] == "no_active_run"
     assert lookup["strategy_run"] is None
     assert lookup["bootstrap_required"] is True
+    assert dashboard["portfolio"]["open_trades"] == []
+    assert dashboard["metrics"]["total_trades"] == 0
+    assert dashboard["pnl_curve"] == []
+    assert dashboard["strategy_health"]["bootstrap_required"] is True
+    assert dashboard["strategy_health"]["observation"]["status"] == "no_active_run"
+    assert health["review_verdict"]["verdict"] == "not_ready"
+    assert [row["code"] for row in health["review_verdict"]["blockers"]] == ["no_active_run"]
+    assert dashboard["strategy_health"]["review_verdict"] == health["review_verdict"]
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_surfaces_missing_latest_review_artifact_without_mutation(client, monkeypatch, tmp_path):
+    import app.reports.strategy_review as review_module
+
+    monkeypatch.setattr(review_module, "_repo_root", lambda: tmp_path)
+
+    health = await client.get("/api/v1/paper-trading/strategy-health")
+    dashboard = await client.get("/api/v1/paper-trading/default-strategy/dashboard")
+
+    assert health.status_code == 200
+    assert dashboard.status_code == 200
+
+    latest_review = health.json()["latest_review_artifact"]
+    assert latest_review["generation_status"] == "missing"
+    assert latest_review["generated_at"] is None
+    assert latest_review["verdict"] is None
+    assert latest_review["artifact_paths"] == {"markdown": None, "json": None}
+    assert dashboard.json()["strategy_health"]["latest_review_artifact"] == latest_review
+
+
+@pytest.mark.asyncio
+async def test_default_strategy_dashboard_surfaces_latest_review_artifact_metadata(client, monkeypatch, tmp_path):
+    import json
+
+    import app.reports.strategy_review as review_module
+
+    review_dir = tmp_path / "docs" / "strategy-reviews"
+    review_dir.mkdir(parents=True)
+    (review_dir / "2026-04-19-default-strategy-baseline.md").write_text(
+        "# Default Strategy Review\n\n"
+        "**Date:** 2026-04-19\n\n"
+        "## Operator Verdict\n\n"
+        "- Verdict: `watch`\n",
+        encoding="utf-8",
+    )
+    (review_dir / "2026-04-19-default-strategy-baseline.json").write_text(
+        json.dumps(
+            {
+                "generated_at": "2026-04-19T12:30:00+00:00",
+                "review_verdict": {"verdict": "watch"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(review_module, "_repo_root", lambda: tmp_path)
+
+    response = await client.get("/api/v1/paper-trading/default-strategy/dashboard")
+
+    assert response.status_code == 200
+    latest_review = response.json()["strategy_health"]["latest_review_artifact"]
+    assert latest_review["generation_status"] == "complete"
+    assert latest_review["generated_at"] == "2026-04-19T12:30:00+00:00"
+    assert latest_review["verdict"] == "watch"
+    assert latest_review["artifact_paths"] == {
+        "markdown": "docs/strategy-reviews/2026-04-19-default-strategy-baseline.md",
+        "json": "docs/strategy-reviews/2026-04-19-default-strategy-baseline.json",
+    }
 
 
 @pytest.mark.asyncio
@@ -627,6 +696,94 @@ async def test_strategy_health_surfaces_pending_decision_age_watch(client, sessi
     assert pending_watch["oldest_decision_at"] is not None
     assert pending_watch["max_age_seconds"] >= 7200
     assert pending_watch["examples"][0]["signal_id"] == str(signal.id)
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_review_verdict_surfaces_evidence_gate_blockers(client, session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    missing_dedupe_bucket = (now - timedelta(hours=1)).replace(minute=30, second=0, microsecond=0)
+    pending_dedupe_bucket = now.replace(minute=0, second=0, microsecond=0)
+    monkeypatch.setattr(analysis_module.settings, "paper_trading_pending_decision_max_age_seconds", 300)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(hours=1))
+    market = make_market(session, question="Verdict blocker market")
+    outcome = make_outcome(session, market.id, name="Yes")
+
+    missing_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(minutes=50),
+        dedupe_bucket=missing_dedupe_bucket,
+        estimated_probability=Decimal("0.6200"),
+        probability_adjustment=Decimal("0.1200"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.120000"),
+        details={"direction": "up", "market_question": "Verdict blocker market", "outcome_name": "Yes"},
+    )
+    pending_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(minutes=45),
+        dedupe_bucket=pending_dedupe_bucket,
+        estimated_probability=Decimal("0.6300"),
+        probability_adjustment=Decimal("0.1300"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.130000"),
+        details={"direction": "up", "market_question": "Verdict blocker market", "outcome_name": "Yes"},
+    )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="price_move",
+        fired_at=now - timedelta(minutes=40),
+        details={"direction": "up", "market_question": "Verdict blocker market", "outcome_name": "Yes"},
+    )
+    await session.flush()
+    session.add(
+        ExecutionDecision(
+            signal_id=pending_signal.id,
+            strategy_run_id=strategy_run.id,
+            decision_at=now - timedelta(minutes=44),
+            decision_status="pending_decision",
+            action="skip",
+            reason_code="pending_decision",
+            details={"reason_label": "Pending decision"},
+        )
+    )
+    await session.commit()
+
+    response = await client.get("/api/v1/paper-trading/strategy-health")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["replay"]["coverage_mode"] == "partial_supported_detectors"
+    assert data["trade_funnel"]["conservation_holds"] is False
+    assert data["trade_funnel"]["integrity_errors"] == [
+        {
+            "signal_id": str(missing_signal.id),
+            "error": "missing_execution_decision",
+        }
+    ]
+    assert [row["code"] for row in data["review_verdict"]["blockers"]] == [
+        "insufficient_observation_days",
+        "stale_pending_decisions",
+        "funnel_conservation_failure",
+        "integrity_errors",
+        "replay_coverage_limited",
+    ]
+    assert data["review_verdict"]["verdict"] == "not_ready"
+    assert data["review_verdict"]["reason_code"] == "blocked"
+    assert data["review_verdict"]["threshold_version"] == "default_strategy_review_v1"
+    assert data["review_verdict"]["precedence"] == "blockers_first"
+    assert data["review_verdict"]["signals"] == {
+        "execution_adjusted_pnl_sign": "flat",
+        "signal_level_pnl_per_share_sign": "flat",
+        "avg_clv_sign": "missing",
+    }
 
 
 @pytest.mark.asyncio

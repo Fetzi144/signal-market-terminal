@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
+import app.paper_trading.analysis as analysis_module
 import app.jobs.scheduler as scheduler_module
 from app.config import settings
 from app.jobs.scheduler import _fetch_overdue_open_trade_resolutions, _resolve_paper_trades, _run_paper_trading
@@ -1326,6 +1327,205 @@ async def test_scoped_paper_trading_endpoints_only_measure_default_strategy(clie
     curve = resp.json()
     assert len(curve) == 1
     assert curve[0]["pnl"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_default_strategy_dashboard_matches_scoped_read_endpoints(client, session):
+    market = make_market(session, question="Dashboard strategy market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    now = datetime.now(timezone.utc)
+    opened_at = now - timedelta(days=2)
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=opened_at)
+
+    confluence_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=opened_at,
+        dedupe_bucket=opened_at.replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6200"),
+        probability_adjustment=Decimal("0.1200"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.120000"),
+        resolved=True,
+        resolved_correctly=True,
+        clv=Decimal("0.050000"),
+        profit_loss=Decimal("0.100000"),
+        details={"direction": "up", "market_question": "Dashboard strategy market", "outcome_name": "Yes"},
+    )
+    execution_decision = ExecutionDecision(
+        id=uuid.uuid4(),
+        signal_id=confluence_signal.id,
+        strategy_run_id=strategy_run.id,
+        decision_at=opened_at,
+        decision_status="opened",
+        action="cross",
+        direction="buy_yes",
+        executable_entry_price=Decimal("0.50000000"),
+        reason_code="opened",
+        details={"source": "test"},
+    )
+    session.add(execution_decision)
+    _make_paper_trade(
+        session,
+        confluence_signal.id,
+        outcome.id,
+        market.id,
+        execution_decision_id=execution_decision.id,
+        strategy_run_id=strategy_run.id,
+        status="resolved",
+        pnl=Decimal("100.00"),
+        shadow_pnl=Decimal("90.00"),
+        shadow_entry_price=Decimal("0.520000"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now - timedelta(hours=4),
+        opened_at=opened_at,
+        details={
+            "market_question": "Dashboard strategy market",
+            "ev_per_share": "0.120000",
+            "shadow_execution": {"liquidity_constrained": False, "missing_orderbook_context": False},
+        },
+    )
+    await session.commit()
+
+    dashboard = await client.get("/api/v1/paper-trading/default-strategy/dashboard")
+    portfolio = await client.get("/api/v1/paper-trading/portfolio?scope=default_strategy")
+    metrics = await client.get("/api/v1/paper-trading/metrics?scope=default_strategy")
+    curve = await client.get("/api/v1/paper-trading/pnl-curve?scope=default_strategy")
+    health = await client.get("/api/v1/paper-trading/strategy-health")
+
+    assert dashboard.status_code == 200
+    assert portfolio.status_code == 200
+    assert metrics.status_code == 200
+    assert curve.status_code == 200
+    assert health.status_code == 200
+
+    payload = dashboard.json()
+    assert payload["portfolio"] == portfolio.json()
+    assert payload["metrics"] == metrics.json()
+    assert payload["pnl_curve"] == curve.json()
+    assert payload["strategy_health"] == health.json()
+
+
+@pytest.mark.asyncio
+async def test_review_verdict_remains_default_strategy_scoped_when_benchmark_is_negative(client, session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    started_at = now - timedelta(days=20)
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=started_at)
+    market = make_market(session, question="Scoped verdict market")
+    outcome = make_outcome(session, market.id, name="Yes")
+
+    default_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=started_at + timedelta(hours=1),
+        dedupe_bucket=(started_at + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6400"),
+        probability_adjustment=Decimal("0.1400"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.140000"),
+        resolved=True,
+        resolved_correctly=True,
+        clv=Decimal("0.060000"),
+        profit_loss=Decimal("0.110000"),
+        details={"direction": "up", "market_question": "Scoped verdict market", "outcome_name": "Yes"},
+    )
+    execution_decision = ExecutionDecision(
+        id=uuid.uuid4(),
+        signal_id=default_signal.id,
+        strategy_run_id=strategy_run.id,
+        decision_at=started_at + timedelta(hours=1),
+        decision_status="opened",
+        action="cross",
+        direction="buy_yes",
+        executable_entry_price=Decimal("0.50000000"),
+        reason_code="opened",
+        details={"source": "test"},
+    )
+    session.add(execution_decision)
+    _make_paper_trade(
+        session,
+        default_signal.id,
+        outcome.id,
+        market.id,
+        execution_decision_id=execution_decision.id,
+        strategy_run_id=strategy_run.id,
+        status="resolved",
+        pnl=Decimal("100.00"),
+        shadow_pnl=Decimal("80.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now - timedelta(days=1),
+        opened_at=started_at + timedelta(hours=1),
+        details={
+            "market_question": "Scoped verdict market",
+            "shadow_execution": {"liquidity_constrained": False, "missing_orderbook_context": False},
+        },
+    )
+
+    benchmark_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="price_move",
+        timeframe="4h",
+        fired_at=started_at + timedelta(hours=2),
+        dedupe_bucket=(started_at + timedelta(hours=2)).replace(minute=0, second=0, microsecond=0),
+        rank_score=Decimal("0.700"),
+        estimated_probability=Decimal("0.5600"),
+        probability_adjustment=Decimal("0.0600"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.060000"),
+        resolved=True,
+        resolved_correctly=False,
+        clv=Decimal("-0.040000"),
+        profit_loss=Decimal("-0.120000"),
+        details={"direction": "up", "market_question": "Scoped verdict market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(
+        session,
+        benchmark_signal.id,
+        outcome.id,
+        market.id,
+        status="resolved",
+        pnl=Decimal("-60.00"),
+        exit_price=Decimal("0.000000"),
+        resolved_at=now - timedelta(hours=12),
+        opened_at=started_at + timedelta(hours=2),
+        details={"market_question": "Scoped verdict market"},
+    )
+    await session.commit()
+
+    async def _supported_replay_status(_session):  # noqa: ARG001
+        return {
+            "coverage_mode": "supported_detectors_only",
+            "configured_supported_detectors": ["confluence"],
+            "supported_detectors": ["confluence"],
+            "unsupported_detectors": [],
+            "recent_coverage_limited_run_count_24h": 0,
+        }
+    monkeypatch.setattr(
+        analysis_module,
+        "fetch_polymarket_replay_status",
+        _supported_replay_status,
+    )
+
+    response = await client.get("/api/v1/paper-trading/strategy-health")
+    assert response.status_code == 200
+    verdict = response.json()["review_verdict"]
+
+    assert verdict["verdict"] == "keep"
+    assert verdict["reason_code"] == "positive_consensus"
+    assert verdict["threshold_version"] == "default_strategy_review_v1"
+    assert verdict["precedence"] == "blockers_first"
+    assert verdict["blockers"] == []
+    assert verdict["signals"] == {
+        "execution_adjusted_pnl_sign": "positive",
+        "signal_level_pnl_per_share_sign": "positive",
+        "avg_clv_sign": "positive",
+    }
 
 
 @pytest.mark.asyncio

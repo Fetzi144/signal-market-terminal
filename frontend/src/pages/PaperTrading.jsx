@@ -10,11 +10,8 @@ import {
   ReferenceLine,
 } from "recharts";
 import {
+  getPaperTradingDefaultStrategyDashboard,
   getPaperTradingHistory,
-  getPaperTradingMetrics,
-  getPaperTradingPnlCurve,
-  getPaperTradingPortfolio,
-  getPaperTradingStrategyHealth,
 } from "../api";
 
 const PAGE_SIZE = 20;
@@ -67,6 +64,26 @@ function verdictColor(verdict) {
   if (verdict === "keep") return "var(--green)";
   if (verdict === "cut") return "var(--red)";
   return "var(--yellow)";
+}
+
+function reviewVerdictColor(verdict) {
+  if (verdict === "keep") return "var(--green)";
+  if (verdict === "cut" || verdict === "not_ready") return "var(--red)";
+  return "var(--yellow)";
+}
+
+function artifactGenerationColor(status) {
+  if (status === "complete") return "var(--green)";
+  if (status === "invalid") return "var(--red)";
+  if (status === "partial") return "var(--yellow)";
+  return "var(--text-dim)";
+}
+
+function artifactGenerationLabel(status) {
+  if (status === "complete") return "Complete";
+  if (status === "invalid") return "Invalid";
+  if (status === "partial") return "Partial";
+  return "Missing";
 }
 
 function observationMeta(status) {
@@ -382,6 +399,163 @@ function ObservationBanner({ observation }) {
           {observation.days_until_minimum_window} day(s) until the minimum review window.
         </div>
       )}
+    </div>
+  );
+}
+
+function ReviewVerdictPanel({ health }) {
+  const review = health?.review_verdict;
+  const replay = health?.replay;
+  if (!review) return <EmptyState text="Review verdict unavailable." />;
+  const color = reviewVerdictColor(review.verdict);
+
+  return (
+    <div
+      style={{
+        marginBottom: 20,
+        padding: 18,
+        borderRadius: 12,
+        background: "var(--bg-card)",
+        border: `1px solid ${color}`,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+            Operator Verdict
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 800,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                padding: "4px 10px",
+                borderRadius: 999,
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                color,
+              }}
+            >
+              {review.verdict}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              {fmtWhole(review.blockers?.length || 0)} blocker(s)
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              Replay {replay?.coverage_mode || "-"}
+            </span>
+          </div>
+          <div style={{ fontSize: 14, color: "var(--text)", lineHeight: 1.6, maxWidth: 820 }}>
+            {review.summary}
+          </div>
+        </div>
+      </div>
+
+      {review.blockers && review.blockers.length > 0 ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          {review.blockers.map((blocker) => (
+            <div
+              key={blocker.code}
+              style={{
+                borderRadius: 10,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                padding: 14,
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 700, color: color, marginBottom: 6 }}>
+                {blocker.label}
+              </div>
+              <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55 }}>
+                {blocker.detail}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6 }}>
+          No active evidence-gate blockers are present. Keep/cut still depends on the default-strategy evidence itself, not on pilot or live-trading state.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArtifactPathRow({ label, value }) {
+  return (
+    <div
+      style={{
+        borderRadius: 10,
+        border: "1px solid var(--border)",
+        background: "var(--bg)",
+        padding: 14,
+      }}
+    >
+      <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 12, color: value ? "var(--text)" : "var(--text-dim)", fontFamily: "var(--mono)", wordBreak: "break-all", lineHeight: 1.55 }}>
+        {value || "Missing"}
+      </div>
+    </div>
+  );
+}
+
+function LatestReviewArtifactPanel({ artifact }) {
+  if (!artifact) return <EmptyState text="Latest review artifact metadata unavailable." />;
+  const color = artifactGenerationColor(artifact.generation_status);
+  const paths = artifact.artifact_paths || {};
+
+  return (
+    <div
+      style={{
+        marginBottom: 20,
+        padding: 18,
+        borderRadius: 12,
+        background: "var(--bg-card)",
+        border: `1px solid ${color}`,
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+            Latest Review Artifact
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 8 }}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 800,
+                textTransform: "uppercase",
+                letterSpacing: "0.08em",
+                padding: "4px 10px",
+                borderRadius: 999,
+                background: "var(--bg)",
+                border: "1px solid var(--border)",
+                color,
+              }}
+            >
+              {artifactGenerationLabel(artifact.generation_status)}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              Generated {artifact.generated_at ? fmtDate(artifact.generated_at) : "-"}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              Verdict {artifact.verdict || "-"}
+            </span>
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.6, maxWidth: 820 }}>
+            {artifact.status_detail}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+        <ArtifactPathRow label="Markdown Artifact" value={paths.markdown} />
+        <ArtifactPathRow label="JSON Artifact" value={paths.json} />
+      </div>
     </div>
   );
 }
@@ -1108,37 +1282,13 @@ export default function PaperTrading() {
   const loadDashboard = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setRefreshing(true);
     try {
-      const results = await Promise.allSettled([
-      getPaperTradingPortfolio({ scope: STRATEGY_SCOPE }),
-      getPaperTradingMetrics({ scope: STRATEGY_SCOPE }),
-      getPaperTradingPnlCurve({ scope: STRATEGY_SCOPE }),
-      getPaperTradingStrategyHealth(),
-      ]);
-
-      const [portfolioResult, metricsResult, curveResult, healthResult] = results;
-      if (portfolioResult.status === "fulfilled") {
-        setPortfolio(portfolioResult.value);
-      }
-      if (metricsResult.status === "fulfilled") {
-        setMetrics(metricsResult.value);
-      }
-      if (curveResult.status === "fulfilled") {
-        setCurve(curveResult.value);
-      }
-      if (healthResult.status === "fulfilled") {
-        setStrategyHealth(healthResult.value);
-      }
-
-      const failed = results.filter((result) => result.status === "rejected");
-      if (failed.length > 0) {
-        setDashboardError(failed[0].reason?.message || "Failed to load the default strategy dashboard.");
-      } else {
-        setDashboardError(null);
-      }
-
-      if (results.some((result) => result.status === "fulfilled")) {
-        setLastUpdated(new Date().toISOString());
-      }
+      const dashboard = await getPaperTradingDefaultStrategyDashboard();
+      setPortfolio(dashboard.portfolio);
+      setMetrics(dashboard.metrics);
+      setCurve(dashboard.pnl_curve);
+      setStrategyHealth(dashboard.strategy_health);
+      setDashboardError(null);
+      setLastUpdated(new Date().toISOString());
     } catch (err) {
       setDashboardError(err.message);
     } finally {
@@ -1306,6 +1456,8 @@ export default function PaperTrading() {
         <>
           <OperatorBrief health={strategyHealth} />
           <ObservationBanner observation={strategyHealth.observation} />
+          <ReviewVerdictPanel health={strategyHealth} />
+          <LatestReviewArtifactPanel artifact={strategyHealth.latest_review_artifact} />
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 28 }}>
             {summaryCards.map((card) => (
               <SummaryCard

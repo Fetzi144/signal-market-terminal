@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.models.paper_trade import PaperTrade
 from app.paper_trading.analysis import (
+    get_default_strategy_dashboard,
     get_default_strategy_run_lookup,
     get_strategy_health,
     get_strategy_history,
@@ -139,6 +140,13 @@ class DefaultStrategyBootstrapIn(BaseModel):
     evidence_gate: dict[str, Any] | None = None
 
 
+class DefaultStrategyDashboardOut(BaseModel):
+    portfolio: PortfolioOut
+    metrics: MetricsOut
+    pnl_curve: list[PnlPointOut]
+    strategy_health: dict[str, Any]
+
+
 def _build_contract_metadata(payload: DefaultStrategyBootstrapIn) -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     evidence_boundary = {
@@ -157,6 +165,29 @@ def _build_contract_metadata(payload: DefaultStrategyBootstrapIn) -> dict[str, A
     if payload.evidence_gate:
         metadata["evidence_gate"] = payload.evidence_gate
     return metadata
+
+
+def _portfolio_out_from_state(state: dict) -> PortfolioOut:
+    from app.config import settings
+
+    return PortfolioOut(
+        bankroll=float(settings.default_bankroll),
+        open_exposure=float(state["open_exposure"]),
+        open_trades=[_paper_trade_out(t) for t in state["open_trades"]],
+        total_resolved=state["total_resolved"],
+        cumulative_pnl=float(state["cumulative_pnl"]),
+        wins=state["wins"],
+        losses=state["losses"],
+        win_rate=float(state["win_rate"]),
+    )
+
+
+def _metrics_out_from_payload(metrics: dict) -> MetricsOut:
+    return MetricsOut(**metrics)
+
+
+def _pnl_curve_out_from_rows(rows: list[dict]) -> list[PnlPointOut]:
+    return [PnlPointOut(**row) for row in rows]
 
 
 @router.get("/default-strategy/run", response_model=DefaultStrategyRunLookupOut)
@@ -192,6 +223,18 @@ async def bootstrap_default_strategy_run(
     )
 
 
+@router.get("/default-strategy/dashboard", response_model=DefaultStrategyDashboardOut)
+@paper_limiter.limit("10/second")
+async def get_default_strategy_dashboard_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
+    dashboard = await get_default_strategy_dashboard(db)
+    return DefaultStrategyDashboardOut(
+        portfolio=_portfolio_out_from_state(dashboard["portfolio"]),
+        metrics=_metrics_out_from_payload(dashboard["metrics"]),
+        pnl_curve=_pnl_curve_out_from_rows(dashboard["pnl_curve"]),
+        strategy_health=dashboard["strategy_health"],
+    )
+
+
 @router.get("/portfolio", response_model=PortfolioOut)
 @paper_limiter.limit("10/second")
 async def get_portfolio(
@@ -200,18 +243,8 @@ async def get_portfolio(
     db: AsyncSession = Depends(get_db),
 ):
     """Current paper trading portfolio: open positions + summary stats."""
-    from app.config import settings
     state = await get_strategy_portfolio_state(db) if scope == "default_strategy" else await get_portfolio_state(db)
-    return PortfolioOut(
-        bankroll=float(settings.default_bankroll),
-        open_exposure=float(state["open_exposure"]),
-        open_trades=[_paper_trade_out(t) for t in state["open_trades"]],
-        total_resolved=state["total_resolved"],
-        cumulative_pnl=float(state["cumulative_pnl"]),
-        wins=state["wins"],
-        losses=state["losses"],
-        win_rate=float(state["win_rate"]),
-    )
+    return _portfolio_out_from_state(state)
 
 
 @router.get("/history", response_model=TradeHistoryOut)
@@ -278,7 +311,7 @@ async def get_trading_metrics(
 ):
     """Paper trading performance metrics: Sharpe, drawdown, win rate, cumulative P&L."""
     metrics = await get_strategy_metrics(db) if scope == "default_strategy" else await get_metrics(db)
-    return MetricsOut(**metrics)
+    return _metrics_out_from_payload(metrics)
 
 
 @router.get("/strategy-health")
@@ -296,4 +329,5 @@ async def get_pnl_curve_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Cumulative P&L curve for charting."""
-    return await get_strategy_pnl_curve(db) if scope == "default_strategy" else await get_pnl_curve(db)
+    rows = await get_strategy_pnl_curve(db) if scope == "default_strategy" else await get_pnl_curve(db)
+    return _pnl_curve_out_from_rows(rows)

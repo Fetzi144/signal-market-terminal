@@ -20,6 +20,7 @@ from app.metrics import (
     default_strategy_pending_decision_count,
     default_strategy_pending_decision_max_age_seconds,
 )
+from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.models.execution_decision import ExecutionDecision
 from app.models.market import Market
 from app.models.paper_trade import PaperTrade
@@ -29,6 +30,7 @@ from app.paper_trading.portfolio_views import (
     _get_pnl_curve as _get_trade_pnl_curve,
     _get_portfolio_state as _get_trade_portfolio_state,
 )
+from app.paper_trading.review_verdict import build_review_verdict
 from app.signals.probability import brier_score
 from app.strategy_runs.service import (
     get_active_strategy_run,
@@ -323,6 +325,17 @@ def _publish_pending_decision_metrics(pending_watch: dict) -> None:
     default_strategy_pending_decision_max_age_seconds.set(float(pending_watch.get("max_age_seconds", 0.0) or 0.0))
 
 
+def _serialize_replay_review_status(replay_status: dict | None) -> dict:
+    replay = replay_status or {}
+    return {
+        "coverage_mode": replay.get("coverage_mode", "no_detector_activity"),
+        "configured_supported_detectors": list(replay.get("configured_supported_detectors") or []),
+        "supported_detectors": list(replay.get("supported_detectors") or []),
+        "unsupported_detectors": list(replay.get("unsupported_detectors") or []),
+        "recent_coverage_limited_run_count_24h": int(replay.get("recent_coverage_limited_run_count_24h") or 0),
+    }
+
+
 async def get_overdue_open_trade_count(
     session: AsyncSession,
     *,
@@ -501,8 +514,25 @@ async def _count_excluded_legacy_trades(
 
 
 async def _get_default_strategy_scope(session: AsyncSession) -> dict:
-    lookup = await get_default_strategy_run_lookup(session)
     strategy_run = await get_active_strategy_run(session, settings.default_strategy_name)
+    launch_boundary = get_default_strategy_launch_boundary()
+    replay_status = await fetch_polymarket_replay_status(session)
+    lookup = (
+        {
+            "state": "active_run",
+            "strategy_run": serialize_strategy_run(strategy_run),
+            "bootstrap_required": False,
+            "suggested_launch_boundary_at": launch_boundary.isoformat() if launch_boundary is not None else None,
+        }
+        if strategy_run is not None
+        else {
+            "state": "no_active_run",
+            "strategy_run": None,
+            "bootstrap_required": True,
+            "suggested_launch_boundary_at": launch_boundary.isoformat() if launch_boundary is not None else None,
+        }
+    )
+    now = datetime.now(timezone.utc)
     if strategy_run is None:
         pending_watch = {
             "count": 0,
@@ -553,15 +583,16 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
             "resolved_trade_rows": [],
             "resolved_trade_signals": [],
             "started_at": None,
-            "launch_at": get_default_strategy_launch_boundary(),
+            "launch_at": launch_boundary,
             "first_trade_at": None,
+            "observed_at": now,
             "pending_decision_watch": pending_watch,
             "comparison_modes": empty_strategy_measurement_modes(),
+            "replay": replay_status,
             "run_state": lookup["state"],
         }
 
     launch_at = _ensure_utc(strategy_run.started_at)
-    now = datetime.now(timezone.utc)
     candidate_signal_count = await _count_default_strategy_signals(session, launch_at=launch_at)
     pre_launch_candidate_signals = await _count_default_strategy_signals(
         session,
@@ -691,6 +722,7 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         "started_at": launch_at,
         "launch_at": launch_at,
         "first_trade_at": first_trade_at,
+        "observed_at": now,
         "pending_decision_watch": pending_watch,
         "skip_reasons": sorted(skip_reason_counts.values(), key=lambda row: (-row["count"], row["reason_label"])),
         "risk_block_summary": {
@@ -704,6 +736,7 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
             "shared_global_examples": shared_global_examples,
         },
         "comparison_modes": comparison_modes,
+        "replay": replay_status,
         "run_state": lookup["state"],
     }
 
@@ -766,31 +799,49 @@ async def get_default_strategy_pending_decision_watch(session: AsyncSession) -> 
     return (await _get_default_strategy_scope(session))["pending_decision_watch"]
 
 
-async def get_strategy_health(session: AsyncSession) -> dict:
-    scope = await _get_default_strategy_scope(session)
+async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> dict:
+    from app.reports.strategy_review import get_latest_default_strategy_review_artifact_metadata
+
     strategy_run = scope["strategy_run"]
-    now = datetime.now(timezone.utc)
-    contract = strategy_run.contract_snapshot if strategy_run is not None else get_default_strategy_contract(started_at=get_default_strategy_launch_boundary())
+    now = scope["observed_at"]
+    contract = strategy_run.contract_snapshot if strategy_run is not None else get_default_strategy_contract(started_at=scope["launch_at"])
     portfolio = scope["portfolio"]
     metrics = scope["metrics"]
     started_at = scope["started_at"]
+    replay = _serialize_replay_review_status(scope.get("replay"))
+    latest_review_artifact = get_latest_default_strategy_review_artifact_metadata()
     days_tracked = round((now - started_at).total_seconds() / 86400, 1) if started_at is not None else None
     if strategy_run is None:
+        observation = {"started_at": None, "baseline_start_at": contract.get("baseline_start_at"), "first_trade_at": None, "days_tracked": None, "status": "no_active_run", "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": settings.default_strategy_min_observation_days}
+        headline = {"open_exposure": 0.0, "open_trades": 0, "resolved_trades": 0, "resolved_signals": 0, "missing_resolutions": 0, "overdue_open_trades": 0, "cumulative_pnl": 0.0, "avg_clv": None, "profit_factor": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "drawdown_pct": None, "current_equity": None, "peak_equity": None, "brier_score": None}
+        review_verdict = build_review_verdict(
+            strategy_run=None,
+            run_state=scope["run_state"],
+            observation=observation,
+            trade_funnel=scope["trade_funnel"],
+            pending_watch=scope["pending_decision_watch"],
+            comparison_modes=scope["comparison_modes"],
+            replay=replay,
+            headline=headline,
+        )
         return {
             "strategy": contract,
             "strategy_run": None,
             "run_state": scope["run_state"],
             "bootstrap_required": True,
-            "observation": {"started_at": None, "baseline_start_at": contract.get("baseline_start_at"), "first_trade_at": None, "days_tracked": None, "status": "no_active_run", "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": settings.default_strategy_min_observation_days},
+            "observation": observation,
             "trade_funnel": scope["trade_funnel"],
             "pending_decision_watch": scope["pending_decision_watch"],
             "skip_reasons": [],
-            "headline": {"open_exposure": 0.0, "open_trades": 0, "resolved_trades": 0, "resolved_signals": 0, "missing_resolutions": 0, "overdue_open_trades": 0, "cumulative_pnl": 0.0, "avg_clv": None, "profit_factor": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "drawdown_pct": None, "current_equity": None, "peak_equity": None, "brier_score": None},
+            "headline": headline,
             "execution_realism": {"shadow_cumulative_pnl": 0.0, "shadow_profit_factor": 0.0, "liquidity_constrained_trades": 0, "trades_missing_orderbook_context": 0},
             "risk_blocks": scope["risk_block_summary"],
             "run_integrity": {"pre_launch_candidate_signals": 0, "excluded_pre_launch_trades": 0, "excluded_legacy_trades": 0, "trades_missing_orderbook_context": 0, "integrity_errors": [], "debug_drawdown": {"reconstructed_max_drawdown": 0.0, "reconstructed_current_equity": None}},
             "comparison_modes": scope["comparison_modes"],
             "benchmark": scope["comparison_modes"]["signal_level"]["benchmark"],
+            "replay": replay,
+            "review_verdict": review_verdict,
+            "latest_review_artifact": latest_review_artifact,
             "detector_review": [],
             "recent_mistakes": [],
             "review_questions": ["Has a fresh default-strategy run been explicitly bootstrapped?", "Are read-only verification surfaces still non-mutating?", "What evidence will exist once a run is active?"],
@@ -845,22 +896,52 @@ async def get_strategy_health(session: AsyncSession) -> dict:
         session,
         strategy_run_id=strategy_run.id,
     )
+    observation = {"started_at": started_at.isoformat() if started_at else None, "baseline_start_at": scope["launch_at"].isoformat() if scope["launch_at"] else None, "first_trade_at": scope["first_trade_at"].isoformat() if scope["first_trade_at"] else None, "days_tracked": days_tracked, "status": _observation_status(days_tracked, launched=started_at is not None, traded_signals=scope["trade_funnel"]["traded_signals"]), "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": remaining_days}
+    headline = {"open_exposure": float(portfolio["open_exposure"]), "open_trades": len(portfolio["open_trades"]), "resolved_trades": metrics["total_trades"], "resolved_signals": scope["trade_funnel"]["resolved_signals"], "missing_resolutions": scope["trade_funnel"]["unresolved_traded_signals"], "overdue_open_trades": overdue_open_trades, "cumulative_pnl": metrics["cumulative_pnl"], "avg_clv": _safe_float(avg_clv.quantize(Decimal("0.000001"))) if avg_clv is not None else None, "profit_factor": metrics["profit_factor"], "win_rate": metrics["win_rate"], "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None, "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None, "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None, "peak_equity": float(strategy_run.peak_equity) if strategy_run.peak_equity is not None else None, "brier_score": _safe_float(default_brier.quantize(Decimal("0.000001"))) if default_brier is not None else None}
+    review_verdict = build_review_verdict(
+        strategy_run=serialize_strategy_run(strategy_run),
+        run_state=scope["run_state"],
+        observation=observation,
+        trade_funnel=scope["trade_funnel"],
+        pending_watch=scope["pending_decision_watch"],
+        comparison_modes=scope["comparison_modes"],
+        replay=replay,
+        headline=headline,
+    )
     return {
         "strategy": contract,
         "strategy_run": serialize_strategy_run(strategy_run),
         "run_state": scope["run_state"],
         "bootstrap_required": False,
-        "observation": {"started_at": started_at.isoformat() if started_at else None, "baseline_start_at": scope["launch_at"].isoformat() if scope["launch_at"] else None, "first_trade_at": scope["first_trade_at"].isoformat() if scope["first_trade_at"] else None, "days_tracked": days_tracked, "status": _observation_status(days_tracked, launched=started_at is not None, traded_signals=scope["trade_funnel"]["traded_signals"]), "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": remaining_days},
+        "observation": observation,
         "trade_funnel": scope["trade_funnel"],
         "pending_decision_watch": scope["pending_decision_watch"],
         "skip_reasons": scope["skip_reasons"],
-        "headline": {"open_exposure": float(portfolio["open_exposure"]), "open_trades": len(portfolio["open_trades"]), "resolved_trades": metrics["total_trades"], "resolved_signals": scope["trade_funnel"]["resolved_signals"], "missing_resolutions": scope["trade_funnel"]["unresolved_traded_signals"], "overdue_open_trades": overdue_open_trades, "cumulative_pnl": metrics["cumulative_pnl"], "avg_clv": _safe_float(avg_clv.quantize(Decimal("0.000001"))) if avg_clv is not None else None, "profit_factor": metrics["profit_factor"], "win_rate": metrics["win_rate"], "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None, "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None, "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None, "peak_equity": float(strategy_run.peak_equity) if strategy_run.peak_equity is not None else None, "brier_score": _safe_float(default_brier.quantize(Decimal("0.000001"))) if default_brier is not None else None},
+        "headline": headline,
         "execution_realism": {"shadow_cumulative_pnl": metrics["shadow_cumulative_pnl"], "shadow_profit_factor": metrics["shadow_profit_factor"], "liquidity_constrained_trades": metrics["liquidity_constrained_trades"], "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"]},
         "risk_blocks": scope["risk_block_summary"],
         "run_integrity": {"pre_launch_candidate_signals": scope["trade_funnel"]["pre_launch_candidate_signals"], "excluded_pre_launch_trades": scope["trade_funnel"]["excluded_pre_launch_trades"], "excluded_legacy_trades": scope["trade_funnel"]["excluded_legacy_trades"], "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"], "integrity_errors": scope["trade_funnel"]["integrity_errors"], "debug_drawdown": {"reconstructed_max_drawdown": metrics["max_drawdown"], "reconstructed_current_equity": round(float(settings.default_bankroll) + metrics["cumulative_pnl"], 2)}},
         "comparison_modes": scope["comparison_modes"],
         "benchmark": scope["comparison_modes"]["signal_level"]["benchmark"],
+        "replay": replay,
+        "review_verdict": review_verdict,
+        "latest_review_artifact": latest_review_artifact,
         "detector_review": detector_review,
         "recent_mistakes": recent_mistakes,
         "review_questions": ["Did the default strategy make money after execution realism and risk controls?", "Does the qualified funnel reconcile exactly into opened, skipped, and pending decisions?", "Are shared/global risk controls contaminating what looks like local paper-book skips?", "How does the signal-level cohort compare with the legacy rank-threshold baseline?", "How much execution-adjusted evidence do we actually have?"],
+    }
+
+
+async def get_strategy_health(session: AsyncSession) -> dict:
+    scope = await _get_default_strategy_scope(session)
+    return await _serialize_strategy_health(session, scope=scope)
+
+
+async def get_default_strategy_dashboard(session: AsyncSession) -> dict:
+    scope = await _get_default_strategy_scope(session)
+    return {
+        "portfolio": scope["portfolio"],
+        "metrics": scope["metrics"],
+        "pnl_curve": scope["pnl_curve"],
+        "strategy_health": await _serialize_strategy_health(session, scope=scope),
     }

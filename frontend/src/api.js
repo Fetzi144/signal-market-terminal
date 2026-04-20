@@ -858,6 +858,10 @@ export function getPaperTradingMetrics({ scope } = {}) {
   return fetchJson(`${API_BASE}/paper-trading/metrics${query ? `?${query}` : ""}`);
 }
 
+export function getPaperTradingDefaultStrategyDashboard() {
+  return fetchJson(`${API_BASE}/paper-trading/default-strategy/dashboard`);
+}
+
 export function getPaperTradingStrategyHealth() {
   return fetchJson(`${API_BASE}/paper-trading/strategy-health`);
 }

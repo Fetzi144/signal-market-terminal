@@ -42,6 +42,16 @@ The following hardening work is already in place and should be treated as the ne
    - JSON and Markdown review artifacts
    - compact operator verdict panel in the paper-trading UI
 
+3. Review automation and latest-artifact access
+   - latest default-strategy review artifact metadata surfaced through shared read-only health/dashboard payloads
+   - compact Paper Trading visibility for latest review status, verdict, timestamp, and artifact paths
+   - focused backend coverage for missing, partial, invalid, and unreadable artifact states
+
+4. Verdict-threshold contract hardening
+   - review-verdict threshold logic centralized in a dedicated helper
+   - stable machine-readable verdict metadata for precedence, threshold version, and reason code
+   - explicit docs/examples for blocker precedence and keep/watch/cut transitions
+
 These slices reduced read-path waste and turned the prove-the-edge contract into an explicit operator-visible verdict.
 
 ## Active priority order
@@ -206,8 +216,8 @@ Validation baseline for most slices:
 
 ## Current recommended next task
 
-**Review automation and latest-artifact access**
+**Evidence-path observability and alerts**
 
 Concrete prompt seed for Codex:
 
-> Build the smallest high-value slice that makes the latest default-strategy review artifact easy to discover and inspect from operator-facing read-only surfaces. Reuse the existing shared default-strategy scope and review generator. Preserve read-only semantics, fail-closed posture, and the frozen default-strategy benchmark contract.
+> Improve operator trust in the prove-the-edge loop by surfacing evidence freshness and stale-state risk more explicitly. Keep the work read-only, narrow, and honest about coverage, and do not introduce a broad notification subsystem.
