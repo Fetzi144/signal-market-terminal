@@ -1,36 +1,71 @@
 # Codex Start Here
 
-This repository is entering a staged upgrade from a snapshot-based research console into an event-time Polymarket execution stack.
+This file reflects the repository as it exists now.
 
-## Do not skip ahead
+Signal Market Terminal is no longer "entering Phase 0". The repo already contains:
 
-Codex should start with:
+- a frozen default-strategy evidence loop for the "prove the edge" phase
+- a Polymarket truth and execution stack built across the execution roadmap
+- a narrow, supervised pilot control plane plus a Phase 12B stabilization and evidence pass
 
-1. `docs/codex/phase-0-build-pack.md`
-2. `docs/roadmaps/polymarket-execution-roadmap.md`
+## Read in this order
 
-## Phase 0 objective
+1. `README.md`
+2. `docs/default-strategy.md`
+3. `docs/Current roadmaps/polymarket-execution-roadmap.md`
+4. the relevant closeout docs in `docs/codex/` for the subsystem you are changing
 
-Phase 0 fixes the truth boundary before any new alpha work:
+Use `docs/codex/` as the shortest accurate progress snapshot:
 
-- add explicit timing and source fields to `signals`
-- create a first-class `execution_decisions` table
-- move execution realism in front of paper-trade opening
-- preserve current strategy-health compatibility
+- `phase-0-closeout.md` through `phase-6-closeout.md` for timing, raw truth, reconstruction, features, and execution policy
+- `phase-7a-closeout.md`, `phase-8a-closeout.md`, and `phase-8b-closeout.md` for OMS foundation and structure paper routing
+- `phase-9-closeout.md`, `phase-10-closeout.md`, and `phase-11-closeout.md` for maker economics, risk graph, and replay
+- `phase-12-closeout.md` and `phase-12b-stabilization-closeout.md` for the live pilot control plane, guardrails, and evidence loop
 
-## Important constraints
+Do not start from `docs/codex/phase-0-build-pack.md` unless the task explicitly reopens that historical slice.
 
-- keep the current FastAPI/Postgres/worker architecture
-- do not add live trading yet
-- do not add WebSocket ingestion yet
-- do not add new detectors yet
-- do not break `/paper-trading` strategy-health surfaces
+## Current repo posture
 
-## Current weaknesses Phase 0 is meant to address
+- The canonical deployment target is the Hetzner host `smt-prod-1` at `/opt/signal-market-terminal`.
+- Local Docker workflows are legacy and should not be the default path unless the task explicitly needs them.
+- The default strategy is frozen and exists to measure edge honestly, not to widen scope.
+- `strategy_run` bootstrap is explicit. Read-only strategy-health surfaces must not create a run.
+- Exchange and event time are the source of truth when venue data provides them.
+- Raw Polymarket market data, user events, and audit trails should stay append-only and replayable.
+- Structure, maker, risk, replay, and pilot surfaces exist, but they remain conservative and operator-facing first.
+- Live trading is disabled by default.
+- Pilot mode is disabled by default.
+- Manual approval is required by default.
+- `exec_policy` is the only supported armable pilot family in the current slice.
 
-- `SignalCandidate` does not carry exchange-observation timing
-- `persist_signals()` stamps `fired_at` from scheduler time
-- paper trades are still approved before executable fill quality is known
-- `shadow_execution` is still post-hoc analytics, not a pre-trade gate
+## What already exists
 
-Phase 0 is a backend-only correctness phase.
+- Benchmark evidence path: frozen confluence default strategy, execution decisions, strategy health, replay-aware evidence, and controlled relaunch tooling
+- Truth stack: public stream ingest, metadata sync, raw storage, book reconstruction, trade backfill, open-interest polling, and derived microstructure features
+- Execution stack: executable EV gate, OMS/EMS foundation, user stream, reconciler, control plane, and live-vs-shadow evaluation
+- Research stack: structure engine, maker economics, risk graph, replay simulator, and operator health and console surfaces
+
+## Change rules
+
+- Preserve the default-strategy measurement contract unless the task explicitly changes that contract and updates docs and tests with it.
+- Keep fail-closed behavior around live, pilot, approval, and guardrail paths.
+- Prefer additive work that extends the existing truth boundary instead of bypassing it.
+- If you touch a subsystem with a closeout doc, read that closeout first and keep the code aligned with it.
+- Update docs when behavior changes, especially `README.md`, `docs/default-strategy.md`, and the relevant `docs/codex/phase-*-closeout.md`.
+
+## Quick routing
+
+- Default strategy, paper trading, strategy health:
+  - `docs/default-strategy.md`
+  - `backend/app/default_strategy.py`
+  - `backend/app/paper_trading/`
+  - `backend/app/strategy_runs/`
+- Polymarket truth pipeline:
+  - `backend/app/worker.py`
+  - `backend/app/ingestion/`
+  - `frontend/src/pages/Health.jsx`
+- Live and pilot control plane:
+  - `backend/app/execution/`
+  - `backend/app/api/polymarket_live.py`
+  - `docs/codex/phase-12-closeout.md`
+  - `docs/codex/phase-12b-stabilization-closeout.md`

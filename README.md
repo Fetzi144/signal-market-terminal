@@ -1,106 +1,232 @@
-# Signal Market Terminal v0.4.1
+# Signal Market Terminal
 
-A Polymarket-first market-structure terminal with a frozen benchmark strategy. The repo captures venue data, measures execution realism, and paper-trades a fixed default strategy to prove or falsify edge honestly while keeping Kalshi available as a future hedge and basis venue.
+Signal Market Terminal (SMT) is a Polymarket-first market-structure and execution-research terminal.
 
-This is **not** an autonomous betting bot. It is a monitoring, research, and decision-support tool for serious operators. The current product focus is still **prove the edge first**: keep the default strategy frozen as a benchmark, build continuity in Polymarket capture, and let replay plus P&L decide what survives.
+It captures venue state, preserves replayable market truth, measures executable decision quality, and keeps one frozen default strategy as the benchmark for the current "prove the edge" phase. Kalshi remains available as a public cross-venue source for comparison and basis research, but Polymarket is the primary venue focus.
+
+This repo is not an autonomous betting bot. Today it is an operator-facing research, monitoring, and control system with a narrow, fail-closed pilot layer.
+
+## Current posture
+
+- The main goal is still to prove or falsify edge honestly before widening automation.
+- The default strategy is frozen. Strategy-health, paper P&L, detector review, and replay-adjusted evidence are the primary decision surfaces.
+- Exchange and event time should win over midpoint-only or scheduler-clock inference whenever venue data provides better truth.
+- Structure, maker, risk, replay, and pilot layers exist, but they remain conservative and operator-facing first.
+- Live trading is disabled by default.
+- Pilot mode is disabled by default.
+- Manual approval is required by default.
+- `exec_policy` is the only currently supported armable pilot family.
+
+## What exists today
+
+### 1. Benchmark evidence loop
+
+- Frozen `confluence` default strategy with explicit `strategy_run` bootstrap
+- Pre-trade `ExecutionDecision` audit trail and executable-entry gating
+- Paper portfolio, trade history, metrics, P&L curve, and strategy-health surfaces
+- Detector keep/watch/cut review support and controlled evidence relaunch tooling
+- Honest replay coverage labels and signal-level vs execution-adjusted comparison modes
+
+Primary docs:
+
+- [docs/default-strategy.md](docs/default-strategy.md)
+- [docs/runbooks/default-strategy-remediation.md](docs/runbooks/default-strategy-remediation.md)
+- [docs/runbooks/default-strategy-controlled-evidence-relaunch.md](docs/runbooks/default-strategy-controlled-evidence-relaunch.md)
+
+### 2. Polymarket truth stack
+
+- Public Polymarket market-data stream ingest with reconnect, watch reconciliation, and manual resync
+- Metadata sync for tick size, min order size, fee state, negative-risk flags, and registry enrichment
+- Append-only raw event storage, book snapshots, trade backfill, and open-interest polling
+- Deterministic book reconstruction and operator-visible health/status surfaces
+- Derived microstructure features and short-horizon labels for research
+
+### 3. Research and execution layers
+
+- Executable EV action policy for cross, post, step-ahead, or skip style decisions
+- OMS/EMS foundation, live reconciler, and user-stream handling
+- Structure engine with validation and paper-routing controls
+- Maker-economics history and advisory quote recommendations
+- Risk graph, advisory portfolio optimizer, and inventory controls
+- Replay simulator for policy comparison across stored historical truth
+
+### 4. Narrow pilot and control plane
+
+- Pilot config, arming, pause, resume, disarm, and approval workflows
+- Kill switch, incidents, guardrail audit trails, scorecards, and readiness reports
+- Live-vs-shadow evaluation tied back to stored decision and replay provenance where possible
+- Fail-closed defaults that keep the pilot supervised and narrow
+
+## Roadmap status
+
+The execution roadmap is no longer just planned work. The repo includes closeout docs from Phase 0 through Phase 12 plus a Phase 12B stabilization pass.
+
+Use these docs as the canonical progress record:
+
+- [docs/Current roadmaps/polymarket-execution-roadmap.md](docs/Current%20roadmaps/polymarket-execution-roadmap.md)
+- [docs/codex/phase-0-closeout.md](docs/codex/phase-0-closeout.md)
+- [docs/codex/phase-1-closeout.md](docs/codex/phase-1-closeout.md)
+- [docs/codex/phase-2-closeout.md](docs/codex/phase-2-closeout.md)
+- [docs/codex/phase-3-closeout.md](docs/codex/phase-3-closeout.md)
+- [docs/codex/phase-4-closeout.md](docs/codex/phase-4-closeout.md)
+- [docs/codex/phase-5-closeout.md](docs/codex/phase-5-closeout.md)
+- [docs/codex/phase-6-closeout.md](docs/codex/phase-6-closeout.md)
+- [docs/codex/phase-7a-closeout.md](docs/codex/phase-7a-closeout.md)
+- [docs/codex/phase-8a-closeout.md](docs/codex/phase-8a-closeout.md)
+- [docs/codex/phase-8b-closeout.md](docs/codex/phase-8b-closeout.md)
+- [docs/codex/phase-9-closeout.md](docs/codex/phase-9-closeout.md)
+- [docs/codex/phase-10-closeout.md](docs/codex/phase-10-closeout.md)
+- [docs/codex/phase-11-closeout.md](docs/codex/phase-11-closeout.md)
+- [docs/codex/phase-12-closeout.md](docs/codex/phase-12-closeout.md)
+- [docs/codex/phase-12b-stabilization-closeout.md](docs/codex/phase-12b-stabilization-closeout.md)
+
+For agent onboarding, start with [CODEX_START_HERE.md](CODEX_START_HERE.md).
 
 ## Architecture
 
-```
-              +-----------+     +-----------+
-              | Polymarket|     |   Kalshi  |
-              |  Gamma +  |     |  REST API |
-              |  CLOB API |     |  (public) |
-              +-----+-----+     +-----+-----+
-                    |                 |
-                    +--------+--------+
-                             |
-              +-----------v-----------+
-              |       Backend         |
-              | (FastAPI API service) |
-              |                       |
-              |  Ingestion  -> DB     |
-              |  Detection  -> Signals|
-              |  Evaluation -> Evals  |
-              |  Alerting   -> Multi  |
-              |  SSE Stream -> Live   |
-              |  Analytics  -> Stats  |
-              |  Metrics    -> Prom   |
-              |  Cleanup    -> Retain |
-              +-----------+-----------+
-                          |
-              +-----------v-----------+
-              |  Scheduler Worker     |
-              |    (APScheduler)      |
-              +-----------+-----------+
-                          |
-              +-----------v-----------+
-              |    PostgreSQL 16      |
-              |  markets, outcomes,   |
-              |  price_snapshots,     |
-              |  orderbook_snapshots, |
-              |  signals, evaluations |
-              +-----------+-----------+
-                          |
-              +-----------v-----------+
-              |   React Frontend      |
-              |  Feed, Markets,       |
-              |  Analytics, Alerts,   |
-              |  Charts, Health       |
-              +-----------------------+
+```text
+Polymarket public APIs + stream      Kalshi public API
+            |                               |
+            +---------------+---------------+
+                            |
+                    Backend API service
+                            |
+        +-------------------+-------------------+
+        |                                       |
+   Worker responsibilities                 React frontend
+   - scheduler and paper trading           - feed and performance
+   - stream ingest and resync              - strategy health and portfolio
+   - metadata and raw storage              - markets, analytics, alerts
+   - book reconstruction                   - structures
+   - features and labels                   - pilot console
+   - structure engine                      - live orders
+   - risk graph and replay                 - market tape
+   - user stream and reconciler            - health
+   - pilot supervision
+                            |
+                         PostgreSQL
 ```
 
-## Quick Start
+Backend API entrypoint: `backend/app/main.py`
+
+Worker entrypoint: `backend/app/worker.py`
+
+Frontend entrypoint: `frontend/src/App.jsx`
+
+## Main API areas
+
+The API surface is broader than the original signal-feed product. The main router areas are:
+
+- `/api/v1/signals`
+- `/api/v1/markets`
+- `/api/v1/alerts`
+- `/api/v1/analytics`
+- `/api/v1/backtests`
+- `/api/v1/performance`
+- `/api/v1/paper-trading`
+- `/api/v1/events`
+- `/api/v1/ingest/polymarket`
+- `/api/v1/ingest/polymarket/structure`
+- `/api/v1/ingest/polymarket/risk`
+- `/api/v1/ingest/polymarket/replay`
+- `/api/v1/ingest/polymarket/live`
+- `/api/v1/push`
+- `/api/v1/health`
+- `/metrics`
+
+## Frontend surfaces
+
+The current frontend exposes these operator pages:
+
+- Feed
+- Performance
+- Strategy Health
+- Portfolio
+- Markets
+- Analytics
+- Backtest
+- Alerts
+- Structures
+- Pilot Console
+- Live Orders
+- Market Tape
+- Health
+
+## Safety defaults
+
+The repo remains fail-closed by default. Important defaults include:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `POLYMARKET_LIVE_TRADING_ENABLED` | `false` | No live submission unless explicitly enabled |
+| `POLYMARKET_LIVE_DRY_RUN` | `true` | Live layer stays in dry-run mode by default |
+| `POLYMARKET_LIVE_MANUAL_APPROVAL_REQUIRED` | `true` | Candidate live intents require approval |
+| `POLYMARKET_USER_STREAM_ENABLED` | `false` | Authenticated user-stream handling is off unless explicitly enabled |
+| `POLYMARKET_PILOT_ENABLED` | `false` | Pilot layer is off by default |
+| `POLYMARKET_PILOT_REQUIRE_MANUAL_APPROVAL` | `true` | Pilot approval stays manual by default |
+| `POLYMARKET_REPLAY_ENABLED` | `false` | Replay is advisory and off by default |
+| `POLYMARKET_EXECUTION_POLICY_ENABLED` | `false` | Execution policy work is present but not globally enabled by default |
+| `SCHEDULER_ENABLED` | `false` | The API process should not run scheduler jobs by default |
+
+The default-strategy evidence window is currently anchored by `DEFAULT_STRATEGY_START_AT=2026-04-13T00:00:00+00:00`.
+
+## Quick start
+
+### Canonical environment
+
+The main permanent deployment lives on the Hetzner host `smt-prod-1`, with the checkout at `/opt/signal-market-terminal`.
+
+For the production-style stack:
 
 ```bash
-# Clone and start (development)
-cd "Signal Market Terminal"
-docker-compose up --build
-
-# The API runs in `backend`; APScheduler jobs run in `worker`
-# Wait ~2 minutes for market discovery + first snapshots
-# Open http://localhost:5173
+docker compose -f docker-compose.prod.yml up --build -d
 ```
 
-For production:
-```bash
-docker-compose -f docker-compose.prod.yml up --build -d
-# Open http://localhost
-```
+Then open `http://localhost`.
 
-For Oracle's tiny free micro boxes:
-```bash
-cp backend/.env.oracle-micro.example backend/.env.oracle-micro
-docker compose -f docker-compose.oracle-micro.yml up -d db worker
-```
+### Polymarket capture profile
 
-That profile is intentionally headless-first and scanner-only. It keeps PostgreSQL plus the scheduler worker alive and leaves the API as an optional add-on profile:
-```bash
-docker compose -f docker-compose.oracle-micro.yml --profile api up -d backend
-```
+For a headless Polymarket truth worker:
 
-See [docs/runbooks/oracle-free-micro.md](<C:/Code/Signal Market Terminal/docs/runbooks/oracle-free-micro.md>) for the rationale and tuning notes.
-
-For an always-on Polymarket capture worker:
 ```bash
 cp backend/.env.polymarket-capture.example backend/.env.polymarket-capture
 docker compose -f docker-compose.polymarket-capture.yml up -d db worker
-```
-
-That profile is also headless-first, but it is meant for research truth rather than cheap scanning. It turns on stream continuity, metadata sync, raw storage, trade backfill, open-interest polling, and book reconstruction while leaving features, replay, user stream, pilot, and live trading off initially:
-```bash
 docker compose -f docker-compose.polymarket-capture.yml --profile api up -d backend
 ```
 
-See [docs/runbooks/polymarket-capture.md](<C:/Code/Signal Market Terminal/docs/runbooks/polymarket-capture.md>) for the deployment notes and promotion gates.
+This profile is meant for research truth. It turns on stream continuity, metadata sync, raw storage, trade backfill, open-interest polling, and book reconstruction while leaving features, replay, user stream, pilot, and live trading off initially.
 
-For local development without Docker:
+See [docs/runbooks/polymarket-capture.md](docs/runbooks/polymarket-capture.md).
+
+### Oracle free micro profile
+
+For the small scanner-oriented deployment:
+
+```bash
+cp backend/.env.oracle-micro.example backend/.env.oracle-micro
+docker compose -f docker-compose.oracle-micro.yml up -d db worker
+docker compose -f docker-compose.oracle-micro.yml --profile api up -d backend
+```
+
+See [docs/runbooks/oracle-free-micro.md](docs/runbooks/oracle-free-micro.md).
+
+### Legacy local Docker flow
+
+Local Docker remains useful for isolated reproduction work, but it is no longer the canonical day-to-day path.
+
+```bash
+docker compose up --build
+```
+
+The API runs in `backend`, APScheduler jobs run in `worker`, and the frontend is available at `http://localhost:5173`.
+
+### Local development without Docker
 
 ```bash
 # Start Postgres
-docker-compose up db
+docker compose up db
 
-# Backend
+# Backend API
 cd backend
 cp .env.example .env
 pip install -r requirements.txt
@@ -108,165 +234,28 @@ alembic upgrade head
 set SCHEDULER_ENABLED=false
 uvicorn app.main:app --reload
 
-# Scheduler worker (separate terminal)
+# Worker in a separate terminal
 cd backend
 set SCHEDULER_ENABLED=true
 python -m app.worker
 
-# Frontend (separate terminal)
+# Frontend in a separate terminal
 cd frontend
 npm install
 npm run dev
 ```
 
-Local development supports both `localhost` and `127.0.0.1` frontend origins by default. The frontend API base lives in [frontend/.env.development](<C:/Code/Signal Market Terminal/frontend/.env.development>) and can be overridden with `VITE_API_BASE`.
+Local development supports both `localhost` and `127.0.0.1` frontend origins by default. The frontend API base lives in `frontend/.env.development` and can be overridden with `VITE_API_BASE`.
 
-## Features
+## Validation
 
-### Default Strategy Baseline
-
-The repo now carries one explicit validation path for the "prove the edge" phase:
-
-- **Signal path:** `confluence`
-- **Filter:** EV threshold of `>= $0.03/share`
-- **Sizing:** quarter-Kelly on a `$10,000` paper bankroll
-- **Risk guardrails:** `5%` max single position, `30%` max total exposure, `15%` max cluster exposure, drawdown circuit breaker at `-15%`
-- **Primary source of truth:** paper-trading portfolio, P&L curve, strategy-health review, and detector verdicts
-- **Immutable run anchor:** the active `strategy_run` record, not a mutable env var
-- **Execution realism overlay:** conservative shadow-entry pricing with liquidity flags from stored orderbook snapshots
-
-See [docs/default-strategy.md](<C:/Code/Signal Market Terminal/docs/default-strategy.md>) for the full contract.
-
-### Default Strategy Measurement Rules
-
-The default-strategy measurement stack is intentionally conservative:
-
-- **Read-only verification surfaces:** `GET /api/v1/paper-trading/portfolio?scope=default_strategy`, `GET /api/v1/paper-trading/history?scope=default_strategy`, `GET /api/v1/paper-trading/metrics?scope=default_strategy`, `GET /api/v1/paper-trading/pnl-curve?scope=default_strategy`, and `GET /api/v1/paper-trading/strategy-health` never create a `strategy_run`.
-- **Explicit bootstrap only:** if no active run exists, those read paths return a clean `no_active_run` / `bootstrap_required` state. Creating a new run is explicit via `POST /api/v1/paper-trading/default-strategy/bootstrap`.
-- **Canonical funnel ledger:** each qualified signal after the run boundary must reconcile into exactly one of `opened_trade`, `skipped`, or `pending_decision`, backed by the run-scoped `ExecutionDecision` ledger.
-- **Risk attribution is explicit:** strategy-health and review outputs separate local paper-book blocks from shared/global risk-graph blocks and preserve original upstream reason codes for debugging.
-- **Persisted drawdown state:** the drawdown breaker uses stored run equity, high-water mark, and drawdown state rather than reconstructing the breaker from current P&L snapshots.
-- **Benchmark honesty:** comparison outputs are split into `signal_level` (`per_share`) and `execution_adjusted` (`usd`) modes so one report never mixes signal-level and trade-level P&L.
-- **Replay truth boundary:** replay reports now resolve outcomes from canonical settlement data and label detector support explicitly with `coverage_mode`, `supported_detectors`, and `unsupported_detectors`.
-
-See [docs/default-strategy.md](<C:/Code/Signal Market Terminal/docs/default-strategy.md>) for the measurement contract and [docs/runbooks/default-strategy-remediation.md](<C:/Code/Signal Market Terminal/docs/runbooks/default-strategy-remediation.md>) for the operator runbook.
-
-### Signal Detection (5 families)
-
-| Type | Description | Key Config |
-|------|-------------|------------|
-| **Price Move** | Outcome price moved >5% in 30min window | `PRICE_MOVE_THRESHOLD_PCT`, `PRICE_MOVE_WINDOW_MINUTES` |
-| **Volume Spike** | 24h volume >3x the rolling baseline | `VOLUME_SPIKE_MULTIPLIER`, `VOLUME_SPIKE_BASELINE_HOURS` |
-| **Spread Change** | Bid-ask spread widened/narrowed >2x vs 12h avg | `SPREAD_CHANGE_THRESHOLD_RATIO` |
-| **Liquidity Vacuum** | Order book depth dropped below 30% of baseline | `LIQUIDITY_VACUUM_DEPTH_RATIO_THRESHOLD` |
-| **Deadline Near** | Market within 48h of close showing >3% price move | `DEADLINE_NEAR_HOURS`, `DEADLINE_NEAR_PRICE_THRESHOLD_PCT` |
-
-### Ranking
-
-```
-rank_score = signal_score x confidence x recency_weight
-```
-
-- **signal_score** (0-1): Raw anomaly strength
-- **confidence** (0-1): Trust modifier. Penalized by low volume, low liquidity, thin baseline
-- **recency_weight**: 1.0 at 0h, decays to 0.3 at 24h
-- **Dedupe**: One signal per (type, outcome, 15-min window)
-
-### Evaluation
-
-Signals are evaluated at 4 horizons: **15m, 1h, 4h, 24h**. The evaluator checks the closest price snapshot to each horizon target and computes `price_change_pct`. Signals are marked `resolved` once all horizons complete.
-
-### Real-Time Updates (SSE)
-
-The backend streams new signal and alert events via Server-Sent Events (`GET /api/v1/events/signals`). The frontend auto-refreshes on incoming events with a green "Live" indicator.
-
-### Cross-Platform Analytics
-
-- **Platform Summary**: Market counts, signal counts, avg rank per platform
-- **Signal Accuracy**: Directional accuracy per signal type per horizon
-- **Correlated Signals**: Cross-platform signals firing on the same category
-
-### Observability
-
-- **Prometheus metrics** at `/metrics` - auto-instrumented HTTP metrics plus custom counters/gauges for signals, alerts, ingestion, SSE connections
-- **Structured JSON logging** in production (`LOG_FORMAT=json`)
-- **Circuit breaker** on both connectors (closed/open/half-open states)
-
-### Alerting
-
-Signals with `rank_score >= 0.7` (configurable via `ALERT_RANK_THRESHOLD`) trigger alerts:
-
-| Channel | Config | Description |
-|---------|--------|-------------|
-| **Logger** | Always on | Structured `ALERT` log lines |
-| **Webhook** | `ALERT_WEBHOOK_URL` | POST JSON payload to any URL |
-| **Telegram** | `ALERT_TELEGRAM_BOT_TOKEN` + `ALERT_TELEGRAM_CHAT_ID` | Telegram Bot API messages |
-
-Each signal is alerted only once (no re-fires).
-
-## API Reference
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/v1/signals` | Paginated signal feed (filter: `signal_type`, `market_id`, `platform`) |
-| GET | `/api/v1/signals/{id}` | Signal detail with evaluations |
-| GET | `/api/v1/signals/export/csv` | Export signals as CSV |
-| GET | `/api/v1/markets` | Markets list (filter: `search`, `platform`, `category`, sort: `updated`/`volume`/`end_date`/`question`) |
-| GET | `/api/v1/markets/{id}` | Market detail with outcomes and latest prices |
-| GET | `/api/v1/markets/{id}/snapshots` | Recent price snapshots |
-| GET | `/api/v1/markets/{id}/chart-data` | Price time series (1h/6h/24h/7d) |
-| GET | `/api/v1/markets/export/csv` | Export markets as CSV |
-| GET | `/api/v1/alerts/recent` | Alerted signals (filter: `signal_type`, `platform`) |
-| GET | `/api/v1/analytics/platform-summary` | Per-platform stats |
-| GET | `/api/v1/analytics/signal-accuracy` | Accuracy per signal type per horizon |
-| GET | `/api/v1/analytics/correlated-signals` | Cross-platform correlated signals |
-| GET | `/api/v1/events/signals` | SSE stream (new_signal, new_alert events) |
-| GET | `/api/v1/health` | System health |
-| GET | `/metrics` | Prometheus metrics |
-
-## Configuration
-
-All settings are environment variables. See `backend/.env.example` for the full list with defaults. Validated on startup: intervals >= 30s, retention >= 1 day, thresholds > 0.
-
-Key settings:
-- `API_RATE_LIMIT`: Request rate limit (default: `60/minute`)
-- `API_KEY`: Optional API key for authenticated access
-- `CORS_ORIGINS`: Comma-separated allowed origins
-- `KALSHI_ENABLED`: Enable/disable Kalshi connector (default: `true`)
-- `LOG_FORMAT`: `text` (dev) or `json` (production)
-
-## Scheduled Jobs
-
-| Job | Interval | Purpose |
-|-----|----------|---------|
-| Market Discovery | 5 min | Fetch active markets from Polymarket + Kalshi |
-| Snapshot Capture | 2 min | Fetch midpoints + orderbooks, persist to DB |
-| Signal Detection | 2 min + 10s | Run all 5 detectors, persist + broadcast via SSE |
-| Evaluation | 5 min | Evaluate unresolved signals at 15m/1h/4h/24h |
-| Cleanup | 6 hours | Delete old snapshots (30d), orderbooks (14d), signals (90d) |
-
-In dev and prod, APScheduler now runs in the dedicated `worker` service. The web/API process should keep `SCHEDULER_ENABLED=false`.
-
-## Tech Stack
-
-- Python 3.12 + FastAPI + SQLAlchemy 2.x + APScheduler
-- PostgreSQL 16 (asyncpg)
-- React 18 + Vite + React Router + Recharts
-- Docker Compose (dev + prod configs)
-- Prometheus + structured JSON logging
-- GitHub Actions CI (lint + test with 70% coverage gate + Docker build)
-
-## Testing
+Safest first validation command:
 
 ```bash
-cd backend
-pip install -r requirements.txt
-python -m pytest tests/ -v
+python -m pytest backend/tests/test_config.py -q
 ```
 
-90+ tests covering connectors (Polymarket + Kalshi), ingestion, all 5 detectors, ranking, evaluation, alerting (webhook/telegram/logger), cleanup, circuit breaker, config validation, API endpoints, and integration.
-
-Canonical repo-root validation commands:
+Common repo-root validation commands:
 
 ```bash
 npm run frontend:install
@@ -275,26 +264,36 @@ npm run secrets:scan
 python -m pytest backend/tests/test_api.py backend/tests/test_structure_engine.py backend/tests/test_structure_phase8b_api.py -q
 ```
 
-The root `package.json` intentionally owns the frontend workflow so CI and local development use the same entrypoints. Secret scanning is handled by `scripts/scan_secrets.py`, which scans tracked text files and supports a per-line allow marker of `secret-scan: allow` for reviewed false positives.
+The root `package.json` intentionally owns the frontend workflow so CI and local development use the same entrypoints.
 
-## Changelog
+## Tech stack
 
-### v0.2.0
-- Markets browser page with search, sort, platform filter
-- Alerts history page with pagination and filters
-- Cross-platform analytics dashboard (platform summary, signal accuracy, correlations)
-- Real-time SSE updates (live signal streaming to frontend)
-- Prometheus metrics endpoint (`/metrics`)
-- Circuit breaker for connector resilience
-- Structured JSON logging option
-- Dark/light theme toggle
-- Config validation with field validators
-- Timezone fix in signal evaluator
-- 90+ tests (up from 40), 70% coverage gate in CI
-- Hardened production Docker (resource limits, named network)
-- Enhanced nginx config (SSE proxy, static asset caching)
+- Python 3.12
+- FastAPI
+- SQLAlchemy 2.x
+- APScheduler
+- PostgreSQL 16 with `asyncpg`
+- React 18
+- Vite
+- React Router
+- Recharts
+- Docker Compose
+- Prometheus metrics
+- GitHub Actions CI
 
-### v0.1.0
-- Initial release: Polymarket + Kalshi connectors, 5 signal detectors, 4-horizon evaluation
-- Webhook + Telegram alerting, price charts, CSV export
-- Docker dev + prod configs, GitHub Actions CI
+## Repository map
+
+- `backend/app/` - API, worker services, ingestion, execution, models, strategy logic
+- `backend/tests/` - backend and integration tests
+- `frontend/src/` - React application and operator pages
+- `docs/codex/` - phase closeouts and implementation progress record
+- `docs/runbooks/` - deployment and operational runbooks
+- `scripts/` - repository utilities such as secret scanning
+
+## Related docs
+
+- [CHANGELOG.md](CHANGELOG.md)
+- [CODEX_START_HERE.md](CODEX_START_HERE.md)
+- [docs/default-strategy.md](docs/default-strategy.md)
+- [docs/Current roadmaps/polymarket-execution-roadmap.md](docs/Current%20roadmaps/polymarket-execution-roadmap.md)
+
