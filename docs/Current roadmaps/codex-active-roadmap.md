@@ -57,6 +57,10 @@ The following hardening work is already in place and should be treated as the ne
    - explicit visibility when the latest review artifact lags active-run activity
    - compact Paper Trading freshness visibility without adding a notification subsystem
 
+6. Read-path/query hardening follow-up
+   - default-strategy review generation now reuses the shared strategy-health comparison payload instead of rerunning the same locked comparison query window
+   - focused regression coverage prevents the review path from drifting back into duplicate comparison reads
+
 These slices reduced read-path waste and turned the prove-the-edge contract into an explicit operator-visible verdict.
 
 ## Active priority order
@@ -221,8 +225,8 @@ Validation baseline for most slices:
 
 ## Current recommended next task
 
-**Read-path/query hardening follow-up**
+**Roadmap and onboarding hygiene**
 
 Concrete prompt seed for Codex:
 
-> Inspect the default-strategy dashboard and review surfaces for any remaining redundant reads or recomputation, then eliminate one measured overlap without changing benchmark semantics or widening scope.
+> Align README.md, CODEX_START_HERE.md, and the active roadmap around the current prove-or-falsify posture, and explicitly mark broader historical initiatives as deferred where that prevents scope drift.

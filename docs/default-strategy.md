@@ -218,6 +218,8 @@ The strategy review flow now emits both markdown and JSON artifacts under `docs/
 
 Both artifacts should carry the same `review_verdict` payload so operator reads, generated reviews, and downstream automation do not drift into separate verdict semantics.
 
+Review generation should also reuse the shared `comparison_modes` payload from strategy health when it is already available. The read-only health/dashboard surface remains the canonical comparison assembly, and the review generator should not rerun the same measurement query window unless that shared payload is unexpectedly missing.
+
 `GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `latest_review_artifact` metadata object. It surfaces the newest generated review artifact status, timestamp, recoverable verdict, and repo-relative artifact paths without generating a review or mutating run state.
 
 ## Evidence Freshness Surface

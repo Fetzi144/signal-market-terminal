@@ -401,15 +401,17 @@ async def generate_default_strategy_review(session: AsyncSession) -> dict:
     as_of = datetime.now(timezone.utc)
     health = await get_strategy_health(session)
     strategy_run = health.get("strategy_run") or {}
-    started_at = strategy_run.get("started_at") or health.get("observation", {}).get("started_at") or as_of.isoformat()
-    started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-    run_id = strategy_run.get("id")
-    comparison = await compare_locked_modes(
-        session,
-        start_date=started_dt,
-        end_date=as_of,
-        strategy_run_id=None if run_id is None else uuid.UUID(run_id),
-    )
+    comparison = health.get("comparison_modes")
+    if comparison is None:
+        started_at = strategy_run.get("started_at") or health.get("observation", {}).get("started_at") or as_of.isoformat()
+        started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        run_id = strategy_run.get("id")
+        comparison = await compare_locked_modes(
+            session,
+            start_date=started_dt,
+            end_date=as_of,
+            strategy_run_id=None if run_id is None else uuid.UUID(run_id),
+        )
 
     repo_root = _repo_root()
     review_path = repo_root / "docs" / "strategy-reviews" / f"{as_of.date().isoformat()}-default-strategy-baseline.md"

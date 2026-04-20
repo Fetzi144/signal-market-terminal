@@ -99,6 +99,11 @@ async def test_review_generator_writes_versioned_artifacts(session, monkeypatch,
     await session.commit()
 
     monkeypatch.setattr(review_module, "_repo_root", lambda: tmp_path)
+
+    async def _unexpected_compare_locked_modes(*args, **kwargs):  # noqa: ARG001
+        raise AssertionError("review generation should reuse strategy-health comparison_modes")
+
+    monkeypatch.setattr(review_module, "compare_locked_modes", _unexpected_compare_locked_modes)
     result = await generate_default_strategy_review(session)
 
     review_path = Path(result["review_path"])
@@ -114,6 +119,7 @@ async def test_review_generator_writes_versioned_artifacts(session, monkeypatch,
     assert "v0.4.1" in review_text
     review_payload = json.loads(review_json_path.read_text(encoding="utf-8"))
     assert review_payload["review_verdict"]["verdict"] == "keep"
+    assert review_payload["comparison_modes"] == result["comparison"]
     assert review_payload["trade_funnel"]["resolved_trades"] == 1
     assert "Paper Trading Analysis v0.5" in analysis_path.read_text(encoding="utf-8")
 
