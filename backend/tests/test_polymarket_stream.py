@@ -120,6 +120,19 @@ async def test_build_subscription_diff():
     assert to_unsubscribe == ["a"]
 
 
+def test_watch_registry_insert_batch_size_respects_asyncpg_limit():
+    assert polymarket_stream_module._watch_registry_insert_batch_size(
+        requested_size=polymarket_stream_module.WATCH_REGISTRY_LOOKUP_BATCH_SIZE,
+        row_field_count=7,
+        dialect_name="postgresql",
+    ) == polymarket_stream_module.ASYNC_PG_BIND_PARAMETER_LIMIT // 7
+    assert polymarket_stream_module._watch_registry_insert_batch_size(
+        requested_size=polymarket_stream_module.WATCH_REGISTRY_LOOKUP_BATCH_SIZE,
+        row_field_count=7,
+        dialect_name="sqlite",
+    ) == polymarket_stream_module.WATCH_REGISTRY_LOOKUP_BATCH_SIZE
+
+
 @pytest.mark.asyncio
 async def test_stream_message_persists_append_only_preserves_timestamps_and_normalizes(engine):
     session_factory = _session_factory(engine)
@@ -301,6 +314,35 @@ async def test_bootstrap_watch_registry_chunks_existing_outcome_lookup(session, 
     assert bootstrap["updated_count"] == 1
     assert len(rows) == 5
     assert watch_lookup_count == 3
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_watch_registry_chunks_insert_batches_independently(session, monkeypatch):
+    for index in range(5):
+        market = make_market(session, platform="polymarket", platform_id=f"insert-{index}", active=True)
+        await session.flush()
+        make_outcome(session, market.id, token_id=f"insert-token-{index}")
+    await session.commit()
+
+    insert_count = 0
+    original_execute = session.execute
+
+    async def tracking_execute(statement, *args, **kwargs):
+        nonlocal insert_count
+        if str(statement).startswith("INSERT INTO polymarket_watch_assets"):
+            insert_count += 1
+        return await original_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(polymarket_stream_module, "_watch_registry_insert_batch_size", lambda **_kwargs: 2)
+    monkeypatch.setattr(session, "execute", tracking_execute)
+
+    bootstrap = await ensure_watch_registry_bootstrapped(session)
+    await session.commit()
+
+    rows = (await original_execute(select(PolymarketWatchAsset))).scalars().all()
+    assert bootstrap["created_count"] == 5
+    assert len(rows) == 5
+    assert insert_count == 3
 
 
 @pytest.mark.asyncio

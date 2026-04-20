@@ -62,6 +62,7 @@ from app.models.polymarket_stream import (
 logger = logging.getLogger(__name__)
 
 UNSET = object()
+ASYNC_PG_BIND_PARAMETER_LIMIT = 32767
 WATCH_REGISTRY_LOOKUP_BATCH_SIZE = 5000
 BOOK_RESYNC_BATCH_SIZE = 250
 STREAM_SUBSCRIPTION_BATCH_SIZE = 1000
@@ -72,6 +73,21 @@ def _chunk_values(values: list[Any], size: int) -> list[list[Any]]:
     if size <= 0:
         raise ValueError("Chunk size must be positive")
     return [values[index:index + size] for index in range(0, len(values), size)]
+
+
+def _watch_registry_insert_batch_size(
+    *,
+    requested_size: int,
+    row_field_count: int,
+    dialect_name: str,
+) -> int:
+    if requested_size <= 0:
+        raise ValueError("Requested batch size must be positive")
+    if row_field_count <= 0:
+        raise ValueError("Row field count must be positive")
+    if dialect_name != "postgresql":
+        return requested_size
+    return max(1, min(requested_size, ASYNC_PG_BIND_PARAMETER_LIMIT // row_field_count))
 
 
 def build_subscription_diff(current: set[str], desired: set[str]) -> tuple[list[str], list[str]]:
@@ -257,7 +273,12 @@ async def ensure_watch_registry_bootstrapped(
 
     if rows_to_insert:
         insert_fn = postgresql_insert if session.bind.dialect.name == "postgresql" else sqlite_insert
-        for batch in _chunk_values(rows_to_insert, WATCH_REGISTRY_LOOKUP_BATCH_SIZE):
+        insert_batch_size = _watch_registry_insert_batch_size(
+            requested_size=WATCH_REGISTRY_LOOKUP_BATCH_SIZE,
+            row_field_count=len(rows_to_insert[0]),
+            dialect_name=session.bind.dialect.name,
+        )
+        for batch in _chunk_values(rows_to_insert, insert_batch_size):
             result = await session.execute(
                 insert_fn(PolymarketWatchAsset)
                 .values(batch)
