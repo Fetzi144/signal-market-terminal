@@ -59,10 +59,19 @@ Primary docs:
 
 ## Roadmap status
 
+The repo now has one short active roadmap for near-term Codex work, plus historical buildout records.
+
+Use these docs in this order:
+
+- Current near-term roadmap: [docs/Current roadmaps/codex-active-roadmap.md](docs/Current%20roadmaps/codex-active-roadmap.md)
+- Default-strategy measurement contract: [docs/default-strategy.md](docs/default-strategy.md)
+- Historical implementation record: [docs/Current roadmaps/polymarket-execution-roadmap.md](docs/Current%20roadmaps/polymarket-execution-roadmap.md) and the phase closeouts in `docs/codex/`
+
 The execution roadmap is no longer just planned work. The repo includes closeout docs from Phase 0 through Phase 12 plus a Phase 12B stabilization pass.
 
-Use these docs as the canonical progress record:
+Use these docs as the implementation record:
 
+- [docs/Current roadmaps/codex-active-roadmap.md](docs/Current%20roadmaps/codex-active-roadmap.md)
 - [docs/Current roadmaps/polymarket-execution-roadmap.md](docs/Current%20roadmaps/polymarket-execution-roadmap.md)
 - [docs/codex/phase-0-closeout.md](docs/codex/phase-0-closeout.md)
 - [docs/codex/phase-1-closeout.md](docs/codex/phase-1-closeout.md)
@@ -81,6 +90,8 @@ Use these docs as the canonical progress record:
 - [docs/codex/phase-12b-stabilization-closeout.md](docs/codex/phase-12b-stabilization-closeout.md)
 
 For agent onboarding, start with [CODEX_START_HERE.md](CODEX_START_HERE.md).
+
+Historical planning docs under `docs/Historic roadmaps/` and the extended roadmap variants are archival context only. They should not drive current scope unless a task explicitly reopens them.
 
 ## Architecture
 
@@ -294,6 +305,6 @@ The root `package.json` intentionally owns the frontend workflow so CI and local
 
 - [CHANGELOG.md](CHANGELOG.md)
 - [CODEX_START_HERE.md](CODEX_START_HERE.md)
+- [docs/Current roadmaps/codex-active-roadmap.md](docs/Current%20roadmaps/codex-active-roadmap.md)
 - [docs/default-strategy.md](docs/default-strategy.md)
 - [docs/Current roadmaps/polymarket-execution-roadmap.md](docs/Current%20roadmaps/polymarket-execution-roadmap.md)
-

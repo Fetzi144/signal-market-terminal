@@ -61,6 +61,10 @@ The following hardening work is already in place and should be treated as the ne
    - default-strategy review generation now reuses the shared strategy-health comparison payload instead of rerunning the same locked comparison query window
    - focused regression coverage prevents the review path from drifting back into duplicate comparison reads
 
+7. Roadmap and onboarding hygiene
+   - `README.md` and `CODEX_START_HERE.md` now point to this active roadmap first for current scope
+   - broader historical roadmap docs are explicitly marked as archival context unless a task reopens them
+
 These slices reduced read-path waste and turned the prove-the-edge contract into an explicit operator-visible verdict.
 
 ## Active priority order
@@ -225,8 +229,8 @@ Validation baseline for most slices:
 
 ## Current recommended next task
 
-**Roadmap and onboarding hygiene**
+**Reassess active priorities before widening scope**
 
 Concrete prompt seed for Codex:
 
-> Align README.md, CODEX_START_HERE.md, and the active roadmap around the current prove-or-falsify posture, and explicitly mark broader historical initiatives as deferred where that prevents scope drift.
+> Revisit current operator pain points or measured hotspots in the prove-or-falsify loop, then refresh this active roadmap with one new narrow slice only if it preserves the frozen benchmark, fail-closed defaults, and read-only reporting boundaries.

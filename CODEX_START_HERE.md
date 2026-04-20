@@ -11,9 +11,10 @@ Signal Market Terminal is no longer "entering Phase 0". The repo already contain
 ## Read in this order
 
 1. `README.md`
-2. `docs/default-strategy.md`
-3. `docs/Current roadmaps/polymarket-execution-roadmap.md`
+2. `docs/Current roadmaps/codex-active-roadmap.md`
+3. `docs/default-strategy.md`
 4. the relevant closeout docs in `docs/codex/` for the subsystem you are changing
+5. `docs/Current roadmaps/polymarket-execution-roadmap.md` only when you need the historical buildout sequence
 
 Use `docs/codex/` as the shortest accurate progress snapshot:
 
@@ -23,6 +24,14 @@ Use `docs/codex/` as the shortest accurate progress snapshot:
 - `phase-12-closeout.md` and `phase-12b-stabilization-closeout.md` for the live pilot control plane, guardrails, and evidence loop
 
 Do not start from `docs/codex/phase-0-build-pack.md` unless the task explicitly reopens that historical slice.
+
+## Canonical scope source
+
+For current work, the tracked near-term scope source is `docs/Current roadmaps/codex-active-roadmap.md`.
+
+- Treat `docs/default-strategy.md` as the benchmark contract for prove-or-falsify work.
+- Treat `docs/Current roadmaps/polymarket-execution-roadmap.md` as historical implementation context, not the default task queue.
+- Treat files under `docs/Historic roadmaps/` and extended roadmap variants as archival unless the task explicitly reopens them.
 
 ## Current repo posture
 
@@ -50,8 +59,9 @@ Do not start from `docs/codex/phase-0-build-pack.md` unless the task explicitly 
 - Preserve the default-strategy measurement contract unless the task explicitly changes that contract and updates docs and tests with it.
 - Keep fail-closed behavior around live, pilot, approval, and guardrail paths.
 - Prefer additive work that extends the existing truth boundary instead of bypassing it.
+- Do not widen scope from historical roadmap ideas unless the active roadmap explicitly promotes them.
 - If you touch a subsystem with a closeout doc, read that closeout first and keep the code aligned with it.
-- Update docs when behavior changes, especially `README.md`, `docs/default-strategy.md`, and the relevant `docs/codex/phase-*-closeout.md`.
+- Update docs when behavior changes, especially `README.md`, `docs/Current roadmaps/codex-active-roadmap.md`, `docs/default-strategy.md`, and the relevant `docs/codex/phase-*-closeout.md`.
 
 ## Quick routing
 
