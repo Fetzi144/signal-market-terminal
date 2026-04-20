@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 SCHEDULER_LEASE_NAME = "default"
+PAPER_TRADING_PENDING_RETRY_BATCH_SIZE = 100
+PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE = 100
 
 _scheduler_owner_token: str | None = None
 _scheduler_lease_task: asyncio.Task | None = None
@@ -272,6 +274,7 @@ async def _run_paper_trading(session, signals):
         session,
         strategy_run,
         exclude_signal_ids=fresh_signal_ids,
+        limit=PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
     )
     backfilled_signal_ids = await backfill_execution_decisions_from_strategy_metadata(
         session,
@@ -283,7 +286,7 @@ async def _run_paper_trading(session, signals):
         for signal in missing_backlog_signals
         if signal.id not in backfilled_signal_ids
     ]
-    pending_signal_result = await session.execute(
+    pending_signal_query = (
         select(Signal)
         .join(ExecutionDecision, ExecutionDecision.signal_id == Signal.id)
         .where(
@@ -291,12 +294,12 @@ async def _run_paper_trading(session, signals):
             ExecutionDecision.decision_status == "pending_decision",
         )
         .order_by(ExecutionDecision.decision_at.asc(), ExecutionDecision.id.asc())
+        .limit(PAPER_TRADING_PENDING_RETRY_BATCH_SIZE)
     )
-    pending_retry_signals = [
-        signal
-        for signal in pending_signal_result.scalars().all()
-        if signal.id not in fresh_signal_ids
-    ]
+    if fresh_signal_ids:
+        pending_signal_query = pending_signal_query.where(Signal.id.not_in(fresh_signal_ids))
+    pending_signal_result = await session.execute(pending_signal_query)
+    pending_retry_signals = pending_signal_result.scalars().all()
     work_items = (
         [(signal, "fresh_signal") for signal in signals]
         + [(signal, "retry") for signal in pending_retry_signals]
@@ -378,6 +381,18 @@ async def _run_paper_trading(session, signals):
             logger.warning(
                 "Paper trading backfilled %d historical execution decision(s) from stored signal metadata",
                 len(backfilled_signal_ids),
+            )
+        if len(pending_retry_signals) == PAPER_TRADING_PENDING_RETRY_BATCH_SIZE:
+            logger.info(
+                "Paper trading retry backlog capped at %d pending execution decision(s) for strategy run %s",
+                PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
+                strategy_run.id,
+            )
+        if len(backlog_retry_signals) == PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE:
+            logger.info(
+                "Paper trading repair backlog capped at %d qualified signal(s) for strategy run %s",
+                PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
+                strategy_run.id,
             )
         logger.info(
             "Paper trading: opened %d trades from %d in-window default-strategy signal(s)",

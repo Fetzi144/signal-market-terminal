@@ -2,10 +2,12 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 
+import app.jobs.scheduler as scheduler_module
 from app.config import settings
 from app.jobs.scheduler import _fetch_overdue_open_trade_resolutions, _resolve_paper_trades, _run_paper_trading
 from app.metrics import default_strategy_scheduler_no_active_run
@@ -747,6 +749,139 @@ async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
     )
     assert execution_decision is not None
     assert execution_decision.reason_code == "ev_below_threshold"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_limits_paper_trading_retry_and_repair_backlogs(session, monkeypatch):
+    market = make_market(session, question="Backlog throttle market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    base_time = datetime.now(timezone.utc) - timedelta(minutes=10)
+
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=base_time - timedelta(minutes=1))
+
+    fresh_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        timeframe="fresh",
+        fired_at=base_time + timedelta(minutes=3),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Backlog throttle market", "outcome_name": "Yes"},
+    )
+    pending_signals = [
+        make_signal(
+            session,
+            market.id,
+            outcome.id,
+            signal_type="confluence",
+            timeframe=f"retry_{index}",
+            fired_at=base_time + timedelta(minutes=index),
+            estimated_probability=Decimal("0.6500"),
+            probability_adjustment=Decimal("0.2500"),
+            price_at_fire=Decimal("0.400000"),
+            expected_value=Decimal("0.250000"),
+            details={"direction": "up", "market_question": "Backlog throttle market", "outcome_name": "Yes"},
+        )
+        for index in (1, 2)
+    ]
+    backlog_signals = [
+        make_signal(
+            session,
+            market.id,
+            outcome.id,
+            signal_type="confluence",
+            timeframe=f"repair_{index}",
+            fired_at=base_time + timedelta(minutes=4 + index),
+            estimated_probability=Decimal("0.6500"),
+            probability_adjustment=Decimal("0.2500"),
+            price_at_fire=Decimal("0.400000"),
+            expected_value=Decimal("0.250000"),
+            details={"direction": "up", "market_question": "Backlog throttle market", "outcome_name": "Yes"},
+        )
+        for index in (0, 1)
+    ]
+    await session.flush()
+
+    for signal in pending_signals:
+        await ensure_pending_execution_decision(
+            session=session,
+            signal_id=signal.id,
+            outcome_id=signal.outcome_id,
+            market_id=signal.market_id,
+            estimated_probability=signal.estimated_probability,
+            market_price=signal.price_at_fire,
+            market_question=(signal.details or {}).get("market_question", ""),
+            fired_at=signal.fired_at,
+            strategy_run_id=strategy_run.id,
+        )
+    await session.commit()
+
+    monkeypatch.setattr(scheduler_module, "PAPER_TRADING_PENDING_RETRY_BATCH_SIZE", 1)
+    monkeypatch.setattr(scheduler_module, "PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE", 1)
+
+    def fake_evaluate_default_strategy_signal(signal, *, started_at):
+        return SimpleNamespace(
+            signal_type_match=True,
+            in_window=True,
+            eligible=True,
+            reason_code="eligible",
+            reason_label="Eligible",
+        )
+
+    attempt_log: list[tuple[uuid.UUID, str | None]] = []
+
+    async def fake_attempt_open_trade(
+        session,
+        *,
+        signal_id,
+        outcome_id,
+        market_id,
+        estimated_probability,
+        market_price,
+        market_question,
+        fired_at,
+        strategy_run_id,
+        precheck_reason_code,
+        precheck_reason_label,
+    ):
+        signal = await session.get(Signal, signal_id)
+        attempt_kind = ((signal.details or {}).get("default_strategy") or {}).get("attempt_kind")
+        attempt_log.append((signal_id, attempt_kind))
+        return SimpleNamespace(
+            trade=None,
+            decision="skipped",
+            reason_code="throttled_test_skip",
+            reason_label="Throttled test skip",
+            detail=None,
+            diagnostics=None,
+        )
+
+    monkeypatch.setattr("app.default_strategy.evaluate_default_strategy_signal", fake_evaluate_default_strategy_signal)
+    monkeypatch.setattr("app.paper_trading.engine.attempt_open_trade", fake_attempt_open_trade)
+
+    await _run_paper_trading(session, [fresh_signal])
+
+    await session.refresh(fresh_signal)
+    for signal in pending_signals + backlog_signals:
+        await session.refresh(signal)
+
+    processed_pending = [
+        signal for signal in pending_signals
+        if ((signal.details or {}).get("default_strategy") or {}).get("attempt_kind") == "retry"
+    ]
+    processed_backlog = [
+        signal for signal in backlog_signals
+        if ((signal.details or {}).get("default_strategy") or {}).get("attempt_kind") == "backlog_repair"
+    ]
+
+    assert fresh_signal.details["default_strategy"]["attempt_kind"] == "fresh_signal"
+    assert len(processed_pending) == 1
+    assert len(processed_backlog) == 1
+    assert len(attempt_log) == 3
 
 
 @pytest.mark.asyncio

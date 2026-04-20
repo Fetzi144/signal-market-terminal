@@ -220,3 +220,54 @@ async def test_evaluator_isolates_failed_horizons_and_continues(session, monkeyp
 
     assert len(evaluations) == 1
     assert evaluations[0].signal_id == good_signal.id
+
+
+@pytest.mark.asyncio
+async def test_evaluator_prioritizes_recent_due_signals_over_stale_backlog(session, monkeypatch):
+    market = make_market(session)
+    await session.flush()
+    stale_outcome = make_outcome(session, market.id, name="Stale")
+    fresh_outcome = make_outcome(session, market.id, name="Fresh")
+    await session.flush()
+
+    now = datetime.now(timezone.utc)
+    stale_signal = make_signal(
+        session,
+        market.id,
+        stale_outcome.id,
+        fired_at=now - timedelta(days=3),
+        price_at_fire=Decimal("0.500000"),
+    )
+    fresh_signal = make_signal(
+        session,
+        market.id,
+        fresh_outcome.id,
+        fired_at=now - timedelta(minutes=20),
+        price_at_fire=Decimal("0.500000"),
+    )
+    await session.flush()
+
+    make_price_snapshot(
+        session,
+        fresh_outcome.id,
+        "0.55",
+        captured_at=now - timedelta(minutes=5),
+    )
+    await session.commit()
+
+    monkeypatch.setattr(evaluator_module, "EVALUATION_SIGNAL_BATCH_SIZE", 1)
+
+    created = await evaluate_signals(session)
+
+    assert created == 1
+
+    result = await session.execute(
+        select(SignalEvaluation).order_by(SignalEvaluation.signal_id.asc())
+    )
+    evaluations = result.scalars().all()
+
+    assert len(evaluations) == 1
+    assert evaluations[0].signal_id == fresh_signal.id
+
+    await session.refresh(stale_signal)
+    assert stale_signal.resolved is False

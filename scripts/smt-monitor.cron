@@ -1,4 +1,4 @@
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-*/5 * * * * root /usr/bin/python3 /opt/signal-market-terminal/scripts/log_server_metrics.py --output-dir /var/log/smt-monitor --health-url http://127.0.0.1/api/v1/health --retention-days 14 >> /var/log/smt-monitor/cron.log 2>&1
+*/5 * * * * root /usr/bin/python3 /opt/signal-market-terminal/scripts/log_server_metrics.py --output-dir /var/log/smt-monitor --health-url http://127.0.0.1/api/v1/health/summary --retention-days 14 >> /var/log/smt-monitor/cron.log 2>&1

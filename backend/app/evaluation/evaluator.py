@@ -27,6 +27,9 @@ HORIZONS = {
     "24h": timedelta(hours=24),
 }
 
+# Keep evaluation passes bounded so a backlog cannot monopolize the worker.
+EVALUATION_SIGNAL_BATCH_SIZE = 1000
+
 # How far from the target time we'll accept a snapshot
 SNAPSHOT_TOLERANCE = timedelta(minutes=5)
 PRICE_CHANGE_PCT_QUANTUM = Decimal("0.0001")
@@ -130,18 +133,17 @@ async def evaluate_signals(session: AsyncSession) -> int:
     stats = {"created": 0, "failed": 0}
     session.sync_session.info["signal_evaluation_stats"] = stats
 
-    # Get unresolved signals
-    result = await session.execute(
-        select(Signal).where(Signal.resolved.is_(False))
-    )
-    signals = result.scalars().all()
-
-    for signal in signals:
-        all_horizons_done = True
-
-        for horizon_key, horizon_delta in HORIZONS.items():
+    for horizon_key, horizon_delta in HORIZONS.items():
+        signals = await _load_due_signals_for_horizon(
+            session,
+            horizon_key=horizon_key,
+            horizon_delta=horizon_delta,
+            now=now,
+            limit=EVALUATION_SIGNAL_BATCH_SIZE,
+        )
+        for signal in signals:
             try:
-                created_delta, horizon_done = await _evaluate_signal_horizon(
+                created_delta, _ = await _evaluate_signal_horizon(
                     session,
                     signal,
                     horizon_key=horizon_key,
@@ -150,7 +152,6 @@ async def evaluate_signals(session: AsyncSession) -> int:
                 )
             except Exception:
                 stats["failed"] += 1
-                all_horizons_done = False
                 logger.warning(
                     "Signal evaluation failed for signal %s horizon %s",
                     signal.id,
@@ -161,12 +162,8 @@ async def evaluate_signals(session: AsyncSession) -> int:
 
             created += created_delta
             stats["created"] = created
-            if not horizon_done:
-                all_horizons_done = False
-
-        if all_horizons_done and not signal.resolved:
-            signal.resolved = True
-            resolved_changed = True
+            if await _maybe_mark_signal_resolved(session, signal, now=now):
+                resolved_changed = True
 
     if created or resolved_changed:
         await session.commit()
@@ -174,6 +171,63 @@ async def evaluate_signals(session: AsyncSession) -> int:
         logger.info("Created %d signal evaluations", created)
 
     return created
+
+
+async def _load_due_signals_for_horizon(
+    session: AsyncSession,
+    *,
+    horizon_key: str,
+    horizon_delta: timedelta,
+    now: datetime,
+    limit: int,
+) -> list[Signal]:
+    due_before = now - horizon_delta
+    existing_horizon = (
+        select(SignalEvaluation.id)
+        .where(
+            SignalEvaluation.signal_id == Signal.id,
+            SignalEvaluation.horizon == horizon_key,
+        )
+        .exists()
+    )
+    result = await session.execute(
+        select(Signal)
+        .where(
+            Signal.resolved.is_(False),
+            Signal.fired_at <= due_before,
+            ~existing_horizon,
+        )
+        .order_by(Signal.fired_at.desc(), Signal.id.desc())
+        .limit(limit)
+    )
+    return result.scalars().all()
+
+
+async def _maybe_mark_signal_resolved(
+    session: AsyncSession,
+    signal: Signal,
+    *,
+    now: datetime,
+) -> bool:
+    if signal.resolved:
+        return False
+
+    fired_at = _ensure_utc(signal.fired_at)
+    if any(fired_at + horizon_delta > now for horizon_delta in HORIZONS.values()):
+        return False
+
+    if signal.outcome_id is None or signal.price_at_fire is None:
+        signal.resolved = True
+        return True
+
+    result = await session.execute(
+        select(SignalEvaluation.horizon).where(SignalEvaluation.signal_id == signal.id)
+    )
+    completed_horizons = set(result.scalars().all())
+    if all(horizon_key in completed_horizons for horizon_key in HORIZONS):
+        signal.resolved = True
+        return True
+    return False
 
 
 async def _closest_snapshot(

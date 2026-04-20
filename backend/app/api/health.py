@@ -374,6 +374,15 @@ class HealthOut(BaseModel):
     strategy_families: list[StrategyFamilyReviewOut]
 
 
+class HealthSummaryOut(BaseModel):
+    status: str
+    now: datetime
+    active_markets: int
+    recent_alerts_24h: int
+    ingestion: list[IngestionStatus]
+    scheduler_lease: SchedulerLeaseStatus
+
+
 def _ensure_utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
@@ -500,6 +509,102 @@ async def _latest_ingestion_run(
     return result.scalar_one_or_none()
 
 
+def _build_scheduler_lease_status(
+    *,
+    now: datetime,
+    scheduler_lease: SchedulerLease | None,
+) -> SchedulerLeaseStatus:
+    return SchedulerLeaseStatus(
+        owner_token=scheduler_lease.owner_token if scheduler_lease is not None else None,
+        heartbeat_freshness_seconds=_age_seconds(
+            now=now,
+            value=scheduler_lease.heartbeat_at if scheduler_lease is not None else None,
+        ),
+        expires_in_seconds=_expires_in_seconds(
+            now=now,
+            value=scheduler_lease.expires_at if scheduler_lease is not None else None,
+        ),
+    )
+
+
+@router.get("/health/summary", response_model=HealthSummaryOut)
+async def health_summary(db: AsyncSession = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+
+    active_markets = (
+        await db.execute(select(func.count(Market.id)).where(Market.active.is_(True)))
+    ).scalar() or 0
+
+    threshold = Decimal(str(settings.alert_rank_threshold))
+    recent_alerts = (
+        await db.execute(
+            select(func.count(Signal.id)).where(
+                Signal.rank_score >= threshold,
+                Signal.fired_at >= now - timedelta(hours=24),
+            )
+        )
+    ).scalar() or 0
+
+    ingestion_statuses: list[IngestionStatus] = []
+    ingestion_failures = False
+    ingestion_stale = False
+    freshness_thresholds = {
+        "market_discovery": max(settings.market_discovery_interval_seconds * 3, 900),
+        "snapshot": max(settings.snapshot_interval_seconds * 3, 600),
+    }
+    for run_type in ("market_discovery", "snapshot"):
+        result = await db.execute(
+            select(IngestionRun)
+            .where(IngestionRun.run_type == run_type)
+            .order_by(IngestionRun.started_at.desc())
+            .limit(1)
+        )
+        run = result.scalar_one_or_none()
+        last_run = run.started_at if run else None
+        ingestion_statuses.append(
+            IngestionStatus(
+                run_type=run_type,
+                last_status=run.status if run else None,
+                last_run=last_run,
+                markets_processed=run.markets_processed if run else None,
+            )
+        )
+        if run is None or run.status != "success":
+            ingestion_failures = True
+            continue
+        run_age_seconds = _age_seconds(now=now, value=last_run)
+        threshold_seconds = freshness_thresholds[run_type]
+        if run_age_seconds is None or run_age_seconds > threshold_seconds:
+            ingestion_stale = True
+
+    scheduler_lease = await db.get(SchedulerLease, DEFAULT_SCHEDULER_LEASE_NAME)
+    scheduler_lease_status = _build_scheduler_lease_status(
+        now=now,
+        scheduler_lease=scheduler_lease,
+    )
+    lease_heartbeat_threshold = max(1, settings.scheduler_lease_renew_interval_seconds * 2)
+    lease_failing = (
+        not scheduler_lease_status.owner_token
+        or scheduler_lease_status.expires_in_seconds is None
+        or scheduler_lease_status.expires_in_seconds <= 0
+        or scheduler_lease_status.heartbeat_freshness_seconds is None
+        or scheduler_lease_status.heartbeat_freshness_seconds > lease_heartbeat_threshold
+    )
+
+    overall_status = "ok"
+    if active_markets == 0 or ingestion_failures or ingestion_stale or lease_failing:
+        overall_status = "degraded"
+
+    return HealthSummaryOut(
+        status=overall_status,
+        now=now,
+        active_markets=active_markets,
+        recent_alerts_24h=recent_alerts,
+        ingestion=ingestion_statuses,
+        scheduler_lease=scheduler_lease_status,
+    )
+
+
 @router.get("/health", response_model=HealthOut)
 async def health(db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
@@ -575,16 +680,9 @@ async def health(db: AsyncSession = Depends(get_db)):
         or 0
     )
     strategy_families = build_strategy_family_reviews()
-    scheduler_lease_status = SchedulerLeaseStatus(
-        owner_token=scheduler_lease.owner_token if scheduler_lease is not None else None,
-        heartbeat_freshness_seconds=_age_seconds(
-            now=now,
-            value=scheduler_lease.heartbeat_at if scheduler_lease is not None else None,
-        ),
-        expires_in_seconds=_expires_in_seconds(
-            now=now,
-            value=scheduler_lease.expires_at if scheduler_lease is not None else None,
-        ),
+    scheduler_lease_status = _build_scheduler_lease_status(
+        now=now,
+        scheduler_lease=scheduler_lease,
     )
     default_strategy_runtime = DefaultStrategyRuntimeStatus(
         overdue_open_trades=overdue_open_trades,

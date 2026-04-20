@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--health-url",
-        default="http://127.0.0.1/api/v1/health",
+        default="http://127.0.0.1/api/v1/health/summary",
         help="Local health endpoint to sample.",
     )
     parser.add_argument(

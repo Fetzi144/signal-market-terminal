@@ -147,6 +147,7 @@ async def load_missing_qualified_signals(
     strategy_run: StrategyRun,
     *,
     exclude_signal_ids: Iterable[uuid.UUID] | None = None,
+    limit: int | None = None,
 ) -> list[Signal]:
     min_ev_threshold = Decimal(str(settings.min_ev_threshold))
     query = (
@@ -175,6 +176,8 @@ async def load_missing_qualified_signals(
     exclude_ids = [signal_id for signal_id in (exclude_signal_ids or [])]
     if exclude_ids:
         query = query.where(Signal.id.not_in(exclude_ids))
+    if limit is not None:
+        query = query.limit(limit)
 
     result = await session.execute(query)
     return result.scalars().all()
