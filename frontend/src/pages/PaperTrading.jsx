@@ -138,6 +138,21 @@ function formatArtifactContractRef(artifact) {
   return parts.length > 0 ? parts.join(" | ") : "Unavailable";
 }
 
+function formatReviewGenerationPath(guidance) {
+  if (!guidance?.command) return "Unavailable";
+  if (guidance.working_directory) {
+    return `${guidance.working_directory}/: ${guidance.command}`;
+  }
+  return guidance.command;
+}
+
+function formatReviewOutputs(guidance) {
+  const outputs = [];
+  if (guidance?.artifacts_directory) outputs.push(guidance.artifacts_directory);
+  if (guidance?.analysis_path) outputs.push(guidance.analysis_path);
+  return outputs.length > 0 ? outputs.join(" | ") : "Unavailable";
+}
+
 function observationMeta(status) {
   switch (status) {
     case "live_waiting_for_trades":
@@ -559,8 +574,14 @@ function LatestReviewArtifactPanel({ artifact, freshness }) {
   if (!artifact) return <EmptyState text="Latest review artifact metadata unavailable." />;
   const color = artifactGenerationColor(artifact.generation_status);
   const paths = artifact.artifact_paths || {};
+  const guidance = artifact.generation_guidance || {};
   const freshnessColor = evidenceFreshnessColor(freshness?.status);
   const identityColor = artifactIdentityColor(freshness?.artifact_identity_status);
+  const highlightGuidance = (
+    artifact.generation_status === "missing"
+    || freshness?.status === "missing_review"
+    || freshness?.status === "stale"
+  );
 
   return (
     <div
@@ -622,6 +643,33 @@ function LatestReviewArtifactPanel({ artifact, freshness }) {
           </div>
         </div>
       </div>
+
+      {guidance.command && (
+        <div
+          style={{
+            borderRadius: 10,
+            border: `1px solid ${highlightGuidance ? "var(--yellow)" : "var(--border)"}`,
+            background: "var(--bg)",
+            padding: 14,
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ fontSize: 11, color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>
+            Manual Review Generation
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.6, marginBottom: 10 }}>
+            {highlightGuidance
+              ? "This review needs manual regeneration from the canonical operator path below. The read-only dashboard will not generate artifacts for you."
+              : guidance.note}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+            <ArtifactPathRow label="Run From" value={guidance.working_directory || "Unavailable"} />
+            <ArtifactPathRow label="Command" value={formatReviewGenerationPath(guidance)} />
+            <ArtifactPathRow label="Runbook" value={guidance.runbook_path || "Unavailable"} />
+            <ArtifactPathRow label="Outputs" value={formatReviewOutputs(guidance)} />
+          </div>
+        </div>
+      )}
 
       {freshness && (
         <div

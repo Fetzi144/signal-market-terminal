@@ -15,6 +15,15 @@ _REVIEW_ARTIFACT_NAME_RE = re.compile(
 )
 _REVIEW_DATE_LINE_RE = re.compile(r"^\*\*Date:\*\*\s*(?P<review_date>\d{4}-\d{2}-\d{2})\s*$", re.MULTILINE)
 _REVIEW_VERDICT_LINE_RE = re.compile(r"^- Verdict:\s*`(?P<verdict>[^`]+)`\s*$", re.MULTILINE)
+_DEFAULT_REVIEW_GENERATION_WORKDIR = "backend"
+_DEFAULT_REVIEW_GENERATION_COMMAND = "python -m app.reports"
+_DEFAULT_REVIEW_RUNBOOK_PATH = "docs/runbooks/default-strategy-controlled-evidence-relaunch.md"
+_DEFAULT_REVIEW_ARTIFACTS_DIRECTORY = "docs/strategy-reviews"
+_DEFAULT_REVIEW_ANALYSIS_PATH = "docs/paper-trading-analysis-v0.5.md"
+_DEFAULT_REVIEW_GENERATION_NOTE = (
+    "Read-only health and dashboard surfaces never generate review artifacts. "
+    "Use the canonical backend command or the controlled relaunch runbook instead."
+)
 
 
 def _repo_root() -> Path:
@@ -56,6 +65,17 @@ def _parse_review_markdown_metadata(path: Path | None) -> dict[str, str | None]:
     return {
         "review_date": review_date_match.group("review_date") if review_date_match else None,
         "verdict": verdict_match.group("verdict") if verdict_match else None,
+    }
+
+
+def _review_generation_guidance() -> dict[str, str]:
+    return {
+        "working_directory": _DEFAULT_REVIEW_GENERATION_WORKDIR,
+        "command": _DEFAULT_REVIEW_GENERATION_COMMAND,
+        "runbook_path": _DEFAULT_REVIEW_RUNBOOK_PATH,
+        "artifacts_directory": _DEFAULT_REVIEW_ARTIFACTS_DIRECTORY,
+        "analysis_path": _DEFAULT_REVIEW_ANALYSIS_PATH,
+        "note": _DEFAULT_REVIEW_GENERATION_NOTE,
     }
 
 
@@ -122,6 +142,7 @@ def get_latest_default_strategy_review_artifact_metadata() -> dict:
                 "release_tag": None,
                 "migration_revision": None,
             },
+            "generation_guidance": _review_generation_guidance(),
             "artifact_paths": {
                 "markdown": None,
                 "json": None,
@@ -181,6 +202,7 @@ def get_latest_default_strategy_review_artifact_metadata() -> dict:
         "verdict": verdict,
         "strategy_run_ref": _strategy_run_ref_from_review_payload(review_payload),
         "contract_ref": _contract_ref_from_review_payload(review_payload),
+        "generation_guidance": _review_generation_guidance(),
         "artifact_paths": {
             "markdown": _repo_relative_path(markdown_path, repo_root=repo_root),
             "json": _repo_relative_path(json_path, repo_root=repo_root),

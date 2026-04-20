@@ -70,6 +70,10 @@ The following hardening work is already in place and should be treated as the ne
    - evidence freshness now surfaces whether the latest review belongs to the active baseline run/boundary
    - compact Paper Trading visibility makes wrong-run review artifacts explicit instead of looking fresh by timestamp alone
 
+9. Review-generation ergonomics without read-path mutation
+   - latest review metadata now carries canonical manual regeneration guidance, including the backend command path and controlled-relaunch runbook
+   - the Paper Trading latest-review panel now tells operators how to regenerate missing or stale review artifacts without mutating read-only surfaces
+
 These slices reduced read-path waste and turned the prove-the-edge contract into an explicit operator-visible verdict.
 
 ## Active priority order
@@ -234,8 +238,8 @@ Validation baseline for most slices:
 
 ## Current recommended next task
 
-**Review generation ergonomics without read-path mutation**
+**Targeted latest-review regression coverage**
 
 Concrete prompt seed for Codex:
 
-> Make missing or stale default-strategy reviews easier for operators to regenerate by surfacing the canonical runbook or command path, but do not auto-generate artifacts from any read-only health/dashboard surface.
+> Add focused frontend or API regression coverage for the latest-review operator surface so missing, stale, mismatch, and regeneration-guidance states stay stable without redesigning the page.

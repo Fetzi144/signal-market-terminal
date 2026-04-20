@@ -220,7 +220,14 @@ Both artifacts should carry the same `review_verdict` payload so operator reads,
 
 Review generation should also reuse the shared `comparison_modes` payload from strategy health when it is already available. The read-only health/dashboard surface remains the canonical comparison assembly, and the review generator should not rerun the same measurement query window unless that shared payload is unexpectedly missing.
 
-`GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `latest_review_artifact` metadata object. It surfaces the newest generated review artifact status, timestamp, recoverable verdict, repo-relative artifact paths, and the artifact's stored run/contract references without generating a review or mutating run state.
+`GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `latest_review_artifact` metadata object. It surfaces the newest generated review artifact status, timestamp, recoverable verdict, repo-relative artifact paths, the artifact's stored run/contract references, and a `generation_guidance` block with the canonical backend command/runbook path without generating a review or mutating run state.
+
+`generation_guidance` is intentionally advisory only. It points operators at the manual path:
+
+- run from `backend/`: `python -m app.reports`
+- boundary-sensitive workflow: `docs/runbooks/default-strategy-controlled-evidence-relaunch.md`
+
+The read-only health/dashboard surfaces must never execute that command on the operator's behalf.
 
 ## Evidence Freshness Surface
 

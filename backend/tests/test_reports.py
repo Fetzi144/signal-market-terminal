@@ -36,6 +36,17 @@ def test_latest_review_artifact_metadata_reports_missing_when_no_artifacts_exist
             "release_tag": None,
             "migration_revision": None,
         },
+        "generation_guidance": {
+            "working_directory": "backend",
+            "command": "python -m app.reports",
+            "runbook_path": "docs/runbooks/default-strategy-controlled-evidence-relaunch.md",
+            "artifacts_directory": "docs/strategy-reviews",
+            "analysis_path": "docs/paper-trading-analysis-v0.5.md",
+            "note": (
+                "Read-only health and dashboard surfaces never generate review artifacts. "
+                "Use the canonical backend command or the controlled relaunch runbook instead."
+            ),
+        },
         "artifact_paths": {
             "markdown": None,
             "json": None,
@@ -145,6 +156,17 @@ async def test_review_generator_writes_versioned_artifacts(session, monkeypatch,
         "evidence_boundary_id": "v0.4.1",
         "release_tag": "v0.4.1",
         "migration_revision": "038",
+    }
+    assert artifact["generation_guidance"] == {
+        "working_directory": "backend",
+        "command": "python -m app.reports",
+        "runbook_path": "docs/runbooks/default-strategy-controlled-evidence-relaunch.md",
+        "artifacts_directory": "docs/strategy-reviews",
+        "analysis_path": "docs/paper-trading-analysis-v0.5.md",
+        "note": (
+            "Read-only health and dashboard surfaces never generate review artifacts. "
+            "Use the canonical backend command or the controlled relaunch runbook instead."
+        ),
     }
 
 

@@ -90,6 +90,17 @@ async def test_strategy_health_surfaces_missing_latest_review_artifact_without_m
         "release_tag": None,
         "migration_revision": None,
     }
+    assert latest_review["generation_guidance"] == {
+        "working_directory": "backend",
+        "command": "python -m app.reports",
+        "runbook_path": "docs/runbooks/default-strategy-controlled-evidence-relaunch.md",
+        "artifacts_directory": "docs/strategy-reviews",
+        "analysis_path": "docs/paper-trading-analysis-v0.5.md",
+        "note": (
+            "Read-only health and dashboard surfaces never generate review artifacts. "
+            "Use the canonical backend command or the controlled relaunch runbook instead."
+        ),
+    }
     assert latest_review["artifact_paths"] == {"markdown": None, "json": None}
     assert health.json()["evidence_freshness"]["status"] == "no_active_run"
     assert dashboard.json()["strategy_health"]["latest_review_artifact"] == latest_review
@@ -152,6 +163,17 @@ async def test_default_strategy_dashboard_surfaces_latest_review_artifact_metada
         "evidence_boundary_id": "v0.4.1",
         "release_tag": "v0.4.1",
         "migration_revision": "038",
+    }
+    assert latest_review["generation_guidance"] == {
+        "working_directory": "backend",
+        "command": "python -m app.reports",
+        "runbook_path": "docs/runbooks/default-strategy-controlled-evidence-relaunch.md",
+        "artifacts_directory": "docs/strategy-reviews",
+        "analysis_path": "docs/paper-trading-analysis-v0.5.md",
+        "note": (
+            "Read-only health and dashboard surfaces never generate review artifacts. "
+            "Use the canonical backend command or the controlled relaunch runbook instead."
+        ),
     }
     assert latest_review["artifact_paths"] == {
         "markdown": "docs/strategy-reviews/2026-04-19-default-strategy-baseline.md",
