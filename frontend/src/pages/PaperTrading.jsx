@@ -99,9 +99,43 @@ function evidenceFreshnessLabel(status) {
   return "No Active Run";
 }
 
+function artifactIdentityColor(status) {
+  if (status === "match") return "var(--green)";
+  if (status === "mismatch") return "var(--red)";
+  if (status === "unknown" || status === "missing_review") return "var(--yellow)";
+  return "var(--text-dim)";
+}
+
+function artifactIdentityLabel(status) {
+  if (status === "match") return "Matches Active Run";
+  if (status === "mismatch") return "Run Mismatch";
+  if (status === "unknown") return "Identity Unknown";
+  if (status === "missing_review") return "No Review Identity";
+  return "Not Applicable";
+}
+
 function fmtSeconds(value) {
   if (value == null) return "-";
   return `${fmtWhole(value)}s`;
+}
+
+function formatArtifactRunRef(artifact) {
+  const run = artifact?.strategy_run_ref || {};
+  if (!run.id) return "Unavailable";
+  const details = [];
+  if (run.started_at) details.push(`start ${fmtDate(run.started_at)}`);
+  if (run.status) details.push(run.status);
+  return details.length > 0 ? `${run.id} (${details.join(" | ")})` : run.id;
+}
+
+function formatArtifactContractRef(artifact) {
+  const contract = artifact?.contract_ref || {};
+  const parts = [];
+  const boundary = contract.evidence_boundary_id || contract.release_tag;
+  if (contract.contract_version) parts.push(`contract ${contract.contract_version}`);
+  if (boundary) parts.push(`boundary ${boundary}`);
+  if (contract.migration_revision) parts.push(`rev ${contract.migration_revision}`);
+  return parts.length > 0 ? parts.join(" | ") : "Unavailable";
 }
 
 function observationMeta(status) {
@@ -526,6 +560,7 @@ function LatestReviewArtifactPanel({ artifact, freshness }) {
   const color = artifactGenerationColor(artifact.generation_status);
   const paths = artifact.artifact_paths || {};
   const freshnessColor = evidenceFreshnessColor(freshness?.status);
+  const identityColor = artifactIdentityColor(freshness?.artifact_identity_status);
 
   return (
     <div
@@ -564,6 +599,23 @@ function LatestReviewArtifactPanel({ artifact, freshness }) {
             <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
               Verdict {artifact.verdict || "-"}
             </span>
+            {freshness && (
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  background: "var(--bg)",
+                  border: "1px solid var(--border)",
+                  color: identityColor,
+                }}
+              >
+                {artifactIdentityLabel(freshness.artifact_identity_status)}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.6, maxWidth: 820 }}>
             {artifact.status_detail}
@@ -604,6 +656,11 @@ function LatestReviewArtifactPanel({ artifact, freshness }) {
           <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.6, marginBottom: 10 }}>
             {freshness.summary}
           </div>
+          {freshness?.artifact_identity_summary && (
+            <div style={{ fontSize: 13, color: "var(--text-dim)", lineHeight: 1.6, marginBottom: 10 }}>
+              {freshness.artifact_identity_summary}
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
             <ArtifactPathRow label="Review Age" value={fmtSeconds(freshness.review_age_seconds)} />
             <ArtifactPathRow label="Review Lag" value={fmtSeconds(freshness.review_lag_seconds)} />
@@ -616,6 +673,8 @@ function LatestReviewArtifactPanel({ artifact, freshness }) {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+        <ArtifactPathRow label="Review Run" value={formatArtifactRunRef(artifact)} />
+        <ArtifactPathRow label="Review Contract" value={formatArtifactContractRef(artifact)} />
         <ArtifactPathRow label="Markdown Artifact" value={paths.markdown} />
         <ArtifactPathRow label="JSON Artifact" value={paths.json} />
       </div>

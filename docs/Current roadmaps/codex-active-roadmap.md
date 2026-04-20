@@ -65,6 +65,11 @@ The following hardening work is already in place and should be treated as the ne
    - `README.md` and `CODEX_START_HERE.md` now point to this active roadmap first for current scope
    - broader historical roadmap docs are explicitly marked as archival context unless a task reopens them
 
+8. Review-artifact identity alignment
+   - latest review metadata now carries read-only run and contract references from the generated JSON artifact
+   - evidence freshness now surfaces whether the latest review belongs to the active baseline run/boundary
+   - compact Paper Trading visibility makes wrong-run review artifacts explicit instead of looking fresh by timestamp alone
+
 These slices reduced read-path waste and turned the prove-the-edge contract into an explicit operator-visible verdict.
 
 ## Active priority order
@@ -229,8 +234,8 @@ Validation baseline for most slices:
 
 ## Current recommended next task
 
-**Reassess active priorities before widening scope**
+**Review generation ergonomics without read-path mutation**
 
 Concrete prompt seed for Codex:
 
-> Revisit current operator pain points or measured hotspots in the prove-or-falsify loop, then refresh this active roadmap with one new narrow slice only if it preserves the frozen benchmark, fail-closed defaults, and read-only reporting boundaries.
+> Make missing or stale default-strategy reviews easier for operators to regenerate by surfacing the canonical runbook or command path, but do not auto-generate artifacts from any read-only health/dashboard surface.

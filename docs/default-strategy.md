@@ -220,7 +220,7 @@ Both artifacts should carry the same `review_verdict` payload so operator reads,
 
 Review generation should also reuse the shared `comparison_modes` payload from strategy health when it is already available. The read-only health/dashboard surface remains the canonical comparison assembly, and the review generator should not rerun the same measurement query window unless that shared payload is unexpectedly missing.
 
-`GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `latest_review_artifact` metadata object. It surfaces the newest generated review artifact status, timestamp, recoverable verdict, and repo-relative artifact paths without generating a review or mutating run state.
+`GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `latest_review_artifact` metadata object. It surfaces the newest generated review artifact status, timestamp, recoverable verdict, repo-relative artifact paths, and the artifact's stored run/contract references without generating a review or mutating run state.
 
 ## Evidence Freshness Surface
 
@@ -242,6 +242,11 @@ Important fields:
 - `review_age_seconds`
 - `review_lag_seconds`
 - `review_outdated`
+- `artifact_identity_status`
+- `artifact_identity_summary`
+- `artifact_run_matches_active_run`
+- `artifact_contract_version_matches_active_run`
+- `artifact_evidence_boundary_matches_active_run`
 - `last_activity_at`
 - `last_activity_kind`
 - `pending_decision_count`
@@ -252,6 +257,7 @@ Important fields:
 Semantics:
 
 - `review_outdated = true` means the newest review artifact predates the newest active-run activity currently visible on the read path.
+- `artifact_identity_status = mismatch` means the latest review artifact does not belong to the currently active `strategy_run` and should be treated as stale evidence even if its timestamp is recent.
 - `last_activity_kind` currently resolves to the newest of:
   - `strategy_run_started`
   - `paper_trade`

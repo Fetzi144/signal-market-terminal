@@ -832,6 +832,7 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
     from app.reports.strategy_review import get_latest_default_strategy_review_artifact_metadata
 
     strategy_run = scope["strategy_run"]
+    serialized_strategy_run = serialize_strategy_run(strategy_run)
     now = scope["observed_at"]
     contract = strategy_run.contract_snapshot if strategy_run is not None else get_default_strategy_contract(started_at=scope["launch_at"])
     portfolio = scope["portfolio"]
@@ -843,6 +844,7 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
         observed_at=now,
         run_state=scope["run_state"],
         latest_review_artifact=latest_review_artifact,
+        active_strategy_run=serialized_strategy_run,
         started_at=scope.get("started_at"),
         latest_trade_activity_at=scope.get("latest_trade_activity_at"),
         latest_decision_at=scope.get("latest_decision_at"),
@@ -865,7 +867,7 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
         )
         return {
             "strategy": contract,
-            "strategy_run": None,
+            "strategy_run": serialized_strategy_run,
             "run_state": scope["run_state"],
             "bootstrap_required": True,
             "observation": observation,
@@ -939,7 +941,7 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
     observation = {"started_at": started_at.isoformat() if started_at else None, "baseline_start_at": scope["launch_at"].isoformat() if scope["launch_at"] else None, "first_trade_at": scope["first_trade_at"].isoformat() if scope["first_trade_at"] else None, "days_tracked": days_tracked, "status": _observation_status(days_tracked, launched=started_at is not None, traded_signals=scope["trade_funnel"]["traded_signals"]), "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": remaining_days}
     headline = {"open_exposure": float(portfolio["open_exposure"]), "open_trades": len(portfolio["open_trades"]), "resolved_trades": metrics["total_trades"], "resolved_signals": scope["trade_funnel"]["resolved_signals"], "missing_resolutions": scope["trade_funnel"]["unresolved_traded_signals"], "overdue_open_trades": overdue_open_trades, "cumulative_pnl": metrics["cumulative_pnl"], "avg_clv": _safe_float(avg_clv.quantize(Decimal("0.000001"))) if avg_clv is not None else None, "profit_factor": metrics["profit_factor"], "win_rate": metrics["win_rate"], "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None, "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None, "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None, "peak_equity": float(strategy_run.peak_equity) if strategy_run.peak_equity is not None else None, "brier_score": _safe_float(default_brier.quantize(Decimal("0.000001"))) if default_brier is not None else None}
     review_verdict = build_review_verdict(
-        strategy_run=serialize_strategy_run(strategy_run),
+        strategy_run=serialized_strategy_run,
         run_state=scope["run_state"],
         observation=observation,
         trade_funnel=scope["trade_funnel"],
@@ -950,7 +952,7 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
     )
     return {
         "strategy": contract,
-        "strategy_run": serialize_strategy_run(strategy_run),
+        "strategy_run": serialized_strategy_run,
         "run_state": scope["run_state"],
         "bootstrap_required": False,
         "observation": observation,

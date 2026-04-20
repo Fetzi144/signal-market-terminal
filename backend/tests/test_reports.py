@@ -25,6 +25,17 @@ def test_latest_review_artifact_metadata_reports_missing_when_no_artifacts_exist
         "review_date": None,
         "generated_at": None,
         "verdict": None,
+        "strategy_run_ref": {
+            "id": None,
+            "started_at": None,
+            "status": None,
+        },
+        "contract_ref": {
+            "contract_version": None,
+            "evidence_boundary_id": None,
+            "release_tag": None,
+            "migration_revision": None,
+        },
         "artifact_paths": {
             "markdown": None,
             "json": None,
@@ -122,6 +133,19 @@ async def test_review_generator_writes_versioned_artifacts(session, monkeypatch,
     assert review_payload["comparison_modes"] == result["comparison"]
     assert review_payload["trade_funnel"]["resolved_trades"] == 1
     assert "Paper Trading Analysis v0.5" in analysis_path.read_text(encoding="utf-8")
+
+    artifact = get_latest_default_strategy_review_artifact_metadata()
+    assert artifact["strategy_run_ref"] == {
+        "id": str(strategy_run.id),
+        "started_at": start_at.isoformat(),
+        "status": strategy_run.status,
+    }
+    assert artifact["contract_ref"] == {
+        "contract_version": "default_strategy_v0.4.1",
+        "evidence_boundary_id": "v0.4.1",
+        "release_tag": "v0.4.1",
+        "migration_revision": "038",
+    }
 
 
 @pytest.mark.asyncio

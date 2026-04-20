@@ -59,6 +59,35 @@ def _parse_review_markdown_metadata(path: Path | None) -> dict[str, str | None]:
     }
 
 
+def _strategy_run_ref_from_review_payload(review_payload: dict | None) -> dict[str, str | None]:
+    strategy_run = (review_payload or {}).get("strategy_run")
+    if not isinstance(strategy_run, dict):
+        strategy_run = {}
+    return {
+        "id": strategy_run.get("id"),
+        "started_at": strategy_run.get("started_at"),
+        "status": strategy_run.get("status"),
+    }
+
+
+def _contract_ref_from_review_payload(review_payload: dict | None) -> dict[str, str | None]:
+    strategy_run = (review_payload or {}).get("strategy_run")
+    if not isinstance(strategy_run, dict):
+        strategy_run = {}
+    contract_snapshot = strategy_run.get("contract_snapshot")
+    if not isinstance(contract_snapshot, dict):
+        contract_snapshot = {}
+    evidence_boundary = contract_snapshot.get("evidence_boundary")
+    if not isinstance(evidence_boundary, dict):
+        evidence_boundary = {}
+    return {
+        "contract_version": contract_snapshot.get("contract_version"),
+        "evidence_boundary_id": evidence_boundary.get("boundary_id"),
+        "release_tag": evidence_boundary.get("release_tag"),
+        "migration_revision": evidence_boundary.get("migration_revision"),
+    }
+
+
 def get_latest_default_strategy_review_artifact_metadata() -> dict:
     repo_root = _repo_root()
     review_dir = repo_root / "docs" / "strategy-reviews"
@@ -82,6 +111,17 @@ def get_latest_default_strategy_review_artifact_metadata() -> dict:
             "review_date": None,
             "generated_at": None,
             "verdict": None,
+            "strategy_run_ref": {
+                "id": None,
+                "started_at": None,
+                "status": None,
+            },
+            "contract_ref": {
+                "contract_version": None,
+                "evidence_boundary_id": None,
+                "release_tag": None,
+                "migration_revision": None,
+            },
             "artifact_paths": {
                 "markdown": None,
                 "json": None,
@@ -102,6 +142,8 @@ def get_latest_default_strategy_review_artifact_metadata() -> dict:
             json_error = "unreadable"
         except json.JSONDecodeError:
             json_error = "invalid"
+    if not isinstance(review_payload, dict):
+        review_payload = {}
 
     markdown_metadata = _parse_review_markdown_metadata(markdown_path)
     review_verdict = (review_payload or {}).get("review_verdict") or {}
@@ -137,6 +179,8 @@ def get_latest_default_strategy_review_artifact_metadata() -> dict:
         "review_date": review_date,
         "generated_at": generated_at,
         "verdict": verdict,
+        "strategy_run_ref": _strategy_run_ref_from_review_payload(review_payload),
+        "contract_ref": _contract_ref_from_review_payload(review_payload),
         "artifact_paths": {
             "markdown": _repo_relative_path(markdown_path, repo_root=repo_root),
             "json": _repo_relative_path(json_path, repo_root=repo_root),

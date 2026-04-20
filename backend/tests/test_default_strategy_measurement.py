@@ -83,6 +83,13 @@ async def test_strategy_health_surfaces_missing_latest_review_artifact_without_m
     assert latest_review["generation_status"] == "missing"
     assert latest_review["generated_at"] is None
     assert latest_review["verdict"] is None
+    assert latest_review["strategy_run_ref"] == {"id": None, "started_at": None, "status": None}
+    assert latest_review["contract_ref"] == {
+        "contract_version": None,
+        "evidence_boundary_id": None,
+        "release_tag": None,
+        "migration_revision": None,
+    }
     assert latest_review["artifact_paths"] == {"markdown": None, "json": None}
     assert health.json()["evidence_freshness"]["status"] == "no_active_run"
     assert dashboard.json()["strategy_health"]["latest_review_artifact"] == latest_review
@@ -109,6 +116,19 @@ async def test_default_strategy_dashboard_surfaces_latest_review_artifact_metada
             {
                 "generated_at": "2026-04-19T12:30:00+00:00",
                 "review_verdict": {"verdict": "watch"},
+                "strategy_run": {
+                    "id": "run-2026-04-19",
+                    "started_at": "2026-04-17T00:00:00+00:00",
+                    "status": "active",
+                    "contract_snapshot": {
+                        "contract_version": "default_strategy_v0.4.1",
+                        "evidence_boundary": {
+                            "boundary_id": "v0.4.1",
+                            "release_tag": "v0.4.1",
+                            "migration_revision": "038",
+                        },
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -122,6 +142,17 @@ async def test_default_strategy_dashboard_surfaces_latest_review_artifact_metada
     assert latest_review["generation_status"] == "complete"
     assert latest_review["generated_at"] == "2026-04-19T12:30:00+00:00"
     assert latest_review["verdict"] == "watch"
+    assert latest_review["strategy_run_ref"] == {
+        "id": "run-2026-04-19",
+        "started_at": "2026-04-17T00:00:00+00:00",
+        "status": "active",
+    }
+    assert latest_review["contract_ref"] == {
+        "contract_version": "default_strategy_v0.4.1",
+        "evidence_boundary_id": "v0.4.1",
+        "release_tag": "v0.4.1",
+        "migration_revision": "038",
+    }
     assert latest_review["artifact_paths"] == {
         "markdown": "docs/strategy-reviews/2026-04-19-default-strategy-baseline.md",
         "json": "docs/strategy-reviews/2026-04-19-default-strategy-baseline.json",
@@ -154,6 +185,12 @@ async def test_strategy_health_surfaces_fresh_evidence_for_current_review_artifa
             {
                 "generated_at": generated_at,
                 "review_verdict": {"verdict": "watch"},
+                "strategy_run": {
+                    "id": str(strategy_run.id),
+                    "started_at": strategy_run.started_at.isoformat(),
+                    "status": strategy_run.status,
+                    "contract_snapshot": strategy_run.contract_snapshot,
+                },
             }
         ),
         encoding="utf-8",
@@ -167,6 +204,8 @@ async def test_strategy_health_surfaces_fresh_evidence_for_current_review_artifa
     assert freshness["status"] == "fresh"
     assert freshness["latest_review_generated_at"] == generated_at
     assert freshness["review_outdated"] is False
+    assert freshness["artifact_identity_status"] == "match"
+    assert freshness["artifact_run_matches_active_run"] is True
     assert freshness["last_activity_kind"] == "strategy_run_started"
     assert freshness["review_lag_seconds"] == 0
 
@@ -224,6 +263,12 @@ async def test_strategy_health_surfaces_stale_evidence_when_review_lags_run_acti
             {
                 "generated_at": review_generated_at,
                 "review_verdict": {"verdict": "watch"},
+                "strategy_run": {
+                    "id": str(strategy_run.id),
+                    "started_at": strategy_run.started_at.isoformat(),
+                    "status": strategy_run.status,
+                    "contract_snapshot": strategy_run.contract_snapshot,
+                },
             }
         ),
         encoding="utf-8",
@@ -239,6 +284,79 @@ async def test_strategy_health_surfaces_stale_evidence_when_review_lags_run_acti
     assert freshness["pending_decisions_stale"] is True
     assert freshness["last_activity_kind"] == "execution_decision"
     assert freshness["review_lag_seconds"] == 9000
+
+
+@pytest.mark.asyncio
+async def test_strategy_health_marks_review_identity_mismatch_as_stale(client, session, monkeypatch, tmp_path):
+    import json
+
+    import app.reports.strategy_review as review_module
+
+    now = datetime.now(timezone.utc)
+    strategy_run = await open_default_strategy_run(
+        session,
+        launch_boundary_at=now - timedelta(days=2),
+        contract_metadata={
+            "contract_version": "default_strategy_v0.4.1",
+            "evidence_boundary": {
+                "boundary_id": "v0.4.1",
+                "release_tag": "v0.4.1",
+                "migration_revision": "038",
+            },
+        },
+    )
+    await session.commit()
+
+    review_dir = tmp_path / "docs" / "strategy-reviews"
+    review_dir.mkdir(parents=True)
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.md").write_text(
+        "# Default Strategy Review\n\n"
+        f"**Date:** {now.date().isoformat()}\n\n"
+        "## Operator Verdict\n\n"
+        "- Verdict: `watch`\n",
+        encoding="utf-8",
+    )
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.json").write_text(
+        json.dumps(
+            {
+                "generated_at": now.isoformat(),
+                "review_verdict": {"verdict": "watch"},
+                "strategy_run": {
+                    "id": "older-run-id",
+                    "started_at": (now - timedelta(days=5)).isoformat(),
+                    "status": "closed",
+                    "contract_snapshot": {
+                        "contract_version": "default_strategy_v0.4.0",
+                        "evidence_boundary": {
+                            "boundary_id": "v0.4.0",
+                            "release_tag": "v0.4.0",
+                            "migration_revision": "037",
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(review_module, "_repo_root", lambda: tmp_path)
+
+    response = await client.get("/api/v1/paper-trading/strategy-health")
+
+    assert response.status_code == 200
+    payload = response.json()
+    latest_review = payload["latest_review_artifact"]
+    freshness = payload["evidence_freshness"]
+
+    assert latest_review["strategy_run_ref"]["id"] == "older-run-id"
+    assert latest_review["contract_ref"]["evidence_boundary_id"] == "v0.4.0"
+    assert freshness["status"] == "stale"
+    assert freshness["artifact_identity_status"] == "mismatch"
+    assert freshness["artifact_run_matches_active_run"] is False
+    assert freshness["artifact_contract_version_matches_active_run"] is False
+    assert freshness["artifact_evidence_boundary_matches_active_run"] is False
+    assert freshness["summary"] == (
+        "The latest review artifact belongs to a different default-strategy run than the active baseline."
+    )
 
 
 @pytest.mark.asyncio
