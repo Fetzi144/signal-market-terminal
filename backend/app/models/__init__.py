@@ -99,6 +99,13 @@ from app.models.scheduler_lease import SchedulerLease
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 from app.models.strategy_run import StrategyRun
+from app.models.strategy_registry import (
+    DemotionEvent,
+    PromotionEvaluation,
+    PromotionGatePolicy,
+    StrategyFamilyRegistry,
+    StrategyVersion,
+)
 from app.models.whale import WalletActivity, WalletProfile
 
 __all__ = [
@@ -119,6 +126,11 @@ __all__ = [
     "Signal",
     "SignalEvaluation",
     "StrategyRun",
+    "StrategyFamilyRegistry",
+    "StrategyVersion",
+    "PromotionGatePolicy",
+    "PromotionEvaluation",
+    "DemotionEvent",
     "IngestionRun",
     "BacktestRun",
     "BacktestSignal",

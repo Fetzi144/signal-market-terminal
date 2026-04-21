@@ -138,6 +138,30 @@ async def test_health_endpoint_surfaces_scheduler_and_runtime_status(client, ses
     assert invariant_by_key["evaluation_failures_24h_zero"]["status"] == "failing"
 
 
+@pytest.mark.asyncio
+async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_benchmark_linkage(client, session):
+    from app.strategy_runs.service import open_default_strategy_run
+
+    await open_default_strategy_run(session)
+    await session.commit()
+
+    resp = await client.get("/api/v1/strategies")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["summary"]["phase"] == "13A"
+    assert data["summary"]["benchmark_family"] == "default_strategy"
+    assert data["summary"]["family_count"] >= 5
+
+    families = {row["family"]: row for row in data["families"]}
+    assert families["default_strategy"]["current_version"]["version_key"] == "default_strategy_benchmark_v1"
+    assert families["default_strategy"]["current_version"]["version_status"] == "benchmark"
+    assert families["default_strategy"]["current_version"]["evidence_counts"]["strategy_runs"] >= 1
+    assert families["exec_policy"]["family_kind"] == "infrastructure"
+    assert families["exec_policy"]["current_version"]["autonomy_tier"] == "assisted_live"
+    assert data["gate_policies"][0]["policy_key"] == "promotion_gate_policy_v1"
+
+
 # ── Signals list ────────────────────────────────────────
 
 

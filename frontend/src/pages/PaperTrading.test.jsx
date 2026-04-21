@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import {
   getPaperTradingDefaultStrategyDashboard,
   getPaperTradingHistory,
@@ -228,7 +229,11 @@ beforeEach(() => {
 
 describe("PaperTrading latest review surface", () => {
   test("shows manual regeneration guidance when the latest review artifact is missing", async () => {
-    render(<PaperTrading />);
+    render(
+      <MemoryRouter>
+        <PaperTrading />
+      </MemoryRouter>
+    );
 
     expect(await screen.findByText("Latest Review Artifact")).toBeInTheDocument();
     expect(
@@ -300,7 +305,11 @@ describe("PaperTrading latest review surface", () => {
       }),
     );
 
-    render(<PaperTrading />);
+    render(
+      <MemoryRouter>
+        <PaperTrading />
+      </MemoryRouter>
+    );
 
     expect(await screen.findByText("Run Mismatch")).toBeInTheDocument();
     expect(screen.getByText("Stale")).toBeInTheDocument();

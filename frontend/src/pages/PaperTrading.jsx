@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   LineChart,
   Line,
@@ -1600,7 +1601,8 @@ export default function PaperTrading() {
           </div>
           <h2 style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Default Strategy Health</h2>
           <div style={{ fontSize: 13, color: "var(--text-dim)", maxWidth: 720 }}>
-            Paper trading is the source of truth for the prove-the-edge phase. This page should tell you whether the frozen baseline is making money, whether the evidence is trustworthy, and what to review next.
+            Paper trading is the source of truth for the prove-the-edge phase. This page should tell you whether the frozen baseline is making money, whether the evidence is trustworthy, and what to review next. Phase 13 lifecycle state now lives in{" "}
+            <Link to="/strategies" style={{ color: "var(--green)", textDecoration: "none" }}>Strategies</Link>.
           </div>
         </div>
         <RefreshButton refreshing={refreshing} onRefresh={refreshAll} lastUpdated={lastUpdated} />

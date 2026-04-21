@@ -22,6 +22,11 @@ class PolymarketReplayRun(Base):
     run_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     run_type: Mapped[str] = mapped_column(String(64), nullable=False)
     reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy_family: Mapped[str | None] = mapped_column(String(64))
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
     scenario_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
@@ -35,6 +40,7 @@ class PolymarketReplayRun(Base):
 
     __table_args__ = (
         Index("ix_pm_replay_runs_type_reason_started", "run_type", "reason", "started_at"),
+        Index("ix_pm_replay_runs_strategy_version_started", "strategy_version_id", "started_at"),
         Index("ix_pm_replay_runs_status_started", "status", "started_at"),
         Index("ix_pm_replay_runs_window", "time_window_start", "time_window_end"),
     )

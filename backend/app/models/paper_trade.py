@@ -17,6 +17,9 @@ class PaperTrade(Base):
     strategy_run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("strategy_runs.id", ondelete="SET NULL")
     )
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="SET NULL")
+    )
     execution_decision_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("execution_decisions.id", ondelete="SET NULL")
     )
@@ -45,6 +48,7 @@ class PaperTrade(Base):
     __table_args__ = (
         Index("ix_paper_trades_status", "status"),
         Index("ix_paper_trades_strategy_run", "strategy_run_id", "opened_at"),
+        Index("ix_paper_trades_strategy_version", "strategy_version_id", "opened_at"),
         Index("ix_paper_trades_outcome", "outcome_id"),
         Index("ix_paper_trades_opened", "opened_at"),
         Index("ix_paper_trades_submitted_at", "submitted_at"),

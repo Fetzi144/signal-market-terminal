@@ -13,6 +13,7 @@ from app.paper_trading.strategy_run_state import (
     initialize_strategy_run_state,
     serialize_strategy_run_state,
 )
+from app.strategies.registry import get_current_strategy_version
 
 ACTIVE_RUN_STATUS = "active"
 CLOSED_RUN_STATUS = "closed"
@@ -67,9 +68,15 @@ def get_default_strategy_bootstrap_start_at() -> datetime | None:
 def serialize_strategy_run(strategy_run: StrategyRun | None) -> dict | None:
     if strategy_run is None:
         return None
+    contract_snapshot = strategy_run.contract_snapshot or {}
     return {
         "id": str(strategy_run.id),
         "strategy_name": strategy_run.strategy_name,
+        "strategy_family": strategy_run.strategy_family,
+        "strategy_version_id": strategy_run.strategy_version_id,
+        "strategy_version_key": contract_snapshot.get("strategy_version_key"),
+        "strategy_version_label": contract_snapshot.get("strategy_version_label"),
+        "strategy_version_status": contract_snapshot.get("strategy_version_status"),
         "status": strategy_run.status,
         "started_at": _ensure_utc(strategy_run.started_at).isoformat() if strategy_run.started_at else None,
         "ended_at": _ensure_utc(strategy_run.ended_at).isoformat() if strategy_run.ended_at else None,
@@ -77,7 +84,7 @@ def serialize_strategy_run(strategy_run: StrategyRun | None) -> dict | None:
         "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None,
         "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None,
         "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None,
-        "contract_snapshot": strategy_run.contract_snapshot or {},
+        "contract_snapshot": contract_snapshot,
         "state": serialize_strategy_run_state(strategy_run),
         "created_at": _ensure_utc(strategy_run.created_at).isoformat() if strategy_run.created_at else None,
     }
@@ -185,13 +192,20 @@ async def open_default_strategy_run(
         launch_boundary_at=launch_boundary_at,
         bootstrap_started_at=bootstrap_started_at,
     )
+    strategy_version = await get_current_strategy_version(session, "default_strategy")
     contract_snapshot = get_default_strategy_contract(started_at=bootstrap.started_at)
     contract_snapshot["bootstrap_source"] = bootstrap.source
     contract_snapshot["bootstrap_anchor_at"] = bootstrap.anchor_at.isoformat()
+    contract_snapshot["strategy_family"] = "default_strategy"
+    contract_snapshot["strategy_version_key"] = strategy_version.version_key if strategy_version is not None else None
+    contract_snapshot["strategy_version_label"] = strategy_version.version_label if strategy_version is not None else None
+    contract_snapshot["strategy_version_status"] = strategy_version.version_status if strategy_version is not None else None
     contract_snapshot.update(_clean_contract_metadata(contract_metadata))
 
     strategy_run = StrategyRun(
         strategy_name=settings.default_strategy_name,
+        strategy_family="default_strategy",
+        strategy_version_id=strategy_version.id if strategy_version is not None else None,
         status=ACTIVE_RUN_STATUS,
         started_at=bootstrap.started_at,
         contract_snapshot=contract_snapshot,

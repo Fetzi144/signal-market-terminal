@@ -73,6 +73,10 @@ export function getHealth() {
   return fetchJson(`${API_BASE}/health`);
 }
 
+export function getStrategiesRegistry() {
+  return fetchJson(`${API_BASE}/strategies`);
+}
+
 export function getPolymarketIngestStatus() {
   return fetchJson(`${API_BASE}/ingest/polymarket/status`);
 }

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import {
   approvePolymarketLiveOrder,
   armPolymarketPilot,
@@ -176,7 +177,11 @@ beforeEach(() => {
 
 describe("PilotConsole", () => {
   test("renders supervised pilot state and operator actions", async () => {
-    render(<PilotConsole />);
+    render(
+      <MemoryRouter>
+        <PilotConsole />
+      </MemoryRouter>
+    );
 
     expect(await screen.findByText("Pilot Console")).toBeInTheDocument();
     expect(screen.getByText("Manual Approval Queue")).toBeInTheDocument();

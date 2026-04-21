@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   approvePolymarketLiveOrder,
   armPolymarketPilot,
@@ -98,7 +99,8 @@ export default function PilotConsole() {
         <div>
           <h2 style={titleStyle}>Pilot Console</h2>
           <p style={subtitleStyle}>
-            Narrow supervised Polymarket pilot for the currently supported family only.
+            Narrow supervised Polymarket pilot for the currently supported family only. Lifecycle registry now lives in{" "}
+            <Link to="/strategies" style={inlineLinkStyle}>Strategies</Link>.
           </p>
         </div>
         <button onClick={load} style={secondaryButtonStyle}>Refresh</button>
@@ -417,6 +419,7 @@ const headerStyle = {
 
 const titleStyle = { fontSize: 16, margin: 0 };
 const subtitleStyle = { margin: "6px 0 0", fontSize: 12, color: "var(--text-dim)" };
+const inlineLinkStyle = { color: "var(--green)", textDecoration: "none" };
 const panelStyle = { background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 12, padding: 16 };
 const sectionHeaderStyle = { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 12 };
 const sectionTitleStyle = { fontSize: 14, fontWeight: 600, margin: 0 };

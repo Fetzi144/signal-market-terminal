@@ -33,6 +33,7 @@ class PaperTradeOut(BaseModel):
     id: uuid.UUID
     signal_id: uuid.UUID
     strategy_run_id: uuid.UUID | None = None
+    strategy_version_id: int | None = None
     execution_decision_id: uuid.UUID | None = None
     outcome_id: uuid.UUID
     market_id: uuid.UUID
@@ -57,6 +58,7 @@ def _paper_trade_out(trade: PaperTrade) -> PaperTradeOut:
         id=trade.id,
         signal_id=trade.signal_id,
         strategy_run_id=trade.strategy_run_id,
+        strategy_version_id=trade.strategy_version_id,
         execution_decision_id=trade.execution_decision_id,
         outcome_id=trade.outcome_id,
         market_id=trade.market_id,

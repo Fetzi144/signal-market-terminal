@@ -22,6 +22,7 @@ from app.models.polymarket_pilot import (
     PolymarketLiveShadowEvaluation,
     PolymarketPilotApprovalEvent,
 )
+from app.models.strategy_registry import PromotionEvaluation
 from tests.test_polymarket_control_plane import _arm_exec_pilot
 from tests.test_polymarket_oms import FakeGateway, _seed_execution_fixture
 
@@ -326,6 +327,14 @@ async def test_scorecard_aggregates_shadow_and_readiness_stays_manual_only(sessi
         window_start=window_start,
         window_end=now,
     )
+    evaluation = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.evaluation_kind == "pilot_readiness_gate")
+            .order_by(PromotionEvaluation.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     assert scorecard["fills_count"] == 2
     assert scorecard["incident_count"] == 1
@@ -333,6 +342,11 @@ async def test_scorecard_aggregates_shadow_and_readiness_stays_manual_only(sessi
     assert scorecard["avg_shadow_gap_bps"] == pytest.approx(5.0)
     assert scorecard["coverage_limited_count"] == 1
     assert readiness["status"] == "not_ready"
+    assert evaluation is not None
+    assert evaluation.evaluation_status == "blocked"
+    assert evaluation.autonomy_tier == "shadow_only"
+    assert evaluation.provenance_json["promotion_gate_policy_key"] == "promotion_gate_policy_v1"
+    assert evaluation.summary_json["readiness_status"] == "not_ready"
 
 
 @pytest.mark.asyncio

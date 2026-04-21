@@ -65,6 +65,19 @@ REASON_LABELS = {
 }
 
 
+async def _resolve_strategy_version_id(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None,
+) -> int | None:
+    if strategy_run_id is None:
+        return None
+    result = await session.execute(
+        select(StrategyRun.strategy_version_id).where(StrategyRun.id == strategy_run_id).limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
 @dataclass
 class TradeOpenResult:
     trade: PaperTrade | None
@@ -1372,10 +1385,15 @@ async def attempt_open_trade(
         if decision_result.shadow_execution is not None
         else {}
     )
+    strategy_version_id = await _resolve_strategy_version_id(
+        session,
+        strategy_run_id=strategy_run_id,
+    )
     trade = PaperTrade(
         id=uuid.uuid4(),
         signal_id=signal_id,
         strategy_run_id=strategy_run_id,
+        strategy_version_id=strategy_version_id,
         execution_decision_id=(
             decision_result.execution_decision.id
             if decision_result.execution_decision is not None
@@ -1630,11 +1648,16 @@ async def _legacy_attempt_open_trade(
         ideal_entry_price=entry_price,
         fired_at=fired_at,
     )
+    strategy_version_id = await _resolve_strategy_version_id(
+        session,
+        strategy_run_id=strategy_run_id,
+    )
 
     trade = PaperTrade(
         id=uuid.uuid4(),
         signal_id=signal_id,
         strategy_run_id=strategy_run_id,
+        strategy_version_id=strategy_version_id,
         outcome_id=outcome_id,
         market_id=market_id,
         direction=sizing["direction"],

@@ -53,6 +53,7 @@ from app.models.polymarket_metadata import (
 )
 from app.models.polymarket_reconstruction import PolymarketBookReconState
 from app.models.signal import Signal
+from app.strategies.registry import get_current_strategy_version
 
 ZERO = Decimal("0")
 SIZE_Q = Decimal("0.0001")
@@ -138,6 +139,7 @@ class PolymarketOrderManager:
             condition_id=target_asset.condition_id if target_asset is not None else candidate.condition_id if candidate is not None else None,
             asset_id=target_asset.asset_id if target_asset is not None else candidate.asset_id if candidate is not None else None,
         )
+        strategy_version = await get_current_strategy_version(session, "exec_policy")
 
         order, validation_issues = self._build_order_row(
             decision=decision,
@@ -151,6 +153,7 @@ class PolymarketOrderManager:
             state=state,
             pilot_config=pilot_config,
             pilot_run=pilot_run,
+            strategy_version_id=strategy_version.id if strategy_version is not None else None,
         )
         session.add(order)
         await session.flush()
@@ -640,6 +643,7 @@ class PolymarketOrderManager:
         state,
         pilot_config,
         pilot_run,
+        strategy_version_id: int | None,
     ) -> tuple[LiveOrder, list[str]]:
         validation_issues: list[str] = []
         chosen_action_type = decision.chosen_action_type or (candidate.action_type if candidate is not None else None)
@@ -738,6 +742,7 @@ class PolymarketOrderManager:
             status="approval_pending" if settings.polymarket_live_manual_approval_required else "submission_pending",
             dry_run=dry_run,
             strategy_family="exec_policy",
+            strategy_version_id=strategy_version_id,
             pilot_config_id=pilot_config.id if pilot_config is not None and pilot_config.strategy_family == "exec_policy" else None,
             pilot_run_id=pilot_run.id if pilot_run is not None and pilot_config is not None and pilot_config.strategy_family == "exec_policy" else None,
             manual_approval_required=manual_approval_required,

@@ -98,6 +98,10 @@ class LiveOrder(Base):
     approved_by: Mapped[str | None] = mapped_column(String(128))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     strategy_family: Mapped[str | None] = mapped_column(String(32))
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     pilot_config_id: Mapped[int | None] = mapped_column(
         Integer,
         ForeignKey("polymarket_pilot_configs.id", ondelete="SET NULL"),
@@ -150,6 +154,7 @@ class LiveOrder(Base):
         Index("ix_live_orders_status_created_at", "status", "created_at"),
         Index("ix_live_orders_venue_order_id", "venue_order_id"),
         Index("ix_live_orders_strategy_status", "strategy_family", "status"),
+        Index("ix_live_orders_strategy_version_created", "strategy_version_id", "created_at"),
         Index("ix_live_orders_approval_state_created", "approval_state", "created_at"),
     )
 

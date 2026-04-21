@@ -35,6 +35,13 @@ from app.models.polymarket_pilot import (
     PolymarketPilotRun,
     PolymarketPilotScorecard,
 )
+from app.strategies.promotion import (
+    PROMOTION_EVALUATION_KIND_PILOT_READINESS,
+    hash_json_payload,
+    map_readiness_status_to_promotion_verdict,
+    upsert_promotion_evaluation,
+)
+from app.strategies.registry import PROMOTION_GATE_POLICY_V1, get_current_strategy_version, sync_strategy_registry
 
 SUPPORTED_PHASE12_FAMILY = "exec_policy"
 ACTIVE_FILL_STATUSES = {"matched", "mined", "confirmed"}
@@ -76,6 +83,105 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(inner) for inner in value]
     return value
+
+
+async def _record_phase13a_readiness_evaluation(
+    session: AsyncSession,
+    *,
+    family: str,
+    strategy_version,
+    scorecard_row: PolymarketPilotScorecard | None,
+    readiness_row: PolymarketPilotReadinessReport,
+    readiness_status: str,
+    blockers: list[str],
+    candidate_scorecards: list[PolymarketPilotScorecard],
+    candidate_avg_gap: Decimal | None,
+    candidate_gap_threshold: Decimal,
+    incidents: list[PolymarketControlPlaneIncident],
+    backlog_orders: list[LiveOrder],
+    live_orders: list[LiveOrder],
+) -> None:
+    if strategy_version is None:
+        return
+
+    registry_state = await sync_strategy_registry(session)
+    family_row = registry_state["family_rows"].get(family)
+    gate_policy = registry_state["gate_policy_rows"].get(PROMOTION_GATE_POLICY_V1)
+    if family_row is None:
+        return
+
+    evaluation_status, recommended_tier = map_readiness_status_to_promotion_verdict(readiness_status)
+    execution_policy_versions = sorted(
+        {
+            str(row.policy_version).strip()
+            for row in live_orders
+            if row.policy_version not in (None, "")
+        }
+    )
+    market_universe = sorted(
+        {
+            str(value)
+            for row in live_orders
+            for value in (row.condition_id, row.asset_id)
+            if value
+        }
+    )
+    config_payload = {
+        "strategy_version_key": strategy_version.version_key,
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "candidate_min_days": settings.polymarket_pilot_semi_auto_candidate_min_days,
+        "candidate_max_avg_shadow_gap_bps": settings.polymarket_pilot_semi_auto_max_avg_shadow_gap_bps,
+        "approval_ttl_seconds": settings.polymarket_pilot_approval_ttl_seconds,
+    }
+    summary = {
+        "readiness_status": readiness_status,
+        "recommended_tier": recommended_tier,
+        "scorecard_status": scorecard_row.status if scorecard_row is not None else None,
+        "scorecard_net_pnl": _serialize_decimal(_to_decimal(scorecard_row.net_pnl) if scorecard_row is not None else None),
+        "scorecard_coverage_limited_count": scorecard_row.coverage_limited_count if scorecard_row is not None else None,
+        "readiness_blockers": blockers,
+        "approval_backlog_count": len(backlog_orders),
+        "incident_count": len(incidents),
+        "candidate_scorecard_days": len(candidate_scorecards),
+        "candidate_avg_shadow_gap_bps": _serialize_decimal(candidate_avg_gap),
+        "candidate_gap_threshold_bps": _serialize_decimal(candidate_gap_threshold),
+        "live_order_count": len(live_orders),
+    }
+    provenance = {
+        "source": "polymarket_pilot_readiness_report",
+        "strategy_family": family,
+        "strategy_version_key": strategy_version.version_key,
+        "strategy_version_status": strategy_version.version_status,
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+        "scorecard_id": scorecard_row.id if scorecard_row is not None else None,
+        "readiness_report_id": readiness_row.id,
+        "execution_policy_version": (
+            execution_policy_versions[0]
+            if len(execution_policy_versions) == 1
+            else "mixed"
+            if execution_policy_versions
+            else None
+        ),
+        "risk_policy_version": None,
+        "fee_schedule_version": "live_fill_fee_history_unversioned",
+        "reward_schedule_version": "not_tracked_in_phase13a",
+        "market_universe_hash": hash_json_payload(market_universe),
+        "config_hash": hash_json_payload(config_payload),
+    }
+    await upsert_promotion_evaluation(
+        session,
+        family_id=family_row.id,
+        strategy_version_id=strategy_version.id,
+        gate_policy_id=gate_policy.id if gate_policy is not None else None,
+        evaluation_kind=PROMOTION_EVALUATION_KIND_PILOT_READINESS,
+        evaluation_status=evaluation_status,
+        autonomy_tier=recommended_tier,
+        evaluation_window_start=readiness_row.window_start,
+        evaluation_window_end=readiness_row.window_end,
+        provenance_json=provenance,
+        summary_json=summary,
+    )
 
 
 def _normalized_strategy_family(value: str | None) -> str:
@@ -197,6 +303,7 @@ def serialize_pilot_scorecard(row: PolymarketPilotScorecard) -> dict[str, Any]:
     return {
         "id": row.id,
         "strategy_family": row.strategy_family,
+        "strategy_version_id": row.strategy_version_id,
         "window_start": row.window_start,
         "window_end": row.window_end,
         "status": row.status,
@@ -240,6 +347,7 @@ def serialize_pilot_readiness_report(row: PolymarketPilotReadinessReport) -> dic
     return {
         "id": row.id,
         "strategy_family": row.strategy_family,
+        "strategy_version_id": row.strategy_version_id,
         "window_start": row.window_start,
         "window_end": row.window_end,
         "status": row.status,
@@ -882,12 +990,14 @@ class PolymarketPilotEvidenceService:
                 for incident_type in sorted({row.incident_type for row in incidents})
             },
         }
+        strategy_version = await get_current_strategy_version(session, family)
 
         row = existing or PolymarketPilotScorecard(
             strategy_family=family,
             window_start=start,
             window_end=end,
         )
+        row.strategy_version_id = strategy_version.id if strategy_version is not None else None
         row.status = status
         row.live_orders_count = len(live_orders)
         row.fills_count = len(fills)
@@ -944,6 +1054,15 @@ class PolymarketPilotEvidenceService:
                 select(LiveOrder).where(
                     LiveOrder.strategy_family == family,
                     LiveOrder.approval_state == "queued",
+                )
+            )
+        ).scalars().all()
+        live_orders = (
+            await session.execute(
+                select(LiveOrder).where(
+                    LiveOrder.strategy_family == family,
+                    LiveOrder.created_at >= start,
+                    LiveOrder.created_at < end,
                 )
             )
         ).scalars().all()
@@ -1024,11 +1143,13 @@ class PolymarketPilotEvidenceService:
             )
         ).scalar_one_or_none()
         generated_at = utcnow()
+        strategy_version = await get_current_strategy_version(session, family)
         row = existing or PolymarketPilotReadinessReport(
             strategy_family=family,
             window_start=start,
             window_end=end,
         )
+        row.strategy_version_id = strategy_version.id if strategy_version is not None else None
         row.status = status
         row.scorecard_id = scorecard_row.id if scorecard_row is not None else None
         row.open_incidents = len(incidents)
@@ -1048,6 +1169,21 @@ class PolymarketPilotEvidenceService:
         if existing is None:
             session.add(row)
         await session.flush()
+        await _record_phase13a_readiness_evaluation(
+            session,
+            family=family,
+            strategy_version=strategy_version,
+            scorecard_row=scorecard_row,
+            readiness_row=row,
+            readiness_status=status,
+            blockers=blockers,
+            candidate_scorecards=candidate_scorecards,
+            candidate_avg_gap=candidate_avg_gap,
+            candidate_gap_threshold=candidate_gap_threshold,
+            incidents=incidents,
+            backlog_orders=backlog_orders,
+            live_orders=live_orders,
+        )
         if existing is None:
             polymarket_pilot_readiness_reports_total.labels(strategy_family=family, status=row.status).inc()
         polymarket_pilot_latest_readiness_report_timestamp.set(generated_at.timestamp())

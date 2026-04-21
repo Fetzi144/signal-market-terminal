@@ -29,6 +29,9 @@ async def test_active_run_bootstraps_once_and_ignores_later_env_changes(session,
 
     assert second_run.id == first_run.id
     assert second_run.started_at == first_start
+    assert second_run.strategy_family == "default_strategy"
+    assert second_run.strategy_version_id is not None
+    assert second_run.contract_snapshot["strategy_version_key"] == "default_strategy_benchmark_v1"
     assert second_run.contract_snapshot["bootstrap_source"] == "DEFAULT_STRATEGY_START_AT"
     assert second_run.contract_snapshot["bootstrap_anchor_at"] == first_start.isoformat()
 
@@ -96,6 +99,8 @@ async def test_strategy_run_open_close_lifecycle_requires_explicit_rollover(sess
     assert second_run.id != first_run.id
     assert second_run.status == "active"
     assert second_run.started_at == second_launch_at
+    assert second_run.strategy_family == "default_strategy"
+    assert second_run.strategy_version_id is not None
     assert second_run.contract_snapshot["bootstrap_source"] == "EXPLICIT_LAUNCH_BOUNDARY"
     assert second_run.contract_snapshot["bootstrap_anchor_at"] == second_launch_at.isoformat()
 

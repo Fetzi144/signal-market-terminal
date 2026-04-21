@@ -194,6 +194,10 @@ class PolymarketPilotScorecard(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -221,6 +225,7 @@ class PolymarketPilotScorecard(Base):
     __table_args__ = (
         UniqueConstraint("strategy_family", "window_start", "window_end", name="uq_pm_pilot_scorecards_window"),
         Index("ix_pm_pilot_scorecards_strategy_window", "strategy_family", "window_start", "window_end"),
+        Index("ix_pm_pilot_scorecards_strategy_version_created", "strategy_version_id", "created_at"),
         Index("ix_pm_pilot_scorecards_status_created", "status", "created_at"),
     )
 
@@ -265,6 +270,10 @@ class PolymarketPilotReadinessReport(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -289,5 +298,6 @@ class PolymarketPilotReadinessReport(Base):
     __table_args__ = (
         UniqueConstraint("strategy_family", "window_start", "window_end", name="uq_pm_pilot_readiness_window"),
         Index("ix_pm_readiness_reports_strategy_generated", "strategy_family", "generated_at"),
+        Index("ix_pm_readiness_reports_strategy_version_generated", "strategy_version_id", "generated_at"),
         Index("ix_pm_readiness_reports_status_generated", "status", "generated_at"),
     )

@@ -74,6 +74,7 @@ from app.models.polymarket_risk import (
     PortfolioOptimizerRecommendation,
 )
 from app.models.signal import Signal
+from app.strategies.registry import get_current_strategy_version
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,14 @@ RUN_TYPE_SCENARIOS = {
     "maker_replay": {MAKER_SCENARIO},
     "structure_replay": {STRUCTURE_SCENARIO},
     "portfolio_backtest": {POLICY_SCENARIO, MAKER_SCENARIO, STRUCTURE_SCENARIO},
+}
+
+STRATEGY_FAMILY_EXEC_POLICY = "exec_policy"
+RUN_TYPE_STRATEGY_FAMILY = {
+    "single_asset_replay": STRATEGY_FAMILY_EXEC_POLICY,
+    "policy_compare": STRATEGY_FAMILY_EXEC_POLICY,
+    "maker_replay": "maker",
+    "structure_replay": "structure",
 }
 
 
@@ -368,10 +377,18 @@ class PolymarketReplaySimulatorService:
                     "idempotent_hit": True,
                 }
 
+            strategy_family = RUN_TYPE_STRATEGY_FAMILY.get(run_type)
+            strategy_version = (
+                await get_current_strategy_version(session, strategy_family)
+                if strategy_family is not None
+                else None
+            )
             run = PolymarketReplayRun(
                 run_key=run_key,
                 run_type=run_type,
                 reason=reason,
+                strategy_family=strategy_family,
+                strategy_version_id=strategy_version.id if strategy_version is not None else None,
                 status="running",
                 time_window_start=window_start,
                 time_window_end=window_end,
@@ -2869,6 +2886,8 @@ def _serialize_run(row: PolymarketReplayRun) -> dict[str, Any]:
         "run_key": row.run_key,
         "run_type": row.run_type,
         "reason": row.reason,
+        "strategy_family": row.strategy_family,
+        "strategy_version_id": row.strategy_version_id,
         "status": row.status,
         "scenario_count": row.scenario_count,
         "started_at": row.started_at,

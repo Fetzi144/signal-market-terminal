@@ -11,6 +11,7 @@ import BacktestResult from "./pages/BacktestResult";
 import Alerts from "./pages/Alerts";
 import Performance from "./pages/Performance";
 import PaperTrading from "./pages/PaperTrading";
+import Strategies from "./pages/Strategies";
 import Health from "./pages/Health";
 import Portfolio from "./pages/Portfolio";
 import Structures from "./pages/Structures";
@@ -50,6 +51,7 @@ const NAV_LINKS = [
   { to: "/", label: "Feed" },
   { to: "/performance", label: "Performance" },
   { to: "/paper-trading", label: "Strategy Health" },
+  { to: "/strategies", label: "Strategies" },
   { to: "/portfolio", label: "Portfolio" },
   { to: "/markets", label: "Markets" },
   { to: "/analytics", label: "Analytics" },
@@ -149,6 +151,7 @@ export default function App() {
         <Route path="/markets/:id" element={<MarketDetail />} />
         <Route path="/performance" element={<Performance />} />
         <Route path="/paper-trading" element={<PaperTrading />} />
+        <Route path="/strategies" element={<Strategies />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/backtests" element={<Backtest />} />
