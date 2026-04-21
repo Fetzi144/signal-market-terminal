@@ -74,6 +74,10 @@ The following hardening work is already in place and should be treated as the ne
    - latest review metadata now carries canonical manual regeneration guidance, including the backend command path and controlled-relaunch runbook
    - the Paper Trading latest-review panel now tells operators how to regenerate missing or stale review artifacts without mutating read-only surfaces
 
+10. Targeted latest-review regression coverage
+   - dedicated Paper Trading frontend tests now lock missing-review, stale-evidence, run-mismatch, and manual-regeneration-guidance states on the existing operator surface
+   - the latest-review UI remains intentionally narrow and backed by the shared default-strategy dashboard payload rather than a parallel reporting flow
+
 These slices reduced read-path waste and turned the prove-the-edge contract into an explicit operator-visible verdict.
 
 ## Active priority order
@@ -238,8 +242,8 @@ Validation baseline for most slices:
 
 ## Current recommended next task
 
-**Targeted latest-review regression coverage**
+**Shared default-strategy operator contract reassessment**
 
 Concrete prompt seed for Codex:
 
-> Add focused frontend or API regression coverage for the latest-review operator surface so missing, stale, mismatch, and regeneration-guidance states stay stable without redesigning the page.
+> Audit the shared default-strategy operator surfaces and recommend the next smallest trust-building slice now that latest-review discovery, freshness, identity, and regression coverage are in place. Prefer truthful read-only visibility over any new automation.
