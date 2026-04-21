@@ -875,6 +875,13 @@ async def test_replay_api_and_health_surfaces_are_idempotent(client, engine, mon
     assert strategy_families["exec_policy"]["latest_promotion_evaluation"]["summary_json"]["primary_variant"] == "exec_policy"
     assert strategy_families["exec_policy"]["current_version"]["evidence_alignment"]["latest_replay_run"]["run_key"] == first_payload["run"]["run_key"]
     assert strategy_families["exec_policy"]["current_version"]["evidence_alignment"]["latest_replay_run"]["promotion_evaluation"]["evaluation_kind"] == "replay_gate"
+    detail_response = await client.get(
+        f"/api/v1/strategies/versions/{strategy_families['exec_policy']['current_version']['id']}"
+    )
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["replay_runs"][0]["run_key"] == first_payload["run"]["run_key"]
+    assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] == "replay_gate"
 
     async with session_factory() as session:
         traces = await list_polymarket_replay_decision_traces(session, variant_name="exec_policy", limit=20)

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getStrategiesRegistry } from "../api";
+import { getStrategiesRegistry, getStrategyVersionDetail } from "../api";
 
 function fmtDate(value) {
   if (!value) return "-";
@@ -183,6 +183,11 @@ function renderAlignmentFreshness(alignment) {
   );
 }
 
+function buttonLabelForVersion(version, isOpen, isLoading) {
+  if (isLoading) return "Loading...";
+  return isOpen ? "Hide" : "Inspect";
+}
+
 function SimpleTable({ columns, rows, emptyLabel }) {
   return (
     <div className="table-scroll">
@@ -216,6 +221,10 @@ export default function Strategies() {
   const [registry, setRegistry] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [expandedVersionId, setExpandedVersionId] = useState(null);
+  const [versionDetails, setVersionDetails] = useState({});
+  const [detailLoadingId, setDetailLoadingId] = useState(null);
+  const [detailError, setDetailError] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -233,6 +242,31 @@ export default function Strategies() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const inspectVersion = useCallback(async (version) => {
+    if (!version?.id) return;
+    const versionId = version.id;
+    if (expandedVersionId === versionId) {
+      setExpandedVersionId(null);
+      setDetailError(null);
+      return;
+    }
+    setExpandedVersionId(versionId);
+    setDetailError(null);
+    if (versionDetails[versionId]) return;
+    try {
+      setDetailLoadingId(versionId);
+      const payload = await getStrategyVersionDetail(versionId);
+      setVersionDetails((current) => ({
+        ...current,
+        [versionId]: payload,
+      }));
+    } catch (requestError) {
+      setDetailError(requestError.message);
+    } finally {
+      setDetailLoadingId(null);
+    }
+  }, [expandedVersionId, versionDetails]);
 
   const summary = registry?.summary || {};
   const families = registry?.families || [];
@@ -295,6 +329,10 @@ export default function Strategies() {
         const evidence = currentVersion?.evidence_counts || {};
         const latestEvaluation = family.latest_promotion_evaluation;
         const evaluationProvenance = latestEvaluation?.provenance_json || {};
+        const expandedVersion = family.versions.find((version) => version.id === expandedVersionId) || null;
+        const versionDetail = expandedVersion ? versionDetails[expandedVersion.id] : null;
+        const versionDetailLoading = expandedVersion ? detailLoadingId === expandedVersion.id : false;
+        const versionDetailError = expandedVersion ? detailError : null;
         return (
           <section key={family.family} style={panelStyle}>
             <div style={sectionHeaderStyle}>
@@ -411,7 +449,7 @@ export default function Strategies() {
                 Latest replay, live shadow, scorecards, and readiness artifacts lined up by strategy version.
               </div>
               <SimpleTable
-                columns={["Version", "Gate", "Replay", "Live Shadow", "Scorecard", "Readiness", "Freshness"]}
+                columns={["Version", "Gate", "Replay", "Live Shadow", "Scorecard", "Readiness", "Freshness", "Detail"]}
                 rows={family.versions.map((version) => ([
                   <div key={`${version.version_key}-alignment`}>
                     <div>{version.version_label}</div>
@@ -423,10 +461,158 @@ export default function Strategies() {
                   renderScorecardSurface(version.evidence_alignment),
                   renderReadinessSurface(version.evidence_alignment),
                   renderAlignmentFreshness(version.evidence_alignment),
+                  <button
+                    key={`${version.version_key}-inspect`}
+                    type="button"
+                    onClick={() => inspectVersion(version)}
+                    aria-label={`${expandedVersionId === version.id ? "Hide" : "Inspect"} ${version.version_label}`}
+                    style={secondaryButtonStyle}
+                    disabled={detailLoadingId === version.id}
+                  >
+                    {buttonLabelForVersion(version, expandedVersionId === version.id, detailLoadingId === version.id)}
+                  </button>,
                 ]))}
                 emptyLabel="No version-linked evidence has been aligned yet."
               />
             </div>
+
+            {expandedVersion ? (
+              <div style={detailPanelStyle}>
+                <div style={sectionHeaderStyle}>
+                  <div>
+                    <h3 style={sectionTitleStyle}>Version Detail</h3>
+                    <div style={metaStyle}>
+                      {expandedVersion.version_label} | {expandedVersion.version_key}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedVersionId(null)}
+                    style={secondaryButtonStyle}
+                  >
+                    Close
+                  </button>
+                </div>
+
+                {versionDetailError ? <div style={alertStyle}>{versionDetailError}</div> : null}
+                {versionDetailLoading && !versionDetail ? (
+                  <div style={metaStyle}>Loading version detail...</div>
+                ) : null}
+
+                {versionDetail ? (
+                  <>
+                    <div style={statsGridStyle}>
+                      <MetricCard
+                        label="Replay Runs"
+                        value={versionDetail.replay_runs?.length ?? 0}
+                        hint="Version-scoped replay artifacts"
+                      />
+                      <MetricCard
+                        label="Live Shadow"
+                        value={versionDetail.live_shadow_evaluations?.length ?? 0}
+                        hint="Recent persisted live-shadow rows"
+                      />
+                      <MetricCard
+                        label="Scorecards"
+                        value={versionDetail.scorecards?.length ?? 0}
+                        hint="Latest version-linked scorecards"
+                      />
+                      <MetricCard
+                        label="Readiness"
+                        value={versionDetail.readiness_reports?.length ?? 0}
+                        hint="Latest version-linked readiness reports"
+                      />
+                      <MetricCard
+                        label="Promotion Events"
+                        value={versionDetail.promotion_evaluations?.length ?? 0}
+                        hint="Recent version-scoped gate evaluations"
+                      />
+                    </div>
+
+                    <SimpleTable
+                      columns={["Replay Run", "Status", "Window", "Scenarios", "Gate"]}
+                      rows={(versionDetail.replay_runs || []).map((run) => ([
+                        <div key={run.id}>
+                          <div>{run.run_key}</div>
+                          <div style={subtleCellStyle}>{titleCase(run.run_type)}</div>
+                        </div>,
+                        titleCase(run.status),
+                        `${fmtDate(run.time_window_start)} -> ${fmtDate(run.time_window_end)}`,
+                        run.scenario_count ?? 0,
+                        run.promotion_evaluation?.evaluation_status
+                          ? `${titleCase(run.promotion_evaluation.evaluation_status)} / ${titleCase(run.promotion_evaluation.autonomy_tier)}`
+                          : "-",
+                      ]))}
+                      emptyLabel="No replay runs linked to this version yet."
+                    />
+
+                    <div style={detailSectionGapStyle} />
+                    <SimpleTable
+                      columns={["Updated", "Client Order", "Market", "Gap", "Realized", "Coverage"]}
+                      rows={(versionDetail.live_shadow_evaluations || []).map((row) => ([
+                        fmtDate(row.updated_at),
+                        row.client_order_id || row.live_order_id || "-",
+                        `${row.condition_id || "-"} / ${row.asset_id || "-"}`,
+                        row.gap_bps ? `${fmtMetric(row.gap_bps)} bps` : "-",
+                        row.realized_net_bps ? `${fmtMetric(row.realized_net_bps)} bps` : "-",
+                        row.coverage_limited ? "Limited" : "Full",
+                      ]))}
+                      emptyLabel="No live-shadow evaluations linked to this version yet."
+                    />
+
+                    <div style={detailSectionGapStyle} />
+                    <SimpleTable
+                      columns={["Scorecard Window", "Status", "Net P&L", "Avg Gap", "Coverage"]}
+                      rows={(versionDetail.scorecards || []).map((row) => ([
+                        `${fmtDate(row.window_start)} -> ${fmtDate(row.window_end)}`,
+                        titleCase(row.status),
+                        fmtMetric(row.net_pnl),
+                        row.avg_shadow_gap_bps ? `${fmtMetric(row.avg_shadow_gap_bps)} bps` : "-",
+                        row.coverage_limited_count ?? 0,
+                      ]))}
+                      emptyLabel="No scorecards linked to this version yet."
+                    />
+
+                    <div style={detailSectionGapStyle} />
+                    <SimpleTable
+                      columns={["Generated", "Status", "Backlog", "Shadow Breaches", "Incidents"]}
+                      rows={(versionDetail.readiness_reports || []).map((row) => ([
+                        fmtDate(row.generated_at),
+                        titleCase(row.status),
+                        row.approval_backlog_count ?? 0,
+                        row.shadow_gap_breach_count ?? 0,
+                        row.open_incidents ?? 0,
+                      ]))}
+                      emptyLabel="No readiness reports linked to this version yet."
+                    />
+
+                    <div style={detailSectionGapStyle} />
+                    <SimpleTable
+                      columns={["Promotion Evaluation", "Status", "Tier", "Observed"]}
+                      rows={(versionDetail.promotion_evaluations || []).map((row) => ([
+                        titleCase(row.evaluation_kind),
+                        titleCase(row.evaluation_status),
+                        titleCase(row.autonomy_tier),
+                        fmtDate(row.updated_at || row.created_at),
+                      ]))}
+                      emptyLabel="No promotion evaluations recorded for this version yet."
+                    />
+
+                    <div style={detailSectionGapStyle} />
+                    <SimpleTable
+                      columns={["Demotion Reason", "Fallback", "Cooling Off Ends", "Observed"]}
+                      rows={(versionDetail.demotion_events || []).map((row) => ([
+                        titleCase(row.reason_code),
+                        titleCase(row.fallback_autonomy_tier),
+                        fmtDate(row.cooling_off_ends_at),
+                        fmtDate(row.observed_at_local || row.created_at),
+                      ]))}
+                      emptyLabel="No demotion events recorded for this version yet."
+                    />
+                  </>
+                ) : null}
+              </div>
+            ) : null}
 
             <SimpleTable
               columns={["Version", "State", "Tier", "Frozen", "Evidence", "Updated"]}
@@ -481,6 +667,8 @@ const metricHintStyle = { fontSize: 11, color: "var(--text-dim)", marginTop: 6 }
 const evidenceWrapStyle = { display: "flex", gap: 8, flexWrap: "wrap", margin: "14px 0" };
 const promotionPanelStyle = { display: "flex", flexDirection: "column", gap: 12, margin: "0 0 16px" };
 const promotionHeaderStyle = { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" };
+const detailPanelStyle = { display: "flex", flexDirection: "column", gap: 12, borderTop: "1px solid var(--border)", paddingTop: 16, marginBottom: 16 };
+const detailSectionGapStyle = { height: 4 };
 const evidencePillStyle = { display: "inline-flex", alignItems: "center", gap: 8, borderRadius: 999, border: "1px solid var(--border)", padding: "6px 10px", fontSize: 11 };
 const evidencePillLabelStyle = { color: "var(--text-dim)" };
 const evidencePillValueStyle = { fontFamily: "var(--mono)", fontWeight: 600 };

@@ -162,6 +162,14 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert families["exec_policy"]["current_version"]["autonomy_tier"] == "assisted_live"
     assert data["gate_policies"][0]["policy_key"] == "promotion_gate_policy_v1"
 
+    detail_response = await client.get(f"/api/v1/strategies/versions/{families['default_strategy']['current_version']['id']}")
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert detail_payload["version"]["version_key"] == "default_strategy_benchmark_v1"
+    assert detail_payload["family"]["family"] == "default_strategy"
+    assert detail_payload["replay_runs"] == []
+    assert detail_payload["live_shadow_evaluations"] == []
+
 
 # ── Signals list ────────────────────────────────────────
 

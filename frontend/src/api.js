@@ -77,6 +77,10 @@ export function getStrategiesRegistry() {
   return fetchJson(`${API_BASE}/strategies`);
 }
 
+export function getStrategyVersionDetail(versionId) {
+  return fetchJson(`${API_BASE}/strategies/versions/${versionId}`);
+}
+
 export function getPolymarketIngestStatus() {
   return fetchJson(`${API_BASE}/ingest/polymarket/status`);
 }

@@ -462,5 +462,14 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert alignment["live_shadow"]["recent_count_24h"] >= 1
     assert alignment["latest_scorecard"]["status"] in {"ok", "watch", "cut"}
     assert alignment["latest_readiness_report"]["status"] in {"manual_only", "candidate_for_semi_auto", "blocked"}
+    detail_response = await client.get(
+        f"/api/v1/strategies/versions/{families['exec_policy']['current_version']['id']}"
+    )
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()
+    assert len(detail_payload["live_shadow_evaluations"]) >= 1
+    assert len(detail_payload["scorecards"]) >= 1
+    assert len(detail_payload["readiness_reports"]) >= 1
+    assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] in {"pilot_readiness_gate", "replay_gate"}
     assert health_response.json()["polymarket_phase12"]["daily_realized_pnl"]["net_realized_pnl"] is not None
     assert "recent_guardrail_triggers" in health_response.json()["polymarket_phase12"]

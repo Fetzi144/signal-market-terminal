@@ -566,6 +566,50 @@ def _serialize_readiness_alignment(row: PolymarketPilotReadinessReport | None) -
     }
 
 
+def _serialize_family_reference(row: StrategyFamilyRegistry | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "family": row.family,
+        "label": row.label,
+        "posture": row.posture,
+        "primary_surface": row.primary_surface,
+        "family_kind": row.family_kind,
+        "description": row.description,
+        "disabled_reason": row.disabled_reason,
+        "seeded_from": row.seeded_from,
+        "created_at": _ensure_utc(row.created_at).isoformat() if row.created_at else None,
+        "updated_at": _ensure_utc(row.updated_at).isoformat() if row.updated_at else None,
+    }
+
+
+def _serialize_live_shadow_detail(
+    row: PolymarketLiveShadowEvaluation,
+    *,
+    live_order: LiveOrder | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": row.id,
+        "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
+        "client_order_id": live_order.client_order_id if live_order is not None else None,
+        "condition_id": live_order.condition_id if live_order is not None else None,
+        "asset_id": live_order.asset_id if live_order is not None else None,
+        "side": live_order.side if live_order is not None else None,
+        "live_order_status": live_order.status if live_order is not None else None,
+        "variant_name": row.variant_name,
+        "gap_bps": _serialize_decimal(row.gap_bps),
+        "realized_net_bps": _serialize_decimal(row.realized_net_bps),
+        "expected_net_ev_bps": _serialize_decimal(row.expected_net_ev_bps),
+        "coverage_limited": row.coverage_limited,
+        "reason_code": row.reason_code,
+        "replay_run_id": str(row.replay_run_id) if row.replay_run_id is not None else None,
+        "details_json": row.details_json or {},
+        "created_at": _ensure_utc(row.created_at).isoformat() if row.created_at else None,
+        "updated_at": _ensure_utc(row.updated_at).isoformat() if row.updated_at else None,
+    }
+
+
 def _evidence_alignment_status(surface_count: int) -> str:
     if surface_count >= 4:
         return "complete"
@@ -689,6 +733,111 @@ async def _version_evidence_alignment(
             "latest_readiness_report": latest_readiness,
         }
     return payload
+
+
+async def get_strategy_version_detail_payload(
+    session: AsyncSession,
+    *,
+    version_id: int,
+    replay_limit: int = 5,
+    live_shadow_limit: int = 10,
+    pilot_limit: int = 5,
+    event_limit: int = 5,
+) -> dict[str, Any] | None:
+    await sync_strategy_registry(session)
+    version = await session.get(StrategyVersion, version_id)
+    if version is None:
+        return None
+    family = await session.get(StrategyFamilyRegistry, version.family_id)
+    evidence_counts = await _version_evidence_counts(session)
+    alignment_by_version = await _version_evidence_alignment(session, versions=[version])
+    latest_evaluation = (
+        await get_latest_promotion_evaluation_by_version(session, version_ids=[int(version.id)])
+    ).get(int(version.id))
+    latest_demotion = (
+        await session.execute(
+            select(DemotionEvent)
+            .where(DemotionEvent.strategy_version_id == version.id)
+            .order_by(DemotionEvent.observed_at_local.desc(), DemotionEvent.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    replay_rows = (
+        await session.execute(
+            select(PolymarketReplayRun)
+            .where(PolymarketReplayRun.strategy_version_id == version.id)
+            .order_by(PolymarketReplayRun.started_at.desc(), PolymarketReplayRun.id.desc())
+            .limit(replay_limit)
+        )
+    ).scalars().all()
+    live_shadow_rows = (
+        await session.execute(
+            select(PolymarketLiveShadowEvaluation, LiveOrder)
+            .join(LiveOrder, LiveOrder.id == PolymarketLiveShadowEvaluation.live_order_id, isouter=True)
+            .where(LiveOrder.strategy_version_id == version.id)
+            .order_by(PolymarketLiveShadowEvaluation.updated_at.desc(), PolymarketLiveShadowEvaluation.id.desc())
+            .limit(live_shadow_limit)
+        )
+    ).all()
+    scorecard_rows = (
+        await session.execute(
+            select(PolymarketPilotScorecard)
+            .where(PolymarketPilotScorecard.strategy_version_id == version.id)
+            .order_by(
+                PolymarketPilotScorecard.window_end.desc(),
+                PolymarketPilotScorecard.created_at.desc(),
+                PolymarketPilotScorecard.id.desc(),
+            )
+            .limit(pilot_limit)
+        )
+    ).scalars().all()
+    readiness_rows = (
+        await session.execute(
+            select(PolymarketPilotReadinessReport)
+            .where(PolymarketPilotReadinessReport.strategy_version_id == version.id)
+            .order_by(
+                PolymarketPilotReadinessReport.generated_at.desc(),
+                PolymarketPilotReadinessReport.id.desc(),
+            )
+            .limit(pilot_limit)
+        )
+    ).scalars().all()
+    evaluation_rows = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.strategy_version_id == version.id)
+            .order_by(PromotionEvaluation.created_at.desc(), PromotionEvaluation.id.desc())
+            .limit(event_limit)
+        )
+    ).scalars().all()
+    demotion_rows = (
+        await session.execute(
+            select(DemotionEvent)
+            .where(DemotionEvent.strategy_version_id == version.id)
+            .order_by(DemotionEvent.observed_at_local.desc(), DemotionEvent.id.desc())
+            .limit(event_limit)
+        )
+    ).scalars().all()
+    return {
+        "family": _serialize_family_reference(family),
+        "version": _serialize_strategy_version(
+            version,
+            evidence_counts=evidence_counts,
+            evidence_alignment=alignment_by_version.get(int(version.id)),
+            latest_promotion_evaluation=latest_evaluation,
+        ),
+        "latest_demotion_event": serialize_demotion_event(latest_demotion),
+        "replay_runs": [_serialize_replay_alignment(row) for row in replay_rows],
+        "live_shadow_evaluations": [
+            _serialize_live_shadow_detail(row, live_order=live_order)
+            for row, live_order in live_shadow_rows
+        ],
+        "scorecards": [_serialize_scorecard_alignment(row) for row in scorecard_rows],
+        "readiness_reports": [_serialize_readiness_alignment(row) for row in readiness_rows],
+        "promotion_evaluations": [serialize_promotion_evaluation(row) for row in evaluation_rows],
+        "demotion_events": [serialize_demotion_event(row) for row in demotion_rows],
+        "generated_at": _ensure_utc(datetime.now(timezone.utc)).isoformat(),
+    }
 
 
 def _serialize_strategy_version(

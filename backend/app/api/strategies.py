@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.strategies.registry import get_strategy_registry_payload
+from app.strategies.registry import (
+    get_strategy_registry_payload,
+    get_strategy_version_detail_payload,
+)
 
 router = APIRouter(prefix="/api/v1/strategies", tags=["strategies"])
 
@@ -159,6 +162,53 @@ class StrategyFamilyRegistryOut(BaseModel):
     updated_at: str | None = None
 
 
+class StrategyFamilyReferenceOut(BaseModel):
+    id: int
+    family: str
+    label: str
+    posture: str
+    primary_surface: str
+    family_kind: str
+    description: str
+    disabled_reason: str | None = None
+    seeded_from: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class StrategyLiveShadowDetailOut(BaseModel):
+    id: int
+    live_order_id: str | None = None
+    client_order_id: str | None = None
+    condition_id: str | None = None
+    asset_id: str | None = None
+    side: str | None = None
+    live_order_status: str | None = None
+    variant_name: str
+    gap_bps: str | None = None
+    realized_net_bps: str | None = None
+    expected_net_ev_bps: str | None = None
+    coverage_limited: bool
+    reason_code: str | None = None
+    replay_run_id: str | None = None
+    details_json: dict[str, Any] | list[Any] | str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class StrategyVersionDetailOut(BaseModel):
+    family: StrategyFamilyReferenceOut | None = None
+    version: StrategyRegistryVersionOut
+    latest_demotion_event: StrategyLifecycleEventOut | None = None
+    replay_runs: list[StrategyReplayAlignmentOut]
+    live_shadow_evaluations: list[StrategyLiveShadowDetailOut]
+    scorecards: list[StrategyScorecardAlignmentOut]
+    readiness_reports: list[StrategyReadinessAlignmentOut]
+    promotion_evaluations: list[StrategyLifecycleEventOut]
+    demotion_events: list[StrategyLifecycleEventOut]
+    generated_at: str
+
+
 class StrategyRegistryOut(BaseModel):
     summary: StrategyRegistrySummaryOut
     families: list[StrategyFamilyRegistryOut]
@@ -171,3 +221,13 @@ async def get_strategy_registry(db: AsyncSession = Depends(get_db)):
     payload = await get_strategy_registry_payload(db)
     await db.commit()
     return StrategyRegistryOut(**payload)
+
+
+@router.get("/versions/{version_id}", response_model=StrategyVersionDetailOut)
+async def get_strategy_version_detail(version_id: int, db: AsyncSession = Depends(get_db)):
+    payload = await get_strategy_version_detail_payload(db, version_id=version_id)
+    if payload is None:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Strategy version not found")
+    await db.commit()
+    return StrategyVersionDetailOut(**payload)

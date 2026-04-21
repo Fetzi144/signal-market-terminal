@@ -1,10 +1,11 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { getStrategiesRegistry } from "../api";
+import { getStrategiesRegistry, getStrategyVersionDetail } from "../api";
 import Strategies from "./Strategies";
 
 vi.mock("../api", () => ({
   getStrategiesRegistry: vi.fn(),
+  getStrategyVersionDetail: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -451,6 +452,149 @@ beforeEach(() => {
     ],
     generated_at: "2026-04-21T08:00:00Z",
   });
+  getStrategyVersionDetail.mockResolvedValue({
+    family: {
+      id: 2,
+      family: "exec_policy",
+      label: "Execution Policy",
+      posture: "advisory_only",
+      primary_surface: "pilot_console",
+      family_kind: "infrastructure",
+      description: "Shared execution infrastructure.",
+      disabled_reason: null,
+      seeded_from: "builtin",
+      created_at: "2026-04-21T08:00:00Z",
+      updated_at: "2026-04-21T08:00:00Z",
+    },
+    version: {
+      id: 2,
+      version_key: "exec_policy_infra_v1",
+      version_label: "Execution Policy Infra v1",
+      strategy_name: null,
+      version_status: "promoted",
+      autonomy_tier: "assisted_live",
+      is_current: true,
+      is_frozen: false,
+      config_json: {},
+      provenance_json: {},
+      latest_promotion_evaluation: {
+        id: 12,
+        family_id: 2,
+        strategy_version_id: 2,
+        gate_policy_id: 1,
+        evaluation_kind: "replay_gate",
+        evaluation_status: "observe",
+        autonomy_tier: "shadow_only",
+      },
+      evidence_alignment: {
+        surface_status: "complete",
+        surfaces_present: 4,
+        surface_keys_present: ["replay", "live_shadow", "scorecard", "readiness"],
+        latest_surface_at: "2026-04-21T08:15:00Z",
+      },
+      evidence_counts: {
+        strategy_runs: 0,
+        paper_trades: 0,
+        replay_runs: 1,
+        live_orders: 3,
+        pilot_scorecards: 2,
+        readiness_reports: 1,
+      },
+      created_at: "2026-04-21T08:00:00Z",
+      updated_at: "2026-04-21T08:00:00Z",
+    },
+    latest_demotion_event: null,
+    replay_runs: [
+      {
+        id: "run-2",
+        run_key: "phase11-exec-1234",
+        run_type: "policy_compare",
+        reason: "manual",
+        status: "completed",
+        scenario_count: 3,
+        strategy_version_id: 2,
+        strategy_version_key: "exec_policy_infra_v1",
+        strategy_version_label: "Execution Policy Infra v1",
+        time_window_start: "2026-04-20T00:00:00Z",
+        time_window_end: "2026-04-21T00:00:00Z",
+        started_at: "2026-04-21T07:30:00Z",
+        completed_at: "2026-04-21T07:45:00Z",
+        promotion_evaluation: {
+          id: 12,
+          family_id: 2,
+          strategy_version_id: 2,
+          gate_policy_id: 1,
+          evaluation_kind: "replay_gate",
+          evaluation_status: "observe",
+          autonomy_tier: "shadow_only",
+        },
+      },
+    ],
+    live_shadow_evaluations: [
+      {
+        id: 401,
+        live_order_id: "order-1",
+        client_order_id: "client-1",
+        condition_id: "cond-1",
+        asset_id: "asset-1",
+        side: "BUY",
+        live_order_status: "matched",
+        variant_name: "exec_policy",
+        gap_bps: "4.20",
+        realized_net_bps: "11.80",
+        expected_net_ev_bps: "16.00",
+        coverage_limited: false,
+        reason_code: "replay_matched",
+        replay_run_id: "run-2",
+        details_json: {},
+        created_at: "2026-04-21T08:00:00Z",
+        updated_at: "2026-04-21T08:15:00Z",
+      },
+    ],
+    scorecards: [
+      {
+        id: 201,
+        status: "watch",
+        window_start: "2026-04-20T00:00:00Z",
+        window_end: "2026-04-21T00:00:00Z",
+        live_orders_count: 3,
+        fills_count: 2,
+        incident_count: 1,
+        net_pnl: "12.50",
+        avg_shadow_gap_bps: "4.20",
+        coverage_limited_count: 0,
+        created_at: "2026-04-21T08:00:00Z",
+      },
+    ],
+    readiness_reports: [
+      {
+        id: 301,
+        status: "manual_only",
+        window_start: "2026-04-20T00:00:00Z",
+        window_end: "2026-04-21T00:00:00Z",
+        generated_at: "2026-04-21T08:10:00Z",
+        approval_backlog_count: 1,
+        coverage_limited_count: 0,
+        shadow_gap_breach_count: 1,
+        open_incidents: 1,
+      },
+    ],
+    promotion_evaluations: [
+      {
+        id: 12,
+        family_id: 2,
+        strategy_version_id: 2,
+        gate_policy_id: 1,
+        evaluation_kind: "replay_gate",
+        evaluation_status: "observe",
+        autonomy_tier: "shadow_only",
+        created_at: "2026-04-21T08:00:00Z",
+        updated_at: "2026-04-21T08:00:00Z",
+      },
+    ],
+    demotion_events: [],
+    generated_at: "2026-04-21T08:16:00Z",
+  });
 });
 
 describe("Strategies", () => {
@@ -475,5 +619,15 @@ describe("Strategies", () => {
     expect(screen.getAllByText("Manual Only").length).toBeGreaterThan(0);
     expect(screen.getByText("Benchmark Health")).toBeInTheDocument();
     expect(screen.getByText("Pilot Console")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Inspect Execution Policy Infra v1" }));
+    await waitFor(() => {
+      expect(getStrategyVersionDetail).toHaveBeenCalledWith(2);
+    });
+    expect(await screen.findByText("Version Detail")).toBeInTheDocument();
+    expect(screen.getByText("No demotion events recorded for this version yet.")).toBeInTheDocument();
+    expect(screen.queryByText("No replay runs linked to this version yet.")).not.toBeInTheDocument();
+    expect(screen.getAllByText("phase11-exec-1234").length).toBeGreaterThan(0);
+    expect(screen.getByText("client-1")).toBeInTheDocument();
   });
 });

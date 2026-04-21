@@ -100,6 +100,19 @@ Current behavior:
 
 This keeps Phase 13A read-only while making the lifecycle evidence materially easier to inspect.
 
+### 8. Strategy-version detail drilldown
+
+The registry now includes a focused version-detail path so the operator can drill from the comparison row into the exact artifacts behind that version instead of stopping at summary counts and latest-state snapshots.
+
+Current behavior:
+
+* `GET /api/v1/strategies/versions/{version_id}` now returns a read-only version-detail payload
+* the detail payload includes the version snapshot, family reference, recent replay runs, recent live-shadow evaluations, recent scorecards, recent readiness reports, and recent promotion or demotion events for that version
+* the `Strategies` page now exposes an inline `Inspect` action from the evidence-alignment table
+* the inline detail panel stays inside the registry surface and does not widen autonomy or add new operator controls
+
+This is still Phase 13A lifecycle surfacing, not a rollout or capital-allocation change.
+
 ## What This Still Does Not Do
 
 The repo is still not widening autonomy here.
@@ -111,7 +124,7 @@ Specifically, this pass does not:
 * auto-demote families
 * add capital-budget enforcement beyond current systems
 * add family-level autonomy tiers beyond the current seeded registry values
-* add a dedicated version-detail workflow for drilling from the comparison row into underlying evidence artifacts
+* add direct deep links from version detail into the existing replay, live, and health pages with shared version filters
 
 That is intentional. This pass stays inside Phase 13A rather than jumping into later milestones prematurely.
 
@@ -119,12 +132,12 @@ That is intentional. This pass stays inside Phase 13A rather than jumping into l
 
 The next best step after this pass is:
 
-* add a focused strategy-version detail path that can drill from the comparison row into the underlying replay run, live shadow evaluations, scorecards, and readiness artifacts without widening autonomy
+* add strategy-version filters and deep links across the existing replay, live, and pilot APIs so the new detail panel can hand off into native surfaces without client-side guesswork
 
 ## Validation Completed
 
 Focused validation for this implementation slice covered:
 
-* backend strategies API tests for version-scoped alignment payloads
-* backend replay and pilot-evidence tests for replay, live-shadow, scorecard, and readiness alignment
-* frontend tests for the `Strategies` comparison view
+* backend strategies API tests for both registry and version-detail payloads
+* backend replay and pilot-evidence tests for version-detail drilldown artifacts
+* frontend tests for the `Strategies` inspect workflow
