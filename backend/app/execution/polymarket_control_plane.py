@@ -115,6 +115,7 @@ from app.models.polymarket_replay import (
     PolymarketReplayRun,
     PolymarketReplayScenario,
 )
+from app.risk.budgets import build_strategy_budget_status, serialize_risk_budget_status
 from app.strategies.promotion import (
     PROMOTION_EVALUATION_KIND_INCIDENT,
     hash_json_payload,
@@ -142,7 +143,11 @@ async def _serialize_control_plane_incidents_with_lifecycle(
 ) -> list[dict[str, Any]]:
     version_ids = {int(row.strategy_version_id) for row in rows if row.strategy_version_id is not None}
     version_map = await get_strategy_version_snapshot_map(session, version_ids=version_ids)
-    evaluation_map = await get_latest_promotion_evaluation_by_version(session, version_ids=version_ids)
+    evaluation_map = await get_latest_promotion_evaluation_by_version(
+        session,
+        version_ids=version_ids,
+        include_supporting=True,
+    )
     return [
         serialize_control_plane_incident(
             row,
@@ -1240,8 +1245,21 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
     latest_evaluation = None
     if strategy_version is not None and strategy_version.id is not None:
         latest_evaluation = (
-            await get_latest_promotion_evaluation_by_version(session, version_ids=[int(strategy_version.id)])
+            await get_latest_promotion_evaluation_by_version(
+                session,
+                version_ids=[int(strategy_version.id)],
+                include_supporting=True,
+            )
         ).get(int(strategy_version.id))
+    active_family_budget = None
+    if config is not None and config.strategy_family:
+        active_family_budget = serialize_risk_budget_status(
+            await build_strategy_budget_status(
+                session,
+                strategy_family=config.strategy_family,
+                strategy_version_id=int(strategy_version.id) if strategy_version is not None and strategy_version.id is not None else None,
+            )
+        )
     approval_queue_count = int(
         (
             await session.execute(
@@ -1274,6 +1292,7 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
         "active_run": serialize_pilot_run(run) if run is not None else None,
         "active_strategy_version": serialize_strategy_version_snapshot(strategy_version),
         "latest_promotion_evaluation": latest_evaluation,
+        "active_family_budget": active_family_budget,
         "manual_approval_required": _approval_required(config),
         "approval_queue_count": approval_queue_count,
         "heartbeat_status": _heartbeat_status(state, needed=bool(config is not None and config.armed and open_live_orders > 0)),
@@ -1290,9 +1309,16 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
 async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, Any]:
     pilot_status = await fetch_pilot_status(session)
     active_config = await get_active_pilot_config(session)
+    active_family = active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY
+    active_family_budget = serialize_risk_budget_status(
+        await build_strategy_budget_status(
+            session,
+            strategy_family=active_family,
+        )
+    )
     evidence_summary = await _pilot_evidence.fetch_pilot_evidence_summary(
         session,
-        strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+        strategy_family=active_family,
     )
     recent_orders = (
         await session.execute(
@@ -1337,21 +1363,22 @@ async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, An
     return {
         "pilot": pilot_status,
         "active_pilot_family": active_config.strategy_family if active_config is not None else None,
+        "active_family_budget": active_family_budget,
         "approvals": await list_approval_queue(session, approval_state="queued", limit=25),
         "incidents": await list_control_plane_incidents(session, limit=25),
         "guardrail_events": await list_pilot_guardrail_events(
             session,
-            strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+            strategy_family=active_family,
             limit=25,
         ),
         "scorecards": await list_pilot_scorecards(
             session,
-            strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+            strategy_family=active_family,
             limit=10,
         ),
         "readiness_reports": await list_pilot_readiness_reports(
             session,
-            strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
+            strategy_family=active_family,
             limit=10,
         ),
         "recent_orders": await serialize_live_orders_with_lifecycle(session, recent_orders),

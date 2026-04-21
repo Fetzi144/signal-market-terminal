@@ -135,6 +135,8 @@ class StrategyRegistryVersionOut(BaseModel):
     is_frozen: bool
     config_json: dict[str, Any] | list[Any] | str | None = None
     provenance_json: dict[str, Any] | list[Any] | str | None = None
+    risk_budget_policy: dict[str, Any] | list[Any] | str | None = None
+    risk_budget_status: dict[str, Any] | list[Any] | str | None = None
     latest_promotion_evaluation: StrategyLifecycleEventOut | None = None
     evidence_alignment: StrategyEvidenceAlignmentOut | None = None
     evidence_counts: dict[str, int]

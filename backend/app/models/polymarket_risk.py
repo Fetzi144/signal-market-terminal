@@ -131,6 +131,11 @@ class PortfolioExposureSnapshot(Base):
         nullable=False,
     )
     snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    strategy_family: Mapped[str | None] = mapped_column(String(32))
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     node_id: Mapped[int] = mapped_column(
         Integer,
         ForeignKey("risk_graph_nodes.id", ondelete="CASCADE"),
@@ -144,6 +149,8 @@ class PortfolioExposureSnapshot(Base):
     share_exposure: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     reservation_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     hedged_fraction: Mapped[Decimal | None] = mapped_column(Numeric(10, 6))
+    regime_label: Mapped[str | None] = mapped_column(String(32))
+    budget_metadata_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -156,6 +163,8 @@ class PortfolioExposureSnapshot(Base):
     __table_args__ = (
         Index("ix_portfolio_exposure_snapshots_run_id", "run_id"),
         Index("ix_portfolio_exposure_snapshots_snapshot_at", "snapshot_at"),
+        Index("ix_portfolio_exposure_snapshots_strategy_snapshot", "strategy_family", "snapshot_at"),
+        Index("ix_portfolio_exposure_snapshots_strategy_version_snapshot", "strategy_version_id", "snapshot_at"),
         Index("ix_portfolio_exposure_snapshots_node_kind", "node_id", "exposure_kind"),
         Index("ix_portfolio_exposure_snapshots_kind_snapshot", "exposure_kind", "snapshot_at"),
     )
@@ -174,6 +183,11 @@ class PortfolioOptimizerRecommendation(Base):
         Integer,
         ForeignKey("risk_graph_nodes.id", ondelete="SET NULL"),
     )
+    strategy_family: Mapped[str | None] = mapped_column(String(32))
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     recommendation_type: Mapped[str] = mapped_column(String(32), nullable=False)
     scope_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     condition_id: Mapped[str | None] = mapped_column(String(255))
@@ -184,6 +198,8 @@ class PortfolioOptimizerRecommendation(Base):
     maker_budget_remaining_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     taker_budget_remaining_usd: Mapped[Decimal | None] = mapped_column(Numeric(24, 8))
     reason_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    regime_label: Mapped[str | None] = mapped_column(String(32))
+    budget_metadata_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     observed_at_local: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
@@ -196,6 +212,8 @@ class PortfolioOptimizerRecommendation(Base):
 
     __table_args__ = (
         Index("ix_portfolio_optimizer_recommendations_run_id", "run_id"),
+        Index("ix_portfolio_optimizer_recommendations_strategy_observed", "strategy_family", "observed_at_local"),
+        Index("ix_portfolio_optimizer_recommendations_strategy_version_observed", "strategy_version_id", "observed_at_local"),
         Index(
             "ix_portfolio_optimizer_recommendations_type_reason_observed",
             "recommendation_type",
@@ -213,6 +231,11 @@ class InventoryControlSnapshot(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    strategy_family: Mapped[str | None] = mapped_column(String(32))
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     condition_id: Mapped[str | None] = mapped_column(String(255))
     asset_id: Mapped[str | None] = mapped_column(String(255))
     control_scope: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -224,6 +247,8 @@ class InventoryControlSnapshot(Base):
     quote_skew_direction: Mapped[str | None] = mapped_column(String(32))
     no_quote: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     reason_code: Mapped[str | None] = mapped_column(String(64))
+    regime_label: Mapped[str | None] = mapped_column(String(32))
+    budget_metadata_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -235,6 +260,8 @@ class InventoryControlSnapshot(Base):
 
     __table_args__ = (
         Index("ix_inventory_control_snapshots_snapshot_at", "snapshot_at"),
+        Index("ix_inventory_control_snapshots_strategy_snapshot", "strategy_family", "snapshot_at"),
+        Index("ix_inventory_control_snapshots_strategy_version_snapshot", "strategy_version_id", "snapshot_at"),
         Index("ix_inventory_control_snapshots_scope_reason", "control_scope", "reason_code"),
         Index("ix_inventory_control_snapshots_condition_snapshot", "condition_id", "snapshot_at"),
         Index("ix_inventory_control_snapshots_asset_snapshot", "asset_id", "snapshot_at"),

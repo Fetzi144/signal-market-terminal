@@ -61,6 +61,10 @@ def _book_payload(levels: list[tuple[str, str]]) -> list[list[str]]:
     return [[str(price), str(size)] for price, size in levels]
 
 
+def _fresh_now() -> datetime:
+    return datetime.now(timezone.utc).replace(second=0, microsecond=0)
+
+
 def _set_structure_defaults(monkeypatch, **overrides):
     values = {
         "polymarket_structure_engine_enabled": True,
@@ -94,6 +98,7 @@ async def _seed_event(
     active: bool = True,
     source_payload_json: dict | None = None,
 ) -> PolymarketEventDim:
+    now = _fresh_now()
     event = PolymarketEventDim(
         gamma_event_id=f"evt-{slug}",
         event_slug=slug,
@@ -104,7 +109,7 @@ async def _seed_event(
         closed=False,
         archived=False,
         neg_risk=neg_risk,
-        last_gamma_sync_at=FIXED_NOW,
+        last_gamma_sync_at=now,
         source_payload_json=source_payload_json or {},
     )
     session.add(event)
@@ -128,6 +133,7 @@ async def _seed_polymarket_binary_market(
     source_payload_json: dict | None = None,
     active: bool = True,
 ) -> dict[str, object]:
+    now = _fresh_now()
     market = make_market(
         session,
         platform="polymarket",
@@ -162,7 +168,7 @@ async def _seed_polymarket_binary_market(
         fee_schedule_json={"rate": str(fee_rate_decimal)},
         maker_base_fee=Decimal("0"),
         taker_base_fee=fee_rate_decimal,
-        last_gamma_sync_at=FIXED_NOW,
+        last_gamma_sync_at=now,
         source_payload_json=source_payload_json or {},
     )
     session.add(market_dim)
@@ -176,7 +182,7 @@ async def _seed_polymarket_binary_market(
         outcome_name="Yes",
         outcome_index=0,
         active=active,
-        last_gamma_sync_at=FIXED_NOW,
+        last_gamma_sync_at=now,
         source_payload_json={"asset_id": yes_asset_id},
     )
     no_asset = PolymarketAssetDim(
@@ -187,7 +193,7 @@ async def _seed_polymarket_binary_market(
         outcome_name="No",
         outcome_index=1,
         active=active,
-        last_gamma_sync_at=FIXED_NOW,
+        last_gamma_sync_at=now,
         source_payload_json={"asset_id": no_asset_id},
     )
     session.add_all([yes_asset, no_asset])
@@ -201,8 +207,8 @@ async def _seed_polymarket_binary_market(
                 condition_id=condition_id,
                 asset_id=asset.asset_id,
                 source_kind="gamma_sync",
-                effective_at_exchange=FIXED_NOW,
-                observed_at_local=FIXED_NOW,
+                effective_at_exchange=now,
+                observed_at_local=now,
                 tick_size=_decimal(tick_size),
                 min_order_size=_decimal(min_order_size),
                 neg_risk=event.neg_risk,
@@ -224,9 +230,9 @@ async def _seed_polymarket_binary_market(
         condition_id=condition_id,
         asset_id=yes_asset.asset_id,
         source_kind="ws_book",
-        event_ts_exchange=FIXED_NOW,
-        recv_ts_local=FIXED_NOW,
-        observed_at_local=FIXED_NOW,
+        event_ts_exchange=now,
+        recv_ts_local=now,
+        observed_at_local=now,
         bids_json=_book_payload(bids),
         asks_json=_book_payload(asks),
         min_order_size=_decimal(min_order_size),
@@ -249,16 +255,16 @@ async def _seed_polymarket_binary_market(
             last_snapshot_id=snapshot.id,
             last_snapshot_source_kind="ws_book",
             last_snapshot_hash=f"{condition_id}-snapshot",
-            last_snapshot_exchange_ts=FIXED_NOW,
+            last_snapshot_exchange_ts=now,
             best_bid=best_bid,
             best_ask=best_ask,
             spread=(best_ask - best_bid),
             depth_levels_bid=len(bids),
             depth_levels_ask=len(asks),
             expected_tick_size=_decimal(tick_size),
-            last_exchange_ts=FIXED_NOW,
-            last_received_at_local=FIXED_NOW,
-            last_reconciled_at=FIXED_NOW,
+            last_exchange_ts=now,
+            last_received_at_local=now,
+            last_reconciled_at=now,
             details_json={"source": "test"},
         )
     )
@@ -285,6 +291,7 @@ async def _seed_generic_binary_market(
     yes_bids: list[list[str]] | None = None,
     no_bids: list[list[str]] | None = None,
 ) -> dict[str, object]:
+    now = _fresh_now()
     market = make_market(
         session,
         platform=platform,
@@ -303,7 +310,7 @@ async def _seed_generic_binary_market(
         spread=None,
         bids=yes_bids or [],
         asks=yes_asks,
-        captured_at=FIXED_NOW,
+        captured_at=now,
     )
     make_orderbook_snapshot(
         session,
@@ -311,7 +318,7 @@ async def _seed_generic_binary_market(
         spread=None,
         bids=no_bids or [],
         asks=no_asks,
-        captured_at=FIXED_NOW,
+        captured_at=now,
     )
     await session.flush()
     return {
@@ -1096,6 +1103,7 @@ async def test_structure_validation_classifies_informational_when_edge_decays(en
                 .order_by(MarketStructureOpportunityLeg.leg_index.asc())
             )
         ).scalars().all()
+        current_now = _fresh_now()
         for leg in legs:
             adverse_bid, adverse_ask = _adverse_book_for_side(leg.side)
             snapshot = (
@@ -1124,8 +1132,8 @@ async def test_structure_validation_classifies_informational_when_edge_decays(en
             snapshot.best_bid = adverse_bid
             snapshot.best_ask = adverse_ask
             snapshot.spread = adverse_ask - adverse_bid
-            snapshot.recv_ts_local = FIXED_NOW
-            snapshot.observed_at_local = FIXED_NOW
+            snapshot.recv_ts_local = current_now
+            snapshot.observed_at_local = current_now
 
             recon = (
                 await session.execute(
@@ -1148,10 +1156,10 @@ async def test_structure_validation_classifies_informational_when_edge_decays(en
                 ).scalar_one()
             recon.best_bid = adverse_bid
             recon.best_ask = adverse_ask
-            recon.last_snapshot_exchange_ts = FIXED_NOW
-            recon.last_received_at_local = FIXED_NOW
-            recon.last_exchange_ts = FIXED_NOW
-            recon.last_reconciled_at = FIXED_NOW
+            recon.last_snapshot_exchange_ts = current_now
+            recon.last_received_at_local = current_now
+            recon.last_exchange_ts = current_now
+            recon.last_reconciled_at = current_now
         await session.commit()
 
     monkeypatch.setattr(settings, "polymarket_structure_min_net_edge_bps", 5000.0)

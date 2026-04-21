@@ -54,6 +54,17 @@ beforeEach(() => {
           is_current: true,
           is_frozen: true,
           config_json: {},
+          risk_budget_policy: {
+            capital: { outstanding_notional_usd: 1000 },
+            capacity: { max_open_orders: 12 },
+          },
+          risk_budget_status: {
+            current_outstanding_usd: 0,
+            effective_outstanding_cap_usd: 1000,
+            regime_label: "thin_liquidity",
+            capacity_status: "narrowed",
+            risk_of_ruin_label: "normal",
+          },
           provenance_json: {},
           latest_promotion_evaluation: {
             id: 11,
@@ -116,6 +127,17 @@ beforeEach(() => {
             is_current: true,
             is_frozen: true,
             config_json: {},
+            risk_budget_policy: {
+              capital: { outstanding_notional_usd: 1000 },
+              capacity: { max_open_orders: 12 },
+            },
+            risk_budget_status: {
+              current_outstanding_usd: 0,
+              effective_outstanding_cap_usd: 1000,
+              regime_label: "thin_liquidity",
+              capacity_status: "narrowed",
+              risk_of_ruin_label: "normal",
+            },
             provenance_json: {},
             latest_promotion_evaluation: {
               id: 11,
@@ -217,6 +239,22 @@ beforeEach(() => {
           is_current: true,
           is_frozen: false,
           config_json: {},
+          risk_budget_policy: {
+            capital: { outstanding_notional_usd: 75 },
+            capacity: { max_open_orders: 5 },
+          },
+          risk_budget_status: {
+            current_outstanding_usd: 25,
+            effective_outstanding_cap_usd: 75,
+            effective_capacity_ceiling_usd: 50,
+            effective_max_order_notional_usd: 25,
+            open_order_count: 2,
+            effective_max_open_orders: 5,
+            regime_label: "thin_liquidity",
+            capacity_status: "constrained",
+            risk_of_ruin_label: "warning",
+            risk_of_ruin_score: 0.62,
+          },
           provenance_json: {},
           latest_promotion_evaluation: {
             id: 12,
@@ -324,6 +362,22 @@ beforeEach(() => {
             is_current: true,
             is_frozen: false,
             config_json: {},
+            risk_budget_policy: {
+              capital: { outstanding_notional_usd: 75 },
+              capacity: { max_open_orders: 5 },
+            },
+            risk_budget_status: {
+              current_outstanding_usd: 25,
+              effective_outstanding_cap_usd: 75,
+              effective_capacity_ceiling_usd: 50,
+              effective_max_order_notional_usd: 25,
+              open_order_count: 2,
+              effective_max_open_orders: 5,
+              regime_label: "thin_liquidity",
+              capacity_status: "constrained",
+              risk_of_ruin_label: "warning",
+              risk_of_ruin_score: 0.62,
+            },
             provenance_json: {},
             latest_promotion_evaluation: {
               id: 12,
@@ -476,6 +530,22 @@ beforeEach(() => {
       is_current: true,
       is_frozen: false,
       config_json: {},
+      risk_budget_policy: {
+        capital: { outstanding_notional_usd: 75 },
+        capacity: { max_open_orders: 5 },
+      },
+      risk_budget_status: {
+        current_outstanding_usd: 25,
+        effective_outstanding_cap_usd: 75,
+        effective_capacity_ceiling_usd: 50,
+        effective_max_order_notional_usd: 25,
+        open_order_count: 2,
+        effective_max_open_orders: 5,
+        regime_label: "thin_liquidity",
+        capacity_status: "constrained",
+        risk_of_ruin_label: "warning",
+        risk_of_ruin_score: 0.62,
+      },
       provenance_json: {},
       latest_promotion_evaluation: {
         id: 12,
@@ -594,6 +664,24 @@ beforeEach(() => {
     ],
     gate_history: [
       {
+        id: 16,
+        family_id: 2,
+        strategy_version_id: 2,
+        gate_policy_id: 1,
+        evaluation_kind: "capital_budget_gate",
+        evaluation_status: "constrained",
+        autonomy_tier: "shadow_only",
+        evaluation_window_start: "2026-04-21T08:10:00Z",
+        evaluation_window_end: "2026-04-21T08:16:00Z",
+        summary_json: {
+          capacity_status: "constrained",
+          regime_label: "thin_liquidity",
+          reason_codes: ["capacity_ceiling_exceeded"],
+        },
+        created_at: "2026-04-21T08:16:00Z",
+        updated_at: "2026-04-21T08:16:00Z",
+      },
+      {
         id: 15,
         family_id: 2,
         strategy_version_id: 2,
@@ -646,7 +734,15 @@ beforeEach(() => {
         updated_at: "2026-04-21T08:00:00Z",
       },
     ],
-    demotion_events: [],
+    demotion_events: [
+      {
+        id: 1,
+        reason_code: "family_cap_exceeded",
+        fallback_autonomy_tier: "shadow_only",
+        cooling_off_ends_at: "2026-04-22T08:16:00Z",
+        observed_at_local: "2026-04-21T08:16:00Z",
+      },
+    ],
     generated_at: "2026-04-21T08:16:00Z",
   });
 });
@@ -673,6 +769,7 @@ describe("Strategies", () => {
     expect(screen.getAllByText("Manual Only").length).toBeGreaterThan(0);
     expect(screen.getByText("Benchmark Health")).toBeInTheDocument();
     expect(screen.getByText("Pilot Console")).toBeInTheDocument();
+    expect(screen.getByText("Constrained")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Inspect Execution Policy Infra v1" }));
     await waitFor(() => {
@@ -680,7 +777,11 @@ describe("Strategies", () => {
     });
     expect(await screen.findByText("Version Detail")).toBeInTheDocument();
     expect(screen.getByText("Gate History")).toBeInTheDocument();
-    expect(screen.getByText("No demotion events recorded for this version yet.")).toBeInTheDocument();
+    expect(screen.getByText("Budget Status")).toBeInTheDocument();
+    expect(screen.getByText("Budget Regime")).toBeInTheDocument();
+    expect(screen.getByText("Capital Budget Gate")).toBeInTheDocument();
+    expect(screen.getByText(/Constrained \| Regime Thin Liquidity \| capacity_ceiling_exceeded/)).toBeInTheDocument();
+    expect(screen.getByText("Family Cap Exceeded")).toBeInTheDocument();
     expect(screen.queryByText("No replay runs linked to this version yet.")).not.toBeInTheDocument();
     expect(screen.getAllByText("phase11-exec-1234").length).toBeGreaterThan(0);
     expect(screen.getByText("client-1")).toBeInTheDocument();

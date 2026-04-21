@@ -409,8 +409,11 @@ async def test_control_plane_apis_and_health_include_phase12_state(client, engin
     assert health_response.status_code == 200
     assert status_response.json()["active_pilot"]["strategy_family"] == "exec_policy"
     assert status_response.json()["active_strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert status_response.json()["active_family_budget"]["strategy_family"] == "exec_policy"
+    assert status_response.json()["active_family_budget"]["capacity_status"] in {"ok", "narrowed", "constrained", "breached"}
     assert console_response.json()["approvals"]
     assert console_response.json()["pilot"]["active_strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert console_response.json()["active_family_budget"]["strategy_family"] == "exec_policy"
     assert console_response.json()["recent_orders"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert approvals_response.json()["rows"][0]["approval_state"] == "queued"
     assert orders_response.json()["rows"][0]["approval_state"] == "queued"

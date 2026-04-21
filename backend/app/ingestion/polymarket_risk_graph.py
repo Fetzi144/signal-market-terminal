@@ -45,6 +45,8 @@ from app.models.polymarket_risk import (
     RiskGraphNode,
     RiskGraphRun,
 )
+from app.models.strategy_run import StrategyRun
+from app.risk.budgets import evaluate_budget_request, serialize_risk_budget_status
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +114,8 @@ class ExposureContribution:
     reservation_cost_usd: Decimal
     inventory_bucket: str
     details_json: dict[str, Any]
+    strategy_family: str | None = None
+    strategy_version_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -133,6 +137,7 @@ class ExposureState:
     snapshot_at: datetime
     nodes_by_id: dict[int, RiskGraphNode]
     aggregate_rollups: dict[int, NodeRollup]
+    family_rollups: dict[tuple[str, int | None], dict[int, NodeRollup]]
     source_rollups: list[dict[str, Any]]
     maker_budget_used_usd: Decimal
     taker_budget_used_usd: Decimal
@@ -359,6 +364,8 @@ def _snapshot_payload(row: PortfolioExposureSnapshot, node: RiskGraphNode | None
         "run_id": row.run_id,
         "snapshot_at": row.snapshot_at,
         "node_id": row.node_id,
+        "strategy_family": row.strategy_family,
+        "strategy_version_id": row.strategy_version_id,
         "exposure_kind": row.exposure_kind,
         "gross_notional_usd": _serialize_decimal(row.gross_notional_usd),
         "net_notional_usd": _serialize_decimal(row.net_notional_usd),
@@ -367,6 +374,8 @@ def _snapshot_payload(row: PortfolioExposureSnapshot, node: RiskGraphNode | None
         "share_exposure": _serialize_decimal(row.share_exposure),
         "reservation_cost_usd": _serialize_decimal(row.reservation_cost_usd),
         "hedged_fraction": _serialize_decimal(row.hedged_fraction),
+        "regime_label": row.regime_label,
+        "budget_metadata_json": _json_safe(row.budget_metadata_json),
         "details_json": _json_safe(row.details_json),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -381,6 +390,8 @@ def _optimizer_payload(row: PortfolioOptimizerRecommendation, node: RiskGraphNod
         "id": row.id,
         "run_id": row.run_id,
         "node_id": row.node_id,
+        "strategy_family": row.strategy_family,
+        "strategy_version_id": row.strategy_version_id,
         "recommendation_type": row.recommendation_type,
         "scope_kind": row.scope_kind,
         "condition_id": row.condition_id,
@@ -391,6 +402,8 @@ def _optimizer_payload(row: PortfolioOptimizerRecommendation, node: RiskGraphNod
         "maker_budget_remaining_usd": _serialize_decimal(row.maker_budget_remaining_usd),
         "taker_budget_remaining_usd": _serialize_decimal(row.taker_budget_remaining_usd),
         "reason_code": row.reason_code,
+        "regime_label": row.regime_label,
+        "budget_metadata_json": _json_safe(row.budget_metadata_json),
         "details_json": _json_safe(row.details_json),
         "observed_at_local": row.observed_at_local,
         "created_at": row.created_at,
@@ -407,6 +420,8 @@ def _inventory_payload(row: InventoryControlSnapshot) -> dict[str, Any]:
         "snapshot_at": row.snapshot_at,
         "condition_id": row.condition_id,
         "asset_id": row.asset_id,
+        "strategy_family": row.strategy_family,
+        "strategy_version_id": row.strategy_version_id,
         "control_scope": row.control_scope,
         "maker_budget_usd": _serialize_decimal(row.maker_budget_usd),
         "taker_budget_usd": _serialize_decimal(row.taker_budget_usd),
@@ -416,6 +431,8 @@ def _inventory_payload(row: InventoryControlSnapshot) -> dict[str, Any]:
         "quote_skew_direction": row.quote_skew_direction,
         "no_quote": row.no_quote,
         "reason_code": row.reason_code,
+        "regime_label": row.regime_label,
+        "budget_metadata_json": _json_safe(row.budget_metadata_json),
         "details_json": _json_safe(row.details_json),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
@@ -938,6 +955,38 @@ def _hedged_fraction_from_gross_and_net(gross: Decimal, net: Decimal) -> Decimal
     return raw.quantize(RATIO_Q)
 
 
+def _apply_explicit_hedge_relief(
+    rollups: dict[int, NodeRollup],
+    *,
+    asset_hedge_links: dict[int, list[tuple[int, Decimal, str]]],
+) -> None:
+    for node_id, hedge_links in asset_hedge_links.items():
+        rollup = rollups.get(node_id)
+        if rollup is None or rollup.gross_notional_usd <= ZERO or rollup.net_notional_usd == ZERO:
+            continue
+        remaining = abs(rollup.net_notional_usd)
+        explicit_hedged = ZERO
+        for neighbor_id, hedge_weight, _edge_type in hedge_links:
+            if remaining <= ZERO:
+                break
+            partner = rollups.get(neighbor_id)
+            if partner is None or partner.net_notional_usd == ZERO:
+                continue
+            if rollup.net_notional_usd * partner.net_notional_usd >= ZERO:
+                continue
+            overlap = min(abs(rollup.net_notional_usd), abs(partner.net_notional_usd))
+            covered = min(remaining, overlap * max(min(hedge_weight, ONE), ZERO))
+            explicit_hedged += covered
+            remaining -= covered
+        if explicit_hedged <= ZERO:
+            continue
+        explicit_fraction = _hedged_fraction_from_gross_and_net(
+            rollup.gross_notional_usd,
+            max(abs(rollup.net_notional_usd) - explicit_hedged, ZERO),
+        )
+        rollup.hedged_fraction = max(rollup.hedged_fraction, explicit_fraction)
+
+
 async def _build_contributions(
     session: AsyncSession,
     *,
@@ -954,12 +1003,21 @@ async def _build_contributions(
         if row.outcome_id is not None
     }
     market_by_id = {row.id: row for row in (await session.execute(select(Market))).scalars().all()}
+    strategy_run_by_id = {
+        row.id: row
+        for row in (await session.execute(select(StrategyRun))).scalars().all()
+    }
+    from app.strategies.registry import get_current_strategy_version
+
+    structure_version = await get_current_strategy_version(session, "structure", sync_registry=False)
+    maker_version = await get_current_strategy_version(session, "maker", sync_registry=False)
 
     if settings.polymarket_risk_graph_include_paper_positions:
         paper_trades = (await session.execute(select(PaperTrade).where(PaperTrade.status.in_(tuple(OPEN_PAPER_TRADE_STATUSES))))).scalars().all()
         for trade in paper_trades:
             asset_dim = asset_by_outcome.get(trade.outcome_id)
             market = market_by_id.get(trade.market_id)
+            strategy_run = strategy_run_by_id.get(trade.strategy_run_id) if trade.strategy_run_id is not None else None
             venue = market.platform if market is not None else "polymarket"
             asset_id = asset_dim.asset_id if asset_dim is not None else _synthetic_asset_id(outcome_id=trade.outcome_id)
             condition_id = asset_dim.condition_id if asset_dim is not None else None
@@ -967,7 +1025,7 @@ async def _build_contributions(
             if base_node is None:
                 continue
             signed = _direction_sign(direction=trade.direction, side=None, outcome_name=asset_dim.outcome_name if asset_dim is not None else None) * trade.size_usd
-            contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="paper_position", gross_notional_usd=trade.size_usd, canonical_net_notional_usd=signed, buy_notional_usd=trade.size_usd if signed >= ZERO else ZERO, sell_notional_usd=trade.size_usd if signed < ZERO else ZERO, share_exposure=trade.shares or ZERO, reservation_cost_usd=ZERO, inventory_bucket="taker", details_json={"source_id": str(trade.id), "opened_at": trade.opened_at, "direction": trade.direction, "venue": venue}))
+            contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="paper_position", gross_notional_usd=trade.size_usd, canonical_net_notional_usd=signed, buy_notional_usd=trade.size_usd if signed >= ZERO else ZERO, sell_notional_usd=trade.size_usd if signed < ZERO else ZERO, share_exposure=trade.shares or ZERO, reservation_cost_usd=ZERO, inventory_bucket="taker", details_json={"source_id": str(trade.id), "opened_at": trade.opened_at, "direction": trade.direction, "venue": venue}, strategy_family=(strategy_run.strategy_family if strategy_run is not None and strategy_run.strategy_family else "default_strategy"), strategy_version_id=(trade.strategy_version_id if trade.strategy_version_id is not None else strategy_run.strategy_version_id if strategy_run is not None else None)))
 
     if settings.polymarket_risk_graph_include_live_orders:
         live_orders = (await session.execute(select(LiveOrder))).scalars().all()
@@ -985,7 +1043,7 @@ async def _build_contributions(
             if base_node is None:
                 continue
             sign = _direction_sign(direction=order.side, side=order.side, outcome_name=None)
-            contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="live_order", gross_notional_usd=notional, canonical_net_notional_usd=sign * notional, buy_notional_usd=notional if sign >= ZERO else ZERO, sell_notional_usd=notional if sign < ZERO else ZERO, share_exposure=open_size, reservation_cost_usd=ZERO, inventory_bucket=_quote_inventory_bucket("live_order", post_only=bool(order.post_only), action_type=order.action_type), details_json={"source_id": str(order.id), "side": order.side, "post_only": order.post_only, "action_type": order.action_type, "status": order.status}))
+            contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="live_order", gross_notional_usd=notional, canonical_net_notional_usd=sign * notional, buy_notional_usd=notional if sign >= ZERO else ZERO, sell_notional_usd=notional if sign < ZERO else ZERO, share_exposure=open_size, reservation_cost_usd=ZERO, inventory_bucket=_quote_inventory_bucket("live_order", post_only=bool(order.post_only), action_type=order.action_type), details_json={"source_id": str(order.id), "side": order.side, "post_only": order.post_only, "action_type": order.action_type, "status": order.status}, strategy_family=order.strategy_family, strategy_version_id=order.strategy_version_id))
 
     if settings.polymarket_risk_graph_include_reservations:
         reservations = (await session.execute(select(CapitalReservation))).scalars().all()
@@ -998,7 +1056,7 @@ async def _build_contributions(
             base_node = await _resolve_base_node(session, nodes_by_key=nodes_by_key, asset_nodes_by_asset_id=asset_nodes_by_asset_id, market_nodes_by_condition_id=market_nodes_by_condition_id, venue="polymarket", asset_id=reservation.asset_id, condition_id=reservation.condition_id, label=reservation.asset_id or reservation.condition_id, source_kind="capital_reservation")
             if base_node is None:
                 continue
-            contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="capital_reservation", gross_notional_usd=open_amount, canonical_net_notional_usd=ZERO, buy_notional_usd=ZERO, sell_notional_usd=ZERO, share_exposure=ZERO, reservation_cost_usd=open_amount, inventory_bucket="taker", details_json={"source_id": reservation.id, "reservation_kind": reservation.reservation_kind, "status": reservation.status}))
+            contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="capital_reservation", gross_notional_usd=open_amount, canonical_net_notional_usd=ZERO, buy_notional_usd=ZERO, sell_notional_usd=ZERO, share_exposure=ZERO, reservation_cost_usd=open_amount, inventory_bucket="taker", details_json={"source_id": reservation.id, "reservation_kind": reservation.reservation_kind, "status": reservation.status}, strategy_family=reservation.strategy_family, strategy_version_id=reservation.strategy_version_id))
 
     structure_orders = (await session.execute(select(MarketStructurePaperOrder).join(MarketStructurePaperPlan, MarketStructurePaperPlan.id == MarketStructurePaperOrder.plan_id).where(MarketStructurePaperPlan.status.in_(tuple(OPEN_STRUCTURE_PLAN_STATUSES))))).scalars().all()
     for order in structure_orders:
@@ -1009,7 +1067,7 @@ async def _build_contributions(
         if base_node is None:
             continue
         sign = _direction_sign(direction=order.side, side=order.side, outcome_name=None)
-        contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="structure_plan", gross_notional_usd=notional, canonical_net_notional_usd=sign * notional, buy_notional_usd=notional if sign >= ZERO else ZERO, sell_notional_usd=notional if sign < ZERO else ZERO, share_exposure=_to_decimal(order.target_size) or ZERO, reservation_cost_usd=ZERO, inventory_bucket="taker", details_json={"source_id": order.id, "plan_id": str(order.plan_id), "side": order.side, "role": order.role, "venue": order.venue}))
+        contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="structure_plan", gross_notional_usd=notional, canonical_net_notional_usd=sign * notional, buy_notional_usd=notional if sign >= ZERO else ZERO, sell_notional_usd=notional if sign < ZERO else ZERO, share_exposure=_to_decimal(order.target_size) or ZERO, reservation_cost_usd=ZERO, inventory_bucket="taker", details_json={"source_id": order.id, "plan_id": str(order.plan_id), "side": order.side, "role": order.role, "venue": order.venue}, strategy_family="structure", strategy_version_id=(int(structure_version.id) if structure_version is not None and structure_version.id is not None else None)))
 
     quote_cutoff = snapshot_at - timedelta(seconds=settings.polymarket_quote_optimizer_max_age_seconds)
     recent_quotes = (await session.execute(select(PolymarketQuoteRecommendation).where(PolymarketQuoteRecommendation.created_at >= quote_cutoff, PolymarketQuoteRecommendation.recommendation_action == "recommend_quote").order_by(PolymarketQuoteRecommendation.asset_id.asc(), PolymarketQuoteRecommendation.created_at.desc()))).scalars().all()
@@ -1024,7 +1082,7 @@ async def _build_contributions(
         if base_node is None:
             continue
         sign = _direction_sign(direction=quote.recommended_side, side=quote.recommended_side, outcome_name=None)
-        contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="maker_quote", gross_notional_usd=notional, canonical_net_notional_usd=sign * notional, buy_notional_usd=notional if sign >= ZERO else ZERO, sell_notional_usd=notional if sign < ZERO else ZERO, share_exposure=_to_decimal(quote.recommended_size) or ZERO, reservation_cost_usd=ZERO, inventory_bucket="maker", details_json={"source_id": str(quote.id), "recommended_side": quote.recommended_side, "recommendation_status": quote.status}))
+        contributions.append(ExposureContribution(base_node_id=base_node.id, exposure_kind="maker_quote", gross_notional_usd=notional, canonical_net_notional_usd=sign * notional, buy_notional_usd=notional if sign >= ZERO else ZERO, sell_notional_usd=notional if sign < ZERO else ZERO, share_exposure=_to_decimal(quote.recommended_size) or ZERO, reservation_cost_usd=ZERO, inventory_bucket="maker", details_json={"source_id": str(quote.id), "recommended_side": quote.recommended_side, "recommendation_status": quote.status}, strategy_family="maker", strategy_version_id=(int(maker_version.id) if maker_version is not None and maker_version.id is not None else None)))
 
     return contributions
 
@@ -1041,6 +1099,7 @@ async def _compute_exposure_state(
     nodes_by_id, nodes_by_key, asset_nodes_by_asset_id, market_nodes_by_condition_id, adjacency = await _load_node_context(session)
 
     aggregate_rollups: dict[int, NodeRollup] = {node_id: NodeRollup(node=node) for node_id, node in nodes_by_id.items()}
+    family_rollups: dict[tuple[str, int | None], dict[int, NodeRollup]] = {}
     source_rows: list[dict[str, Any]] = []
     maker_budget_used = ZERO
     taker_budget_used = ZERO
@@ -1053,7 +1112,28 @@ async def _compute_exposure_state(
         base_node = nodes_by_id.get(contribution.base_node_id)
         if base_node is None:
             continue
+        family_key = None
+        family_bucket_rollups: dict[int, NodeRollup] | None = None
+        if contribution.strategy_family:
+            family_key = (str(contribution.strategy_family).strip().lower(), contribution.strategy_version_id)
+            family_bucket_rollups = family_rollups.setdefault(family_key, {})
+
+        def _family_rollup_for(node_id: int) -> NodeRollup | None:
+            if family_bucket_rollups is None:
+                return None
+            existing = family_bucket_rollups.get(node_id)
+            if existing is None:
+                node = nodes_by_id.get(node_id)
+                if node is None:
+                    return None
+                existing = NodeRollup(node=node)
+                family_bucket_rollups[node_id] = existing
+            return existing
+
         _add_to_rollup(aggregate_rollups[base_node.id], contribution, signed_net=contribution.canonical_net_notional_usd)
+        family_base_rollup = _family_rollup_for(base_node.id)
+        if family_base_rollup is not None:
+            _add_to_rollup(family_base_rollup, contribution, signed_net=contribution.canonical_net_notional_usd)
         if contribution.inventory_bucket == "maker":
             maker_budget_used += contribution.gross_notional_usd
         elif contribution.inventory_bucket == "taker":
@@ -1067,21 +1147,39 @@ async def _compute_exposure_state(
         for target_id, _weight in bucket_targets["market"]:
             memberships["market"].add(target_id)
             _add_to_rollup(aggregate_rollups[target_id], contribution, signed_net=contribution.canonical_net_notional_usd)
+            family_rollup = _family_rollup_for(target_id)
+            if family_rollup is not None:
+                _add_to_rollup(family_rollup, contribution, signed_net=contribution.canonical_net_notional_usd)
         for target_id, _weight in bucket_targets["event"]:
             memberships["event"].add(target_id)
             _add_to_rollup(aggregate_rollups[target_id], contribution, signed_net=contribution.canonical_net_notional_usd)
+            family_rollup = _family_rollup_for(target_id)
+            if family_rollup is not None:
+                _add_to_rollup(family_rollup, contribution, signed_net=contribution.canonical_net_notional_usd)
         for target_id, _weight in bucket_targets["category"]:
             memberships["category"].add(target_id)
             _add_to_rollup(aggregate_rollups[target_id], contribution, signed_net=contribution.canonical_net_notional_usd)
+            family_rollup = _family_rollup_for(target_id)
+            if family_rollup is not None:
+                _add_to_rollup(family_rollup, contribution, signed_net=contribution.canonical_net_notional_usd)
         for target_id, _weight in bucket_targets["entity"]:
             memberships["entity"].add(target_id)
             _add_to_rollup(aggregate_rollups[target_id], contribution, signed_net=contribution.canonical_net_notional_usd)
+            family_rollup = _family_rollup_for(target_id)
+            if family_rollup is not None:
+                _add_to_rollup(family_rollup, contribution, signed_net=contribution.canonical_net_notional_usd)
         for target_id, _weight in bucket_targets["venue"]:
             memberships["venue"].add(target_id)
             _add_to_rollup(aggregate_rollups[target_id], contribution, signed_net=contribution.canonical_net_notional_usd)
+            family_rollup = _family_rollup_for(target_id)
+            if family_rollup is not None:
+                _add_to_rollup(family_rollup, contribution, signed_net=contribution.canonical_net_notional_usd)
         for target_id, weight in bucket_targets["conversion_group"]:
             memberships["conversion_group"].add(target_id)
             _add_to_rollup(aggregate_rollups[target_id], contribution, signed_net=(weight or ONE) * contribution.gross_notional_usd)
+            family_rollup = _family_rollup_for(target_id)
+            if family_rollup is not None:
+                _add_to_rollup(family_rollup, contribution, signed_net=(weight or ONE) * contribution.gross_notional_usd)
             details = aggregate_rollups[target_id].node.details_json if isinstance(aggregate_rollups[target_id].node.details_json, dict) else {}
             asset_group_weights.setdefault(base_node.id, []).append((target_id, weight or ONE, str(details.get("group_type") or ""), str(details.get("group_key") or "")))
 
@@ -1108,36 +1206,19 @@ async def _compute_exposure_state(
             "share_exposure": contribution.share_exposure,
             "reservation_cost_usd": contribution.reservation_cost_usd,
             "hedged_fraction": ZERO,
+            "strategy_family": contribution.strategy_family,
+            "strategy_version_id": contribution.strategy_version_id,
             "details_json": contribution.details_json,
         })
 
     for rollup in aggregate_rollups.values():
         rollup.hedged_fraction = _hedged_fraction_from_gross_and_net(rollup.gross_notional_usd, rollup.net_notional_usd)
-    for node_id, hedge_links in asset_hedge_links.items():
-        rollup = aggregate_rollups.get(node_id)
-        if rollup is None or rollup.gross_notional_usd <= ZERO or rollup.net_notional_usd == ZERO:
-            continue
-        remaining = abs(rollup.net_notional_usd)
-        explicit_hedged = ZERO
-        for neighbor_id, hedge_weight, _edge_type in hedge_links:
-            if remaining <= ZERO:
-                break
-            partner = aggregate_rollups.get(neighbor_id)
-            if partner is None or partner.net_notional_usd == ZERO:
-                continue
-            if rollup.net_notional_usd * partner.net_notional_usd >= ZERO:
-                continue
-            overlap = min(abs(rollup.net_notional_usd), abs(partner.net_notional_usd))
-            covered = min(remaining, overlap * max(min(hedge_weight, ONE), ZERO))
-            explicit_hedged += covered
-            remaining -= covered
-        if explicit_hedged <= ZERO:
-            continue
-        explicit_fraction = _hedged_fraction_from_gross_and_net(
-            rollup.gross_notional_usd,
-            max(abs(rollup.net_notional_usd) - explicit_hedged, ZERO),
-        )
-        rollup.hedged_fraction = max(rollup.hedged_fraction, explicit_fraction)
+    for bucket_rollups in family_rollups.values():
+        for rollup in bucket_rollups.values():
+            rollup.hedged_fraction = _hedged_fraction_from_gross_and_net(rollup.gross_notional_usd, rollup.net_notional_usd)
+    _apply_explicit_hedge_relief(aggregate_rollups, asset_hedge_links=asset_hedge_links)
+    for bucket_rollups in family_rollups.values():
+        _apply_explicit_hedge_relief(bucket_rollups, asset_hedge_links=asset_hedge_links)
 
     maker_budget_remaining = max(Decimal(str(settings.polymarket_maker_inventory_budget_usd)) - maker_budget_used, ZERO)
     taker_budget_remaining = max(Decimal(str(settings.polymarket_taker_inventory_budget_usd)) - taker_budget_used, ZERO)
@@ -1145,7 +1226,7 @@ async def _compute_exposure_state(
         node_id: {bucket: sorted(target_ids) for bucket, target_ids in bucket_sets.items()}
         for node_id, bucket_sets in asset_bucket_membership_sets.items()
     }
-    return ExposureState(snapshot_at=effective_snapshot_at, nodes_by_id=nodes_by_id, aggregate_rollups=aggregate_rollups, source_rollups=source_rows, maker_budget_used_usd=maker_budget_used.quantize(SIZE_Q), taker_budget_used_usd=taker_budget_used.quantize(SIZE_Q), maker_budget_remaining_usd=maker_budget_remaining.quantize(SIZE_Q), taker_budget_remaining_usd=taker_budget_remaining.quantize(SIZE_Q), asset_group_weights=asset_group_weights, asset_bucket_memberships=asset_bucket_memberships, asset_hedge_links=asset_hedge_links)
+    return ExposureState(snapshot_at=effective_snapshot_at, nodes_by_id=nodes_by_id, aggregate_rollups=aggregate_rollups, family_rollups=family_rollups, source_rollups=source_rows, maker_budget_used_usd=maker_budget_used.quantize(SIZE_Q), taker_budget_used_usd=taker_budget_used.quantize(SIZE_Q), maker_budget_remaining_usd=maker_budget_remaining.quantize(SIZE_Q), taker_budget_remaining_usd=taker_budget_remaining.quantize(SIZE_Q), asset_group_weights=asset_group_weights, asset_bucket_memberships=asset_bucket_memberships, asset_hedge_links=asset_hedge_links)
 
 
 async def create_exposure_snapshot(
@@ -1160,7 +1241,7 @@ async def create_exposure_snapshot(
     try:
         state = await _compute_exposure_state(session, snapshot_at=snapshot_at)
         for row in state.source_rollups:
-            session.add(PortfolioExposureSnapshot(run_id=run.id, snapshot_at=state.snapshot_at, node_id=row["node_id"], exposure_kind=row["exposure_kind"], gross_notional_usd=row["gross_notional_usd"], net_notional_usd=row["net_notional_usd"], buy_notional_usd=row["buy_notional_usd"], sell_notional_usd=row["sell_notional_usd"], share_exposure=row["share_exposure"], reservation_cost_usd=row["reservation_cost_usd"], hedged_fraction=row["hedged_fraction"], details_json=_json_safe(row["details_json"])))
+            session.add(PortfolioExposureSnapshot(run_id=run.id, snapshot_at=state.snapshot_at, node_id=row["node_id"], strategy_family=row.get("strategy_family"), strategy_version_id=row.get("strategy_version_id"), exposure_kind=row["exposure_kind"], gross_notional_usd=row["gross_notional_usd"], net_notional_usd=row["net_notional_usd"], buy_notional_usd=row["buy_notional_usd"], sell_notional_usd=row["sell_notional_usd"], share_exposure=row["share_exposure"], reservation_cost_usd=row["reservation_cost_usd"], hedged_fraction=row["hedged_fraction"], details_json=_json_safe(row["details_json"])))
             rows_inserted["source_rows"] += 1
 
         for node_id, rollup in state.aggregate_rollups.items():
@@ -1168,6 +1249,12 @@ async def create_exposure_snapshot(
                 continue
             session.add(PortfolioExposureSnapshot(run_id=run.id, snapshot_at=state.snapshot_at, node_id=node_id, exposure_kind="aggregate", gross_notional_usd=rollup.gross_notional_usd.quantize(SIZE_Q), net_notional_usd=rollup.net_notional_usd.quantize(SIZE_Q), buy_notional_usd=rollup.buy_notional_usd.quantize(SIZE_Q), sell_notional_usd=rollup.sell_notional_usd.quantize(SIZE_Q), share_exposure=rollup.share_exposure.quantize(SIZE_Q), reservation_cost_usd=rollup.reservation_cost_usd.quantize(SIZE_Q), hedged_fraction=rollup.hedged_fraction.quantize(RATIO_Q), details_json={"node_key": rollup.node.node_key, "node_type": rollup.node.node_type, "source_kinds": sorted(rollup.source_kinds), "source_count": len(rollup.source_ids)}))
             rows_inserted["aggregate_rows"] += 1
+        for (strategy_family, strategy_version_id), rollups in state.family_rollups.items():
+            for node_id, rollup in rollups.items():
+                if rollup.gross_notional_usd <= ZERO and rollup.reservation_cost_usd <= ZERO:
+                    continue
+                session.add(PortfolioExposureSnapshot(run_id=run.id, snapshot_at=state.snapshot_at, node_id=node_id, strategy_family=strategy_family, strategy_version_id=strategy_version_id, exposure_kind="aggregate", gross_notional_usd=rollup.gross_notional_usd.quantize(SIZE_Q), net_notional_usd=rollup.net_notional_usd.quantize(SIZE_Q), buy_notional_usd=rollup.buy_notional_usd.quantize(SIZE_Q), sell_notional_usd=rollup.sell_notional_usd.quantize(SIZE_Q), share_exposure=rollup.share_exposure.quantize(SIZE_Q), reservation_cost_usd=rollup.reservation_cost_usd.quantize(SIZE_Q), hedged_fraction=rollup.hedged_fraction.quantize(RATIO_Q), details_json={"node_key": rollup.node.node_key, "node_type": rollup.node.node_type, "source_kinds": sorted(rollup.source_kinds), "source_count": len(rollup.source_ids), "scope": "family"}))
+                rows_inserted["aggregate_rows"] += 1
 
         await _finish_run(session, run, status="completed", rows_inserted_json=rows_inserted, details_json={"maker_budget_used_usd": _serialize_decimal(state.maker_budget_used_usd), "taker_budget_used_usd": _serialize_decimal(state.taker_budget_used_usd)})
         await session.commit()
@@ -1387,6 +1474,40 @@ async def compute_quote_inventory_controls(
         node = await _upsert_runtime_asset_node(session, venue="polymarket", asset_id=asset_id, condition_id=condition_id, label=asset_id, source_kind="maker_quote")
         state = await _compute_exposure_state(session, snapshot_at=snapshot_at)
     controls = _evaluate_control_for_asset(state, node=node, proposed_notional_usd=_to_decimal(recommended_notional) or ZERO, direction_sign=_direction_sign(direction=recommended_side, side=recommended_side, outcome_name=node.label), context_kind="maker_quote", scope_kind="asset")
+    from app.strategies.registry import get_current_strategy_version
+
+    maker_version = await get_current_strategy_version(session, "maker", sync_registry=False)
+    budget_decision = await evaluate_budget_request(
+        session,
+        strategy_family="maker",
+        strategy_version_id=int(maker_version.id) if maker_version is not None and maker_version.id is not None else None,
+        requested_notional_usd=_to_decimal(recommended_notional) or ZERO,
+        allow_reduce=True,
+    )
+    controls["reason_codes"] = sorted(set([*controls["reason_codes"], *budget_decision["reason_codes"]]))
+    if budget_decision["action"] == "block":
+        controls["recommendation_type"] = "no_quote"
+        controls["target_size_cap_usd"] = ZERO
+        controls["reason_code"] = budget_decision["blocked_reason_code"] or controls["reason_code"]
+        controls["no_quote"] = True
+    elif budget_decision["action"] == "reduce":
+        controls["target_size_cap_usd"] = min(
+            controls["target_size_cap_usd"],
+            budget_decision["approved_notional_usd"],
+        )
+        if controls["recommendation_type"] not in {"no_quote", "block"}:
+            controls["recommendation_type"] = "reduce_size"
+            controls["reason_code"] = budget_decision["reason_codes"][0] if budget_decision["reason_codes"] else controls["reason_code"]
+        else:
+            controls["no_quote"] = controls["recommendation_type"] == "no_quote"
+    controls["strategy_family"] = "maker"
+    controls["strategy_version_id"] = int(maker_version.id) if maker_version is not None and maker_version.id is not None else None
+    controls["regime_label"] = budget_decision["status"]["regime_label"]
+    controls["budget_metadata_json"] = {
+        "risk_budget_status": serialize_risk_budget_status(budget_decision["status"]),
+        "requested_notional_usd": _serialize_decimal(_to_decimal(recommended_notional) or ZERO),
+        "approved_notional_usd": _serialize_decimal(budget_decision["approved_notional_usd"]),
+    }
     return {"applied": True, **controls}
 
 
@@ -1402,10 +1523,26 @@ async def run_portfolio_optimizer(
     try:
         state = await _compute_exposure_state(session, snapshot_at=observed_at)
         observed = _ensure_utc(observed_at) or state.snapshot_at
+        from app.strategies.registry import get_current_strategy_version
+
+        maker_version = await get_current_strategy_version(session, "maker", sync_registry=False)
+        maker_budget_decision = await evaluate_budget_request(
+            session,
+            strategy_family="maker",
+            strategy_version_id=int(maker_version.id) if maker_version is not None and maker_version.id is not None else None,
+            requested_notional_usd=ZERO,
+            requested_open_orders_delta=0,
+            allow_reduce=True,
+        )
+        maker_budget_metadata = {
+            "risk_budget_status": serialize_risk_budget_status(maker_budget_decision["status"]),
+        }
         recent_quotes = (await session.execute(select(PolymarketQuoteRecommendation).where(PolymarketQuoteRecommendation.created_at >= observed - SNAPSHOT_LOOKBACK).order_by(PolymarketQuoteRecommendation.created_at.desc()))).scalars().all()
         seen_assets: set[tuple[str, str]] = set()
 
         session.add(InventoryControlSnapshot(snapshot_at=observed, control_scope="global", maker_budget_usd=Decimal(str(settings.polymarket_maker_inventory_budget_usd)), taker_budget_usd=Decimal(str(settings.polymarket_taker_inventory_budget_usd)), maker_budget_used_usd=state.maker_budget_used_usd, taker_budget_used_usd=state.taker_budget_used_usd, reservation_price_shift_bps=ZERO, quote_skew_direction="none", no_quote=False, reason_code="inventory_budget_snapshot", details_json={"maker_budget_remaining_usd": _serialize_decimal(state.maker_budget_remaining_usd), "taker_budget_remaining_usd": _serialize_decimal(state.taker_budget_remaining_usd)}))
+        rows_inserted["inventory_controls"] += 1
+        session.add(InventoryControlSnapshot(snapshot_at=observed, strategy_family="maker", strategy_version_id=(int(maker_version.id) if maker_version is not None and maker_version.id is not None else None), control_scope="global", maker_budget_usd=Decimal(str(settings.polymarket_maker_inventory_budget_usd)), taker_budget_usd=Decimal(str(settings.polymarket_taker_inventory_budget_usd)), maker_budget_used_usd=state.maker_budget_used_usd, taker_budget_used_usd=state.taker_budget_used_usd, reservation_price_shift_bps=ZERO, quote_skew_direction="none", no_quote=False, reason_code="inventory_budget_snapshot", regime_label=maker_budget_decision["status"]["regime_label"], budget_metadata_json=maker_budget_metadata, details_json={"maker_budget_remaining_usd": _serialize_decimal(state.maker_budget_remaining_usd), "taker_budget_remaining_usd": _serialize_decimal(state.taker_budget_remaining_usd), "scope": "family"}))
         rows_inserted["inventory_controls"] += 1
 
         for quote in recent_quotes:
@@ -1418,10 +1555,17 @@ async def run_portfolio_optimizer(
             node = next((rollup.node for rollup in state.aggregate_rollups.values() if rollup.node.node_type == "asset" and rollup.node.condition_id == quote.condition_id and rollup.node.asset_id == quote.asset_id), None)
             if node is None:
                 continue
-            controls = _evaluate_control_for_asset(state, node=node, proposed_notional_usd=_to_decimal(quote.recommended_notional) or ZERO, direction_sign=_direction_sign(direction=quote.recommended_side, side=quote.recommended_side, outcome_name=node.label), context_kind="maker_quote", scope_kind="asset")
-            session.add(PortfolioOptimizerRecommendation(run_id=run.id, node_id=node.id, recommendation_type=controls["recommendation_type"], scope_kind="asset", condition_id=quote.condition_id, asset_id=quote.asset_id, target_size_cap_usd=controls["target_size_cap_usd"], inventory_penalty_bps=controls["inventory_penalty_bps"], reservation_price_adjustment_bps=controls["reservation_price_adjustment_bps"], maker_budget_remaining_usd=controls["maker_budget_remaining_usd"], taker_budget_remaining_usd=controls["taker_budget_remaining_usd"], reason_code=controls["reason_code"], observed_at_local=observed, details_json={"reason_codes": controls["reason_codes"], "quote_skew_direction": controls["quote_skew_direction"], "no_quote": controls["no_quote"], "asset_net_notional_usd": _serialize_decimal(controls["asset_net_notional_usd"]), "asset_hedged_fraction": _serialize_decimal(controls["asset_hedged_fraction"]), "quote_recommendation_id": str(quote.id)}))
+            controls = await compute_quote_inventory_controls(
+                session,
+                condition_id=quote.condition_id,
+                asset_id=quote.asset_id,
+                recommended_side=quote.recommended_side,
+                recommended_notional=_to_decimal(quote.recommended_notional) or ZERO,
+                snapshot_at=observed,
+            )
+            session.add(PortfolioOptimizerRecommendation(run_id=run.id, node_id=node.id, strategy_family=controls.get("strategy_family"), strategy_version_id=controls.get("strategy_version_id"), recommendation_type=controls["recommendation_type"], scope_kind="asset", condition_id=quote.condition_id, asset_id=quote.asset_id, target_size_cap_usd=controls["target_size_cap_usd"], inventory_penalty_bps=controls["inventory_penalty_bps"], reservation_price_adjustment_bps=controls["reservation_price_adjustment_bps"], maker_budget_remaining_usd=controls["maker_budget_remaining_usd"], taker_budget_remaining_usd=controls["taker_budget_remaining_usd"], reason_code=controls["reason_code"], regime_label=controls.get("regime_label"), budget_metadata_json=controls.get("budget_metadata_json"), observed_at_local=observed, details_json={"reason_codes": controls["reason_codes"], "quote_skew_direction": controls["quote_skew_direction"], "no_quote": controls["no_quote"], "asset_net_notional_usd": _serialize_decimal(controls["asset_net_notional_usd"]), "asset_hedged_fraction": _serialize_decimal(controls["asset_hedged_fraction"]), "quote_recommendation_id": str(quote.id)}))
             rows_inserted["recommendations"] += 1
-            session.add(InventoryControlSnapshot(snapshot_at=observed, condition_id=quote.condition_id, asset_id=quote.asset_id, control_scope="asset", maker_budget_usd=Decimal(str(settings.polymarket_maker_inventory_budget_usd)), taker_budget_usd=Decimal(str(settings.polymarket_taker_inventory_budget_usd)), maker_budget_used_usd=state.maker_budget_used_usd, taker_budget_used_usd=state.taker_budget_used_usd, reservation_price_shift_bps=controls["reservation_price_adjustment_bps"], quote_skew_direction=controls["quote_skew_direction"], no_quote=controls["no_quote"], reason_code=controls["reason_code"], details_json={"reason_codes": controls["reason_codes"], "target_size_cap_usd": _serialize_decimal(controls["target_size_cap_usd"])}))
+            session.add(InventoryControlSnapshot(snapshot_at=observed, condition_id=quote.condition_id, asset_id=quote.asset_id, strategy_family=controls.get("strategy_family"), strategy_version_id=controls.get("strategy_version_id"), control_scope="asset", maker_budget_usd=Decimal(str(settings.polymarket_maker_inventory_budget_usd)), taker_budget_usd=Decimal(str(settings.polymarket_taker_inventory_budget_usd)), maker_budget_used_usd=state.maker_budget_used_usd, taker_budget_used_usd=state.taker_budget_used_usd, reservation_price_shift_bps=controls["reservation_price_adjustment_bps"], quote_skew_direction=controls["quote_skew_direction"], no_quote=controls["no_quote"], reason_code=controls["reason_code"], regime_label=controls.get("regime_label"), budget_metadata_json=controls.get("budget_metadata_json"), details_json={"reason_codes": controls["reason_codes"], "target_size_cap_usd": _serialize_decimal(controls["target_size_cap_usd"])}))
             rows_inserted["inventory_controls"] += 1
             polymarket_risk_optimizer_recommendations.labels(recommendation_type=controls["recommendation_type"], reason_code=controls["reason_code"]).inc()
             if controls["recommendation_type"] in {"no_quote", "block"}:
@@ -1480,7 +1624,7 @@ async def fetch_polymarket_risk_graph_status(session: AsyncSession) -> dict[str,
     latest_optimizer_run = by_type.get(PORTFOLIO_OPTIMIZE_RUN_TYPE)
     latest_graph_run = by_type.get(GRAPH_BUILD_RUN_TYPE)
 
-    latest_success_snapshot = (await session.execute(select(PortfolioExposureSnapshot).join(RiskGraphRun, RiskGraphRun.id == PortfolioExposureSnapshot.run_id).where(PortfolioExposureSnapshot.exposure_kind == "aggregate", RiskGraphRun.run_type == EXPOSURE_SNAPSHOT_RUN_TYPE, RiskGraphRun.status == "completed").order_by(PortfolioExposureSnapshot.snapshot_at.desc(), PortfolioExposureSnapshot.id.desc()).limit(50))).scalars().all()
+    latest_success_snapshot = (await session.execute(select(PortfolioExposureSnapshot).join(RiskGraphRun, RiskGraphRun.id == PortfolioExposureSnapshot.run_id).where(PortfolioExposureSnapshot.exposure_kind == "aggregate", PortfolioExposureSnapshot.strategy_family.is_(None), RiskGraphRun.run_type == EXPOSURE_SNAPSHOT_RUN_TYPE, RiskGraphRun.status == "completed").order_by(PortfolioExposureSnapshot.snapshot_at.desc(), PortfolioExposureSnapshot.id.desc()).limit(50))).scalars().all()
     nodes = {row.id: row for row in (await session.execute(select(RiskGraphNode))).scalars().all()}
     concentrated_payload = []
     for row in sorted(latest_success_snapshot, key=lambda item: (_to_decimal(item.gross_notional_usd) or ZERO) * (ONE - (_to_decimal(item.hedged_fraction) or ZERO)), reverse=True):
@@ -1580,7 +1724,7 @@ async def lookup_risk_graph_edges(session: AsyncSession, *, edge_type: str | Non
     return payload
 
 
-async def list_portfolio_exposure_snapshots(session: AsyncSession, *, node_type: str | None = None, condition_id: str | None = None, asset_id: str | None = None, start: datetime | None = None, end: datetime | None = None, limit: int = 100) -> list[dict[str, Any]]:
+async def list_portfolio_exposure_snapshots(session: AsyncSession, *, node_type: str | None = None, condition_id: str | None = None, asset_id: str | None = None, strategy_family: str | None = None, strategy_version_id: int | None = None, start: datetime | None = None, end: datetime | None = None, limit: int = 100) -> list[dict[str, Any]]:
     query = select(PortfolioExposureSnapshot, RiskGraphNode).join(RiskGraphNode, RiskGraphNode.id == PortfolioExposureSnapshot.node_id)
     if node_type:
         query = query.where(RiskGraphNode.node_type == node_type)
@@ -1588,6 +1732,10 @@ async def list_portfolio_exposure_snapshots(session: AsyncSession, *, node_type:
         query = query.where(RiskGraphNode.condition_id == condition_id)
     if asset_id:
         query = query.where(RiskGraphNode.asset_id == asset_id)
+    if strategy_family:
+        query = query.where(PortfolioExposureSnapshot.strategy_family == strategy_family)
+    if strategy_version_id is not None:
+        query = query.where(PortfolioExposureSnapshot.strategy_version_id == strategy_version_id)
     if start is not None:
         query = query.where(PortfolioExposureSnapshot.snapshot_at >= _ensure_utc(start))
     if end is not None:
@@ -1596,7 +1744,7 @@ async def list_portfolio_exposure_snapshots(session: AsyncSession, *, node_type:
     return [_snapshot_payload(snapshot, node) for snapshot, node in rows]
 
 
-async def list_portfolio_optimizer_recommendations(session: AsyncSession, *, recommendation_type: str | None = None, reason_code: str | None = None, condition_id: str | None = None, asset_id: str | None = None, start: datetime | None = None, end: datetime | None = None, limit: int = 100) -> list[dict[str, Any]]:
+async def list_portfolio_optimizer_recommendations(session: AsyncSession, *, recommendation_type: str | None = None, reason_code: str | None = None, condition_id: str | None = None, asset_id: str | None = None, strategy_family: str | None = None, strategy_version_id: int | None = None, start: datetime | None = None, end: datetime | None = None, limit: int = 100) -> list[dict[str, Any]]:
     query = select(PortfolioOptimizerRecommendation, RiskGraphNode).join(RiskGraphNode, RiskGraphNode.id == PortfolioOptimizerRecommendation.node_id, isouter=True)
     if recommendation_type:
         query = query.where(PortfolioOptimizerRecommendation.recommendation_type == recommendation_type)
@@ -1606,6 +1754,10 @@ async def list_portfolio_optimizer_recommendations(session: AsyncSession, *, rec
         query = query.where(PortfolioOptimizerRecommendation.condition_id == condition_id)
     if asset_id:
         query = query.where(PortfolioOptimizerRecommendation.asset_id == asset_id)
+    if strategy_family:
+        query = query.where(PortfolioOptimizerRecommendation.strategy_family == strategy_family)
+    if strategy_version_id is not None:
+        query = query.where(PortfolioOptimizerRecommendation.strategy_version_id == strategy_version_id)
     if start is not None:
         query = query.where(PortfolioOptimizerRecommendation.observed_at_local >= _ensure_utc(start))
     if end is not None:
@@ -1614,12 +1766,16 @@ async def list_portfolio_optimizer_recommendations(session: AsyncSession, *, rec
     return [_optimizer_payload(recommendation, node) for recommendation, node in rows]
 
 
-async def list_inventory_control_snapshots(session: AsyncSession, *, condition_id: str | None = None, asset_id: str | None = None, start: datetime | None = None, end: datetime | None = None, limit: int = 100) -> list[dict[str, Any]]:
+async def list_inventory_control_snapshots(session: AsyncSession, *, condition_id: str | None = None, asset_id: str | None = None, strategy_family: str | None = None, strategy_version_id: int | None = None, start: datetime | None = None, end: datetime | None = None, limit: int = 100) -> list[dict[str, Any]]:
     query = select(InventoryControlSnapshot)
     if condition_id:
         query = query.where(InventoryControlSnapshot.condition_id == condition_id)
     if asset_id:
         query = query.where(InventoryControlSnapshot.asset_id == asset_id)
+    if strategy_family:
+        query = query.where(InventoryControlSnapshot.strategy_family == strategy_family)
+    if strategy_version_id is not None:
+        query = query.where(InventoryControlSnapshot.strategy_version_id == strategy_version_id)
     if start is not None:
         query = query.where(InventoryControlSnapshot.snapshot_at >= _ensure_utc(start))
     if end is not None:
@@ -1640,23 +1796,48 @@ async def assess_structure_plan_risk(session: AsyncSession, *, plan: MarketStruc
     if node is None:
         return None
     controls = _evaluate_control_for_asset(state, node=node, proposed_notional_usd=_to_decimal(plan.plan_notional_total) or ZERO, direction_sign=_direction_sign(direction=anchor_order.side, side=anchor_order.side, outcome_name=node.label), context_kind="structure_plan", scope_kind="market")
-    approved = controls["recommendation_type"] not in {"block", "no_quote"}
+    from app.strategies.registry import get_current_strategy_version
+
+    structure_version = await get_current_strategy_version(session, "structure", sync_registry=False)
+    budget_decision = await evaluate_budget_request(
+        session,
+        strategy_family="structure",
+        strategy_version_id=int(structure_version.id) if structure_version is not None and structure_version.id is not None else None,
+        requested_notional_usd=_to_decimal(plan.plan_notional_total) or ZERO,
+        allow_reduce=True,
+    )
+    approved = controls["recommendation_type"] not in {"block", "no_quote"} and budget_decision["action"] != "block"
+    approved_size = controls["target_size_cap_usd"] if approved else ZERO
+    if budget_decision["action"] == "reduce":
+        approved_size = min(approved_size, budget_decision["approved_notional_usd"])
     return {
         "approved": approved,
-        "approved_size_usd": controls["target_size_cap_usd"] if approved else ZERO,
-        "reason": controls["reason_code"] if not approved else "phase10_risk_allow",
-        "reason_code": "risk_shared_global_block" if not approved else "phase10_risk_allow",
+        "approved_size_usd": approved_size if approved else ZERO,
+        "reason": (
+            budget_decision["blocked_reason_code"]
+            if budget_decision["action"] == "block"
+            else controls["reason_code"] if not approved else "phase10_risk_allow"
+        ),
+        "reason_code": (
+            budget_decision["blocked_reason_code"]
+            if budget_decision["action"] == "block"
+            else "risk_shared_global_block" if not approved else "phase10_risk_allow"
+        ),
         "drawdown_active": False,
         "risk_mode": "graph",
         "risk_source": "risk_graph",
-        "risk_scope": "shared_global",
+        "risk_scope": "family_scoped" if budget_decision["action"] in {"block", "reduce"} else "shared_global",
         "original_reason_code": controls["reason_code"],
         "original_reason": controls["reason_code"],
+        "budget_metadata_json": {
+            "risk_budget_status": serialize_risk_budget_status(budget_decision["status"]),
+            "reason_codes": budget_decision["reason_codes"],
+        },
         "recommendation": controls,
     }
 
 
-async def assess_paper_trade_risk(session: AsyncSession, *, outcome_id: uuid.UUID, market_id: uuid.UUID, direction: str, proposed_notional_usd: Decimal) -> dict[str, Any] | None:
+async def assess_paper_trade_risk(session: AsyncSession, *, outcome_id: uuid.UUID, market_id: uuid.UUID, direction: str, proposed_notional_usd: Decimal, strategy_family: str = "default_strategy", strategy_version_id: int | None = None) -> dict[str, Any] | None:
     if not settings.polymarket_risk_graph_enabled:
         return None
     asset_dim = (await session.execute(select(PolymarketAssetDim).where(PolymarketAssetDim.outcome_id == outcome_id))).scalar_one_or_none()
@@ -1668,18 +1849,40 @@ async def assess_paper_trade_risk(session: AsyncSession, *, outcome_id: uuid.UUI
     if node is None:
         return None
     controls = _evaluate_control_for_asset(state, node=node, proposed_notional_usd=proposed_notional_usd, direction_sign=_direction_sign(direction=direction, side=direction, outcome_name=asset_dim.outcome_name if asset_dim is not None else node.label), context_kind="paper_trade", scope_kind="asset")
-    approved = controls["recommendation_type"] not in {"block", "no_quote"}
+    budget_decision = await evaluate_budget_request(
+        session,
+        strategy_family=strategy_family,
+        strategy_version_id=strategy_version_id,
+        requested_notional_usd=proposed_notional_usd,
+        allow_reduce=True,
+    )
+    approved = controls["recommendation_type"] not in {"block", "no_quote"} and budget_decision["action"] != "block"
+    approved_size = controls["target_size_cap_usd"] if approved else ZERO
+    if budget_decision["action"] == "reduce":
+        approved_size = min(approved_size, budget_decision["approved_notional_usd"])
     return {
         "approved": approved,
-        "approved_size_usd": controls["target_size_cap_usd"] if approved else ZERO,
-        "reason": controls["reason_code"] if not approved else "phase10_risk_allow",
-        "reason_code": "risk_shared_global_block" if not approved else "phase10_risk_allow",
+        "approved_size_usd": approved_size if approved else ZERO,
+        "reason": (
+            budget_decision["blocked_reason_code"]
+            if budget_decision["action"] == "block"
+            else controls["reason_code"] if not approved else "phase10_risk_allow"
+        ),
+        "reason_code": (
+            budget_decision["blocked_reason_code"]
+            if budget_decision["action"] == "block"
+            else "risk_shared_global_block" if not approved else "phase10_risk_allow"
+        ),
         "drawdown_active": False,
         "risk_mode": "graph",
         "risk_source": "risk_graph",
-        "risk_scope": "shared_global",
+        "risk_scope": "family_scoped" if budget_decision["action"] in {"block", "reduce"} else "shared_global",
         "original_reason_code": controls["reason_code"],
         "original_reason": controls["reason_code"],
+        "budget_metadata_json": {
+            "risk_budget_status": serialize_risk_budget_status(budget_decision["status"]),
+            "reason_codes": budget_decision["reason_codes"],
+        },
         "recommendation": controls,
     }
 

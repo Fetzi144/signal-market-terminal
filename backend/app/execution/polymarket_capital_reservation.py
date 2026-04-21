@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.execution.polymarket_live_state import compute_outstanding_reservations
 from app.models.polymarket_live_execution import CapitalReservation, LiveOrder
+from app.risk.budgets import evaluate_budget_request
 
 ZERO = Decimal("0")
 
@@ -63,6 +64,7 @@ class PolymarketCapitalReservationService:
         details: dict[str, Any] | None = None,
     ) -> tuple[bool, str | None, CapitalReservation | None]:
         requested_amount = reservation_amount_for_order(order)
+        budget_decision: dict[str, Any] | None = None
         if requested_amount <= ZERO:
             row = await self._append_row(
                 session,
@@ -77,8 +79,39 @@ class PolymarketCapitalReservationService:
                     "reason": "reservation_amount_zero",
                     **(details or {}),
                 },
+                regime_label=None,
+                budget_metadata_json=None,
             )
             return False, "reservation_amount_zero", row
+
+        strategy_family = str(order.strategy_family or "exec_policy").strip().lower()
+        budget_decision = await evaluate_budget_request(
+            session,
+            strategy_family=strategy_family,
+            strategy_version_id=int(order.strategy_version_id) if order.strategy_version_id is not None else None,
+            requested_notional_usd=requested_amount,
+            requested_open_orders_delta=0,
+            allow_reduce=False,
+        )
+        if not budget_decision["approved"]:
+            row = await self._append_row(
+                session,
+                order=order,
+                requested_amount=requested_amount,
+                reserved_amount=ZERO,
+                released_amount=ZERO,
+                open_amount=ZERO,
+                status="failed",
+                source_kind="intent",
+                details={
+                    "reason": budget_decision["blocked_reason_code"],
+                    "budget_reason_codes": budget_decision["reason_codes"],
+                    **(details or {}),
+                },
+                regime_label=budget_decision["status"].get("regime_label") if isinstance(budget_decision.get("status"), dict) else None,
+                budget_metadata_json=budget_decision.get("budget_metadata_json"),
+            )
+            return False, str(budget_decision["blocked_reason_code"] or "family_cap_exceeded"), row
 
         outstanding = await compute_outstanding_reservations(session)
         limit_value = Decimal(str(settings.polymarket_max_outstanding_notional_usd))
@@ -98,6 +131,8 @@ class PolymarketCapitalReservationService:
                     "limit": str(limit_value),
                     **(details or {}),
                 },
+                regime_label=budget_decision["status"].get("regime_label") if isinstance(budget_decision.get("status"), dict) else None,
+                budget_metadata_json=budget_decision.get("budget_metadata_json") if budget_decision is not None else None,
             )
             return False, "max_outstanding_notional_exceeded", row
 
@@ -111,6 +146,8 @@ class PolymarketCapitalReservationService:
             status="pending",
             source_kind="intent",
             details=details,
+            regime_label=budget_decision["status"].get("regime_label") if isinstance(budget_decision.get("status"), dict) else None,
+            budget_metadata_json=budget_decision.get("budget_metadata_json") if budget_decision is not None else None,
         )
         return True, None, row
 
@@ -134,6 +171,8 @@ class PolymarketCapitalReservationService:
             status="active" if open_amount > ZERO else "released",
             source_kind="submit_ack",
             details=details,
+            regime_label=latest.regime_label if latest is not None else None,
+            budget_metadata_json=latest.budget_metadata_json if latest is not None else None,
         )
 
     async def release_on_cancel(
@@ -157,6 +196,8 @@ class PolymarketCapitalReservationService:
             status="released",
             source_kind=source_kind,
             details=details,
+            regime_label=latest.regime_label,
+            budget_metadata_json=latest.budget_metadata_json,
         )
 
     async def apply_fill_update(
@@ -192,6 +233,8 @@ class PolymarketCapitalReservationService:
             status="released" if new_open <= ZERO else "active",
             source_kind=source_kind,
             details=details,
+            regime_label=latest.regime_label,
+            budget_metadata_json=latest.budget_metadata_json,
         )
 
     async def _append_row(
@@ -206,6 +249,8 @@ class PolymarketCapitalReservationService:
         status: str,
         source_kind: str,
         details: dict[str, Any] | None,
+        regime_label: str | None,
+        budget_metadata_json: dict[str, Any] | None,
     ) -> CapitalReservation:
         payload = {
             "live_order_id": str(order.id),
@@ -215,6 +260,10 @@ class PolymarketCapitalReservationService:
             "reserved_amount": str(reserved_amount),
             "released_amount": str(released_amount),
             "open_amount": str(open_amount),
+            "strategy_family": order.strategy_family,
+            "strategy_version_id": order.strategy_version_id,
+            "regime_label": regime_label,
+            "budget_metadata_json": _json_safe(budget_metadata_json or {}),
             "details": _json_safe(details or {}),
         }
         fingerprint = _stable_hash(payload)
@@ -237,6 +286,10 @@ class PolymarketCapitalReservationService:
             open_amount=open_amount,
             status=status,
             source_kind=source_kind,
+            strategy_family=order.strategy_family,
+            strategy_version_id=order.strategy_version_id,
+            regime_label=regime_label,
+            budget_metadata_json=_json_safe(budget_metadata_json or {}),
             details_json=_json_safe(details or {}),
             fingerprint=fingerprint,
         )

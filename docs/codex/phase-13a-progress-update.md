@@ -8,6 +8,8 @@ It does not replace [Phase 13 Proposal - Strategy Lifecycle, Promotion-Grade Evi
 
 Its purpose is to document what is now implemented in the repo so later milestones can stay aligned with the roadmap instead of reopening already-finished lifecycle groundwork.
 
+Phase 13A is now complete in the repo. The follow-on Milestone 3 slice for hard risk budgets and capital bounds has also landed on top of that lifecycle foundation, so the "next step" for roadmap planning is no longer budget enforcement itself; it is the bounded autonomy control-plane work that depends on those hard rails.
+
 ## Implemented In This Pass
 
 ### 1. Strategy registry and versioned lifecycle scaffolding
@@ -160,9 +162,9 @@ That is intentional. Phase 13A is the read-only lifecycle and evidence-integrity
 
 ## Suggested Next Step
 
-The next best step after Phase 13A is:
+The next best step after Phase 13A and the newly-landed Milestone 3 budget slice is:
 
-* move into the next roadmap milestone with hard risk budgets and capital bounds, starting with family-level capital and exposure policy that can block or narrow future autonomy widening honestly
+* move into Milestone 4 with the autonomous control plane and tiered rollout state machine, but keep it strictly bounded by the family-level capital, exposure, capacity, and regime-aware controls that are now enforced
 
 ## Validation Completed
 

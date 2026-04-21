@@ -63,6 +63,14 @@ const summaryPayload = {
       evaluation_kind: "pilot_readiness_gate",
     },
   },
+  active_family_budget: {
+    strategy_family: "exec_policy",
+    current_outstanding_usd: 25,
+    effective_outstanding_cap_usd: 75,
+    regime_label: "thin_liquidity",
+    capacity_status: "constrained",
+    reason_codes: ["capacity_ceiling_exceeded"],
+  },
   approvals: [
     {
       id: "order-1",
@@ -254,6 +262,10 @@ describe("PilotConsole", () => {
     expect(screen.getAllByText("observe").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Gate").length).toBeGreaterThan(0);
     expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
+    expect(screen.getByText("$25.00 / $75.00")).toBeInTheDocument();
+    expect(screen.getByText("thin_liquidity")).toBeInTheDocument();
+    expect(screen.getByText("constrained")).toBeInTheDocument();
+    expect(screen.getByText("capacity_ceiling_exceeded")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Arm" }));
     await waitFor(() => {

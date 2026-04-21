@@ -22,10 +22,14 @@ from app.models.market_structure import CrossVenueMarketLink
 from app.models.paper_trade import PaperTrade
 from app.models.polymarket_maker import PolymarketMakerEconomicsSnapshot, PolymarketQuoteRecommendation
 from app.models.polymarket_metadata import PolymarketAssetDim, PolymarketMarketDim
-from app.models.polymarket_risk import InventoryControlSnapshot, PortfolioOptimizerRecommendation, RiskGraphEdge, RiskGraphNode
+from app.models.polymarket_risk import RiskGraphEdge, RiskGraphNode
 from tests.conftest import make_signal
 from tests.test_polymarket_maker_economics import _maker_leg_context, _validated_opportunity
-from tests.test_structure_engine import _seed_executable_neg_risk_setup, _seed_generic_binary_market, _set_structure_defaults
+from tests.test_structure_engine import (
+    _seed_executable_neg_risk_setup,
+    _seed_generic_binary_market,
+    _set_structure_defaults,
+)
 
 
 def _session_factory(engine):
@@ -476,6 +480,15 @@ async def test_manual_risk_api_and_health_include_phase10(engine, client, monkey
             anchor_condition_id="phase10-api-anchor",
             basket_condition_id="phase10-api-basket",
         )
+        _market_dim, asset_dim, market = await _anchor_context(session, condition_id="phase10-api-anchor")
+        await _seed_paper_trade(
+            session,
+            market=market,
+            outcome_id=asset_dim.outcome_id,
+            direction="buy_yes",
+            size_usd="20.00",
+            entry_price="0.80",
+        )
         session.add(
             PolymarketQuoteRecommendation(
                 condition_id="phase10-api-anchor",
@@ -517,8 +530,17 @@ async def test_manual_risk_api_and_health_include_phase10(engine, client, monkey
     nodes_response = await client.get("/api/v1/ingest/polymarket/risk/nodes?node_type=asset")
     edges_response = await client.get("/api/v1/ingest/polymarket/risk/edges")
     snapshots_response = await client.get("/api/v1/ingest/polymarket/risk/exposure-snapshots?condition_id=phase10-api-anchor")
+    family_snapshots_response = await client.get(
+        "/api/v1/ingest/polymarket/risk/exposure-snapshots?condition_id=phase10-api-anchor&strategy_family=default_strategy"
+    )
     recommendations_response = await client.get("/api/v1/ingest/polymarket/risk/optimizer-recommendations?condition_id=phase10-api-anchor")
+    filtered_recommendations_response = await client.get(
+        "/api/v1/ingest/polymarket/risk/optimizer-recommendations?condition_id=phase10-api-anchor&strategy_family=maker"
+    )
     controls_response = await client.get("/api/v1/ingest/polymarket/risk/inventory-controls?condition_id=phase10-api-anchor")
+    filtered_controls_response = await client.get(
+        "/api/v1/ingest/polymarket/risk/inventory-controls?condition_id=phase10-api-anchor&strategy_family=maker"
+    )
     health_response = await client.get("/api/v1/health")
 
     assert status_response.status_code == 200
@@ -530,12 +552,27 @@ async def test_manual_risk_api_and_health_include_phase10(engine, client, monkey
     assert edges_response.json()["rows"]
     assert snapshots_response.status_code == 200
     assert snapshots_response.json()["rows"]
+    assert family_snapshots_response.status_code == 200
+    assert family_snapshots_response.json()["rows"]
+    assert all(row["strategy_family"] == "default_strategy" for row in family_snapshots_response.json()["rows"])
     assert recommendations_response.status_code == 200
     assert recommendations_response.json()["rows"]
+    assert any(row["strategy_family"] == "maker" for row in recommendations_response.json()["rows"])
+    assert filtered_recommendations_response.status_code == 200
+    assert filtered_recommendations_response.json()["rows"]
+    assert all(row["strategy_family"] == "maker" for row in filtered_recommendations_response.json()["rows"])
+    assert filtered_recommendations_response.json()["rows"][0]["budget_metadata_json"]["risk_budget_status"]["strategy_family"] == "maker"
     assert controls_response.status_code == 200
     assert controls_response.json()["rows"]
+    assert any(row["strategy_family"] == "maker" for row in controls_response.json()["rows"])
+    assert filtered_controls_response.status_code == 200
+    assert filtered_controls_response.json()["rows"]
+    assert all(row["strategy_family"] == "maker" for row in filtered_controls_response.json()["rows"])
+    assert filtered_controls_response.json()["rows"][0]["budget_metadata_json"]["risk_budget_status"]["strategy_family"] == "maker"
     assert health_response.status_code == 200
     phase10 = health_response.json()["polymarket_phase10"]
     assert phase10["enabled"] is True
     assert phase10["last_graph_build_status"] == "completed"
     assert phase10["last_optimizer_status"] == "completed"
+    family_rows = {row["family"]: row for row in health_response.json()["strategy_families"]}
+    assert family_rows["default_strategy"]["risk_budget_status"]["strategy_family"] == "default_strategy"

@@ -18,6 +18,7 @@ from app.execution.polymarket_control_plane import (
     get_active_pilot_config,
     get_open_pilot_run,
     is_restart_window_error,
+    pause_active_pilot,
     record_approval_event,
     record_submission_block,
     register_restart_pause,
@@ -35,8 +36,8 @@ from app.execution.polymarket_live_state import (
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
 from app.ingestion.polymarket_common import utcnow
 from app.metrics import (
-    polymarket_live_cancels,
     polymarket_live_cancel_failures,
+    polymarket_live_cancels,
     polymarket_live_order_intents_created,
     polymarket_live_submissions_attempted,
     polymarket_live_submissions_blocked,
@@ -53,11 +54,18 @@ from app.models.polymarket_metadata import (
 )
 from app.models.polymarket_reconstruction import PolymarketBookReconState
 from app.models.signal import Signal
+from app.risk.budgets import append_budget_demotion_event, record_budget_gate_evaluation
 from app.strategies.registry import get_current_strategy_version
 
 ZERO = Decimal("0")
 SIZE_Q = Decimal("0.0001")
 _pilot_evidence = PolymarketPilotEvidenceService()
+BUDGET_BREACH_REASON_CODES = {
+    "family_cap_exceeded",
+    "cluster_cap_exceeded",
+    "capacity_ceiling_exceeded",
+    "risk_of_ruin_exceeded",
+}
 
 
 def _json_safe(value: Any) -> Any:
@@ -105,6 +113,88 @@ class PolymarketOrderManager:
     ) -> None:
         self._gateway = gateway or PolymarketGateway()
         self._reservations = reservation_service or PolymarketCapitalReservationService()
+
+    async def _handle_budget_breach(
+        self,
+        session: AsyncSession,
+        *,
+        order: LiveOrder,
+        reason_code: str | None,
+        reservation_row,
+    ) -> None:
+        if reason_code not in BUDGET_BREACH_REASON_CODES:
+            return
+        budget_metadata = (
+            reservation_row.budget_metadata_json
+            if reservation_row is not None and isinstance(reservation_row.budget_metadata_json, dict)
+            else {}
+        )
+        status = budget_metadata.get("status") if isinstance(budget_metadata.get("status"), dict) else {}
+        summary = {
+            **status,
+            "breach": True,
+            "blocked_reason_code": reason_code,
+            "reason_codes": budget_metadata.get("reason_codes") or status.get("reason_codes") or [reason_code],
+            "live_order_id": str(order.id),
+        }
+        await record_budget_gate_evaluation(
+            session,
+            strategy_family=order.strategy_family or "exec_policy",
+            strategy_version_id=int(order.strategy_version_id) if order.strategy_version_id is not None else None,
+            reason_code=reason_code,
+            summary_json=summary,
+            observed_at=order.updated_at or order.created_at,
+        )
+        if status.get("risk_budget_policy", {}).get("breach_actions", {}).get("record_demotion", True):
+            await append_budget_demotion_event(
+                session,
+                strategy_family=order.strategy_family or "exec_policy",
+                strategy_version_id=int(order.strategy_version_id) if order.strategy_version_id is not None else None,
+                reason_code=reason_code,
+                details_json={
+                    "live_order_id": str(order.id),
+                    "client_order_id": order.client_order_id,
+                    "budget_metadata": budget_metadata,
+                },
+                observed_at=order.updated_at or order.created_at,
+            )
+        await _pilot_evidence.record_guardrail_event(
+            session,
+            strategy_family=order.strategy_family or "exec_policy",
+            guardrail_type="capital_budget_breach",
+            severity="error",
+            action_taken="block",
+            live_order=order,
+            trigger_value=budget_metadata.get("requested_notional_usd"),
+            threshold_value=(
+                status.get("effective_outstanding_cap_usd")
+                or status.get("effective_capacity_ceiling_usd")
+                or status.get("effective_max_order_notional_usd")
+            ),
+            details={
+                "reason_code": reason_code,
+                "budget_metadata": budget_metadata,
+            },
+        )
+        active_config = await get_active_pilot_config(session)
+        if active_config is None:
+            return
+        if str(active_config.strategy_family or "").strip().lower() != str(order.strategy_family or "").strip().lower():
+            return
+        live_action = status.get("risk_budget_policy", {}).get("breach_actions", {}).get("live")
+        if live_action == "pause_pilot":
+            await pause_active_pilot(
+                session,
+                reason=reason_code,
+                operator_identity="risk_budget_guardrail",
+                details={
+                    "live_order_id": str(order.id),
+                    "client_order_id": order.client_order_id,
+                    "budget_metadata": budget_metadata,
+                },
+                incident_type="risk_budget_breach",
+                live_order=order,
+            )
 
     async def create_order_intent(
         self,
@@ -205,7 +295,11 @@ class PolymarketOrderManager:
                 order=order,
                 source_kind="internal",
                 event_type="reservation_updated",
-                details={"reservation_id": reservation_row.id, "reservation_status": reservation_row.status},
+                details={
+                    "reservation_id": reservation_row.id,
+                    "reservation_status": reservation_row.status,
+                    "regime_label": reservation_row.regime_label,
+                },
             )
         if not reserved:
             order.status = "submit_blocked"
@@ -217,7 +311,21 @@ class PolymarketOrderManager:
                 source_kind="internal",
                 event_type="reservation_blocked",
                 new_status="submit_blocked",
-                details={"reason": reservation_reason},
+                details={
+                    "reason": reservation_reason,
+                    "reservation_id": reservation_row.id if reservation_row is not None else None,
+                    "budget_metadata": (
+                        reservation_row.budget_metadata_json
+                        if reservation_row is not None
+                        else None
+                    ),
+                },
+            )
+            await self._handle_budget_breach(
+                session,
+                order=order,
+                reason_code=reservation_reason,
+                reservation_row=reservation_row,
             )
             if reservation_reason == "max_outstanding_notional_exceeded":
                 await _pilot_evidence.record_guardrail_event(
@@ -350,6 +458,16 @@ class PolymarketOrderManager:
         if order.status in {"submitted", "live", "partially_filled", "matched", "mined", "confirmed"}:
             return serialize_live_order(order)
         if order.status in LIVE_ORDER_TERMINAL_STATUSES and order.status != "submit_blocked":
+            return serialize_live_order(order)
+        if order.status == "submit_blocked" and order.blocked_reason_code in (
+            BUDGET_BREACH_REASON_CODES | {"max_outstanding_notional_exceeded"}
+        ):
+            await record_submission_block(
+                session,
+                order=order,
+                reason=order.blocked_reason_code,
+                operator_identity=operator,
+            )
             return serialize_live_order(order)
 
         dynamic_block = await self._revalidate_submit_time(session, order=order)

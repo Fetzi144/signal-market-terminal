@@ -37,9 +37,9 @@ from app.metrics import (
     polymarket_maker_last_snapshot_timestamp,
     polymarket_maker_reward_history_rows,
     polymarket_maker_reward_states,
+    polymarket_quote_optimizer_last_recommendation_timestamp,
     polymarket_quote_recommendation_reason_codes,
     polymarket_quote_recommendations,
-    polymarket_quote_optimizer_last_recommendation_timestamp,
 )
 from app.models.market_structure import (
     MarketStructureOpportunity,
@@ -60,6 +60,7 @@ REWARD_SOURCE_KIND = "clob_reward_config"
 ESTIMATOR_VERSION = "phase9_maker_economics_v1"
 QUOTE_OPTIMIZER_VERSION = "phase9_quote_optimizer_v1"
 ACTIVE_REWARD_STATES = {"active", "eligible"}
+TEN_THOUSAND = Decimal("10000")
 BLOCKING_REASON_CODES = {
     "fee_history_disabled",
     "maker_economics_disabled",

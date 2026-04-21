@@ -9,12 +9,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
+from app.execution.polymarket_control_plane import arm_pilot, create_or_update_pilot_config
 from app.execution.polymarket_gateway import (
     GatewayCancelResult,
     GatewayOrderRequest,
     GatewaySubmitResult,
 )
-from app.execution.polymarket_control_plane import arm_pilot, create_or_update_pilot_config
 from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
 from app.execution.polymarket_live_state import (
     fetch_live_state_row,
@@ -644,6 +644,10 @@ async def test_reservations_block_oversubscription_and_release_on_cancel_and_fil
     assert third_order is not None
     assert third_order.filled_size == Decimal("80")
     assert third_reservation is not None
+    assert third_reservation.strategy_family == "exec_policy"
+    assert third_reservation.strategy_version_id is not None
+    assert third_reservation.regime_label is not None
+    assert isinstance(third_reservation.budget_metadata_json, dict)
     assert third_reservation.status == "released"
     assert third_reservation.open_amount == Decimal("0")
 

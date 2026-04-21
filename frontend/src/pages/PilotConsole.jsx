@@ -94,6 +94,7 @@ export default function PilotConsole() {
   const latestReadiness = evidence?.latest_readiness_report || readinessReports[0] || null;
   const activeStrategyVersion = summary?.pilot?.active_strategy_version || evidence?.strategy_version || null;
   const latestGate = evidence?.latest_promotion_evaluation || summary?.pilot?.latest_promotion_evaluation || latestReadiness?.latest_promotion_evaluation || null;
+  const activeFamilyBudget = summary?.active_family_budget || summary?.pilot?.active_family_budget || null;
 
   return (
     <div style={pageStyle}>
@@ -184,6 +185,20 @@ export default function PilotConsole() {
           <StatCard label="Shadow Breaches" value={shadow.breach_count_24h ?? 0} />
           <StatCard label="Daily Net P&L" value={formatCurrency(dailyRealized?.net_realized_pnl)} />
           <StatCard label="Readiness" value={latestReadiness?.status || "manual_only"} />
+          <StatCard
+            label="Budget Used"
+            value={
+              activeFamilyBudget
+                ? `${formatCurrency(activeFamilyBudget.current_outstanding_usd)} / ${formatCurrency(activeFamilyBudget.effective_outstanding_cap_usd)}`
+                : "-"
+            }
+          />
+          <StatCard label="Budget Regime" value={activeFamilyBudget?.regime_label || "-"} />
+          <StatCard label="Capacity Status" value={activeFamilyBudget?.capacity_status || "-"} />
+          <StatCard
+            label="Budget Gate"
+            value={latestGate?.evaluation_kind === "capital_budget_gate" ? latestGate?.evaluation_status || "-" : (activeFamilyBudget?.reason_codes || []).join(", ") || "-"}
+          />
         </div>
       </section>
 
@@ -253,7 +268,9 @@ export default function PilotConsole() {
               columns={["When", "Reason", "Order"]}
               rows={blocked.map((event) => ([
                 formatShortDateTime(event.observed_at_local),
-                event.details_json?.reason || "blocked",
+                event.details_json?.budget_metadata?.status?.reason_codes?.join(", ")
+                  || event.details_json?.reason
+                  || "blocked",
                 event.live_order_id || "-",
               ]))}
               emptyLabel="No recent blocked submissions."

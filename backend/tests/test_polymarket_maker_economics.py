@@ -14,8 +14,8 @@ from app.ingestion.polymarket_maker_economics import (
     insert_reward_history_if_changed,
     insert_token_fee_history_if_changed,
 )
-from app.models.polymarket_maker import PolymarketMakerEconomicsSnapshot
 from app.models.market_structure import MarketStructureOpportunityLeg
+from app.models.polymarket_maker import PolymarketMakerEconomicsSnapshot
 from app.models.polymarket_metadata import PolymarketAssetDim, PolymarketMarketDim
 from app.models.polymarket_microstructure import PolymarketPassiveFillLabel
 from tests.test_structure_engine import _seed_executable_neg_risk_setup, _set_structure_defaults
@@ -34,9 +34,10 @@ async def _validated_opportunity(client, *, event_slug: str) -> dict:
         "/api/v1/ingest/polymarket/structure/opportunities/scan",
         json={"reason": "manual", "event_slug": event_slug},
     )
+    scan_run = scan_response.json()
     validate_response = await client.post(
         "/api/v1/ingest/polymarket/structure/opportunities/validate",
-        json={"reason": "manual"},
+        json={"reason": "manual", "scan_run_id": scan_run["id"]},
     )
 
     assert build_response.status_code == 200

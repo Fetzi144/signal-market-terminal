@@ -24,8 +24,8 @@ from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
 from app.models.strategy_run import StrategyRun
 from app.paper_trading import portfolio_views as portfolio_views_module
-from app.paper_trading.reconciliation import hydrate_strategy_run_state
 from app.paper_trading import shadow_execution as shadow_execution_module
+from app.paper_trading.reconciliation import hydrate_strategy_run_state
 from app.paper_trading.strategy_run_state import (
     apply_trade_resolution_to_run,
     initialize_strategy_run_state,
@@ -61,6 +61,10 @@ REASON_LABELS = {
     "risk_local_invalid_size": "Local paper-book invalid size",
     "risk_local_rejected": "Local paper-book risk rejected",
     "risk_shared_global_block": "Shared/global platform risk blocked the trade",
+    "family_cap_exceeded": "Family capital envelope exceeded",
+    "cluster_cap_exceeded": "Cluster capital envelope exceeded",
+    "capacity_ceiling_exceeded": "Capacity ceiling exceeded",
+    "risk_of_ruin_exceeded": "Risk-of-ruin ceiling exceeded",
     "opened": "Trade opened",
 }
 
@@ -129,6 +133,10 @@ def _risk_reason_label(reason_code: str) -> str:
         "risk_entity_exposure": "Entity exposure cap reached",
         "risk_conversion_exposure": "Conversion group exposure cap reached",
         "risk_inventory_toxicity": "Inventory toxicity threshold reached",
+        "family_cap_exceeded": "Family capital envelope exceeded",
+        "cluster_cap_exceeded": "Cluster capital envelope exceeded",
+        "capacity_ceiling_exceeded": "Capacity ceiling exceeded",
+        "risk_of_ruin_exceeded": "Risk-of-ruin ceiling exceeded",
         "risk_rejected": "Risk rejected",
     }
     return labels.get(reason_code, reason_code.replace("_", " "))
@@ -868,6 +876,8 @@ async def build_execution_decision(
                 market_id=market_id,
                 direction=ideal_ev["direction"],
                 proposed_notional_usd=fill_capped_size_usd,
+                strategy_family=(strategy_run.strategy_family if strategy_run is not None and strategy_run.strategy_family else "default_strategy"),
+                strategy_version_id=(strategy_run.strategy_version_id if strategy_run is not None else None),
             )
             if risk_result is None:
                 risk_result = check_exposure(
@@ -1216,6 +1226,8 @@ async def build_execution_decision(
         market_id=market_id,
         direction=ideal_ev["direction"],
         proposed_notional_usd=fill_capped_size_usd,
+        strategy_family=(strategy_run.strategy_family if strategy_run is not None and strategy_run.strategy_family else "default_strategy"),
+        strategy_version_id=(strategy_run.strategy_version_id if strategy_run is not None else None),
     )
     if risk_result is None:
         risk_result = check_exposure(
@@ -1535,6 +1547,7 @@ async def _legacy_attempt_open_trade(
             detail=f"Signal already has an open paper trade ({existing_trade_id})",
         )
 
+    strategy_run = await _load_strategy_run(session, strategy_run_id=strategy_run_id)
     bankroll = Decimal(str(settings.default_bankroll))
 
     # Compute EV
@@ -1599,6 +1612,8 @@ async def _legacy_attempt_open_trade(
         market_id=market_id,
         direction=sizing["direction"],
         proposed_notional_usd=sizing["recommended_size_usd"],
+        strategy_family=(strategy_run.strategy_family if strategy_run is not None and strategy_run.strategy_family else "default_strategy"),
+        strategy_version_id=(strategy_run.strategy_version_id if strategy_run is not None else None),
     )
     if risk_result is None:
         risk_result = check_exposure(

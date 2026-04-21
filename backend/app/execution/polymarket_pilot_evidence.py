@@ -102,7 +102,11 @@ async def _strategy_lifecycle_maps(
     version_ids: list[int] | set[int] | tuple[int, ...],
 ) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
     version_map = await get_strategy_version_snapshot_map(session, version_ids=version_ids)
-    evaluation_map = await get_latest_promotion_evaluation_by_version(session, version_ids=version_ids)
+    evaluation_map = await get_latest_promotion_evaluation_by_version(
+        session,
+        version_ids=version_ids,
+        include_supporting=True,
+    )
     return version_map, evaluation_map
 
 

@@ -9,10 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.ingestion.polymarket_common import utcnow
-from app.strategies.registry import (
-    get_latest_promotion_evaluation_by_version,
-    get_strategy_version_snapshot_map,
-)
 from app.metrics import (
     polymarket_live_kill_switch,
     polymarket_live_last_reconcile_success_timestamp,
@@ -25,6 +21,11 @@ from app.models.polymarket_live_execution import (
     LiveOrder,
     LiveOrderEvent,
     PolymarketLiveState,
+)
+from app.risk.budgets import build_strategy_budget_status, serialize_risk_budget_status
+from app.strategies.registry import (
+    get_latest_promotion_evaluation_by_version,
+    get_strategy_version_snapshot_map,
 )
 
 LIVE_ORDER_TERMINAL_STATUSES = {
@@ -70,7 +71,11 @@ async def _strategy_lifecycle_maps(
     version_ids: list[int] | set[int] | tuple[int, ...],
 ) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
     version_map = await get_strategy_version_snapshot_map(session, version_ids=version_ids)
-    evaluation_map = await get_latest_promotion_evaluation_by_version(session, version_ids=version_ids)
+    evaluation_map = await get_latest_promotion_evaluation_by_version(
+        session,
+        version_ids=version_ids,
+        include_supporting=True,
+    )
     return version_map, evaluation_map
 
 
@@ -394,6 +399,8 @@ def serialize_capital_reservation(reservation: CapitalReservation) -> dict[str, 
         "live_order_id": str(reservation.live_order_id) if reservation.live_order_id is not None else None,
         "condition_id": reservation.condition_id,
         "asset_id": reservation.asset_id,
+        "strategy_family": reservation.strategy_family,
+        "strategy_version_id": reservation.strategy_version_id,
         "reservation_kind": reservation.reservation_kind,
         "requested_amount": _serialize_decimal(reservation.requested_amount),
         "reserved_amount": _serialize_decimal(reservation.reserved_amount),
@@ -401,6 +408,8 @@ def serialize_capital_reservation(reservation: CapitalReservation) -> dict[str, 
         "open_amount": _serialize_decimal(reservation.open_amount),
         "status": reservation.status,
         "source_kind": reservation.source_kind,
+        "regime_label": reservation.regime_label,
+        "budget_metadata_json": _json_safe(reservation.budget_metadata_json),
         "details_json": _json_safe(reservation.details_json),
         "observed_at_local": reservation.observed_at_local,
         "fingerprint": reservation.fingerprint,
@@ -532,6 +541,8 @@ async def list_current_reservations(
     *,
     asset_id: str | None = None,
     condition_id: str | None = None,
+    strategy_family: str | None = None,
+    strategy_version_id: int | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     query = select(CapitalReservation).order_by(
@@ -542,6 +553,10 @@ async def list_current_reservations(
         query = query.where(CapitalReservation.asset_id == asset_id)
     if condition_id:
         query = query.where(CapitalReservation.condition_id == condition_id)
+    if strategy_family:
+        query = query.where(CapitalReservation.strategy_family == strategy_family)
+    if strategy_version_id is not None:
+        query = query.where(CapitalReservation.strategy_version_id == strategy_version_id)
     rows = (await session.execute(query.limit(max(limit * 4, limit)))).scalars().all()
     latest_by_key: dict[str, CapitalReservation] = {}
     for row in rows:
@@ -599,6 +614,14 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
     kill_switch = effective_kill_switch_enabled(state)
     active_pilot = await get_active_pilot_config(session)
     active_pilot_run = await get_open_pilot_run(session, pilot_config_id=active_pilot.id) if active_pilot is not None else None
+    active_family_budget = None
+    if active_pilot is not None and active_pilot.strategy_family:
+        active_family_budget = serialize_risk_budget_status(
+            await build_strategy_budget_status(
+                session,
+                strategy_family=str(active_pilot.strategy_family).strip().lower(),
+            )
+        )
     polymarket_live_kill_switch.set(1 if kill_switch else 0)
     if state is not None and state.last_user_stream_message_at is not None:
         polymarket_live_last_user_stream_message_timestamp.set(state.last_user_stream_message_at.timestamp())
@@ -639,6 +662,7 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
         "outstanding_live_orders": outstanding_live_orders,
         "outstanding_reservations": float(outstanding_reservations),
         "recent_fills_24h": recent_fills_24h,
+        "active_family_budget": active_family_budget,
         "live_submission_permitted": (
             settings.polymarket_live_trading_enabled
             and not settings.polymarket_live_dry_run

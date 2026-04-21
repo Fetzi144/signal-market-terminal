@@ -35,8 +35,15 @@ from app.models.strategy_registry import (
     StrategyVersion,
 )
 from app.models.strategy_run import StrategyRun
+from app.risk.budgets import (
+    build_strategy_budget_status,
+    seed_builtin_risk_budget_policy,
+    serialize_risk_budget_policy,
+    serialize_risk_budget_status,
+)
 from app.strategies.promotion import (
     PRIMARY_PROMOTION_EVALUATION_KINDS,
+    PROMOTION_EVALUATION_KIND_CAPITAL_BUDGET,
     PROMOTION_EVALUATION_KIND_GUARDRAIL,
     PROMOTION_EVALUATION_KIND_INCIDENT,
     PROMOTION_EVALUATION_KIND_SCORECARD,
@@ -109,6 +116,16 @@ def _builtin_family_manifest() -> list[dict[str, Any]]:
         }
     )
     return manifest
+
+
+def _seed_version_config(family: str, config_json: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(config_json or {})
+    payload["risk_budget_policy"] = serialize_risk_budget_policy(
+        payload.get("risk_budget_policy")
+        if isinstance(payload.get("risk_budget_policy"), dict)
+        else seed_builtin_risk_budget_policy(family)
+    )
+    return payload
 
 
 def _version_seed_rows() -> list[dict[str, Any]]:
@@ -272,7 +289,7 @@ async def sync_strategy_registry(session: AsyncSession) -> dict[str, Any]:
         row.autonomy_tier = seed_row["autonomy_tier"]
         row.is_current = bool(seed_row["is_current"])
         row.is_frozen = bool(seed_row["is_frozen"])
-        row.config_json = seed_row.get("config_json")
+        row.config_json = _seed_version_config(seed_row["family"], seed_row.get("config_json"))
         row.provenance_json = seed_row.get("provenance_json")
         if existing is None:
             session.add(row)
@@ -1157,6 +1174,15 @@ async def get_strategy_version_detail_payload(
     latest_evaluation = (
         await get_latest_promotion_evaluation_by_version(session, version_ids=[int(version.id)])
     ).get(int(version.id))
+    risk_budget_status = None
+    if family is not None:
+        risk_budget_status = serialize_risk_budget_status(
+            await build_strategy_budget_status(
+                session,
+                strategy_family=family.family,
+                strategy_version_id=int(version.id),
+            )
+        )
     latest_demotion = (
         await session.execute(
             select(DemotionEvent)
@@ -1239,6 +1265,12 @@ async def get_strategy_version_detail_payload(
             evidence_counts=evidence_counts,
             evidence_alignment=alignment_by_version.get(int(version.id)),
             latest_promotion_evaluation=latest_evaluation,
+            risk_budget_policy=serialize_risk_budget_policy(
+                version.config_json.get("risk_budget_policy")
+                if isinstance(version.config_json, dict)
+                else None
+            ),
+            risk_budget_status=risk_budget_status,
         ),
         "latest_demotion_event": serialize_demotion_event(latest_demotion),
         "replay_runs": [_serialize_replay_alignment(row) for row in replay_rows],
@@ -1261,6 +1293,8 @@ def _serialize_strategy_version(
     evidence_counts: dict[int, dict[str, int]],
     evidence_alignment: dict[str, Any] | None = None,
     latest_promotion_evaluation: dict[str, Any] | None = None,
+    risk_budget_policy: dict[str, Any] | None = None,
+    risk_budget_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -1273,6 +1307,8 @@ def _serialize_strategy_version(
         "is_frozen": row.is_frozen,
         "config_json": row.config_json or {},
         "provenance_json": row.provenance_json or {},
+        "risk_budget_policy": risk_budget_policy,
+        "risk_budget_status": risk_budget_status,
         "latest_promotion_evaluation": latest_promotion_evaluation,
         "evidence_alignment": evidence_alignment,
         "evidence_counts": evidence_counts.get(
@@ -1339,6 +1375,7 @@ async def get_latest_promotion_evaluation_by_version(
         return {}
     evaluation_kinds = tuple(sorted(PRIMARY_PROMOTION_EVALUATION_KINDS if not include_supporting else {
         *PRIMARY_PROMOTION_EVALUATION_KINDS,
+        PROMOTION_EVALUATION_KIND_CAPITAL_BUDGET,
         PROMOTION_EVALUATION_KIND_SCORECARD,
         PROMOTION_EVALUATION_KIND_INCIDENT,
         PROMOTION_EVALUATION_KIND_GUARDRAIL,
@@ -1385,6 +1422,21 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
         session,
         version_ids=[int(row.id) for row in versions if row.id is not None],
     )
+    family_name_by_id = {int(row.id): row.family for row in families if row.id is not None}
+    budget_status_by_version: dict[int, dict[str, Any]] = {}
+    for version in versions:
+        if version.id is None:
+            continue
+        family_name = family_name_by_id.get(int(version.family_id))
+        if family_name is None:
+            continue
+        budget_status_by_version[int(version.id)] = serialize_risk_budget_status(
+            await build_strategy_budget_status(
+                session,
+                strategy_family=family_name,
+                strategy_version_id=int(version.id),
+            )
+        )
 
     policies = (
         await session.execute(
@@ -1421,6 +1473,12 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
                 evidence_counts=evidence_counts,
                 evidence_alignment=alignment_by_version.get(int(version.id)) if version.id is not None else None,
                 latest_promotion_evaluation=latest_evaluation_by_version.get(int(version.id)) if version.id is not None else None,
+                risk_budget_policy=serialize_risk_budget_policy(
+                    version.config_json.get("risk_budget_policy")
+                    if isinstance(version.config_json, dict)
+                    else None
+                ),
+                risk_budget_status=budget_status_by_version.get(int(version.id)) if version.id is not None else None,
             )
             for version in versions_by_family.get(family.id, [])
         ]

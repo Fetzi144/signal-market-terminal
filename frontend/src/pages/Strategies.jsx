@@ -113,11 +113,24 @@ function gateHistorySummary(evaluation) {
   if (evaluation?.evaluation_kind === "guardrail_gate") {
     return `${summary.guardrail_count_24h ?? 0} guardrails | Latest ${titleCase(summary.latest_guardrail_type)}`;
   }
+  if (evaluation?.evaluation_kind === "capital_budget_gate") {
+    return `${titleCase(summary.capacity_status)} | Regime ${titleCase(summary.regime_label)} | ${summary.reason_codes?.join(", ") || "No breach"}`;
+  }
   return "-";
 }
 
 function gateHistoryObservedAt(evaluation) {
   return evaluation?.evaluation_window_end || evaluation?.updated_at || evaluation?.created_at || null;
+}
+
+function budgetUsedHint(status) {
+  if (!status) return "-";
+  return `${fmtMetric(status.current_outstanding_usd)} / ${fmtMetric(status.effective_outstanding_cap_usd)} used`;
+}
+
+function budgetCapacityHint(status) {
+  if (!status) return "-";
+  return `Regime ${titleCase(status.regime_label)} | ${titleCase(status.capacity_status)}`;
 }
 
 function renderEmptySurface(label) {
@@ -557,7 +570,43 @@ export default function Strategies() {
                         value={versionDetail.gate_history?.length ?? 0}
                         hint="Primary and supporting gate snapshots"
                       />
+                      <MetricCard
+                        label="Budget Status"
+                        value={titleCase(versionDetail.version?.risk_budget_status?.capacity_status || "unknown")}
+                        hint={budgetUsedHint(versionDetail.version?.risk_budget_status)}
+                      />
+                      <MetricCard
+                        label="Budget Regime"
+                        value={titleCase(versionDetail.version?.risk_budget_status?.regime_label || "unknown")}
+                        hint={`Ruin ${titleCase(versionDetail.version?.risk_budget_status?.risk_of_ruin_label || "unknown")}`}
+                      />
                     </div>
+
+                    <div style={detailSectionGapStyle} />
+                    <SimpleTable
+                      columns={["Policy", "Value", "Status", "Hint"]}
+                      rows={[
+                        [
+                          "Outstanding Cap",
+                          fmtMetric(versionDetail.version?.risk_budget_status?.effective_outstanding_cap_usd),
+                          titleCase(versionDetail.version?.risk_budget_status?.capacity_status || "unknown"),
+                          `Current ${fmtMetric(versionDetail.version?.risk_budget_status?.current_outstanding_usd)}`,
+                        ],
+                        [
+                          "Capacity Ceiling",
+                          fmtMetric(versionDetail.version?.risk_budget_status?.effective_capacity_ceiling_usd),
+                          titleCase(versionDetail.version?.risk_budget_status?.regime_label || "unknown"),
+                          `Open orders ${versionDetail.version?.risk_budget_status?.open_order_count ?? 0} / ${versionDetail.version?.risk_budget_status?.effective_max_open_orders ?? "-"}`,
+                        ],
+                        [
+                          "Max Order",
+                          fmtMetric(versionDetail.version?.risk_budget_status?.effective_max_order_notional_usd),
+                          titleCase(versionDetail.version?.risk_budget_status?.risk_of_ruin_label || "unknown"),
+                          `Ruin score ${fmtMetric(versionDetail.version?.risk_budget_status?.risk_of_ruin_score, 3)}`,
+                        ],
+                      ]}
+                      emptyLabel="No risk budget policy linked to this version yet."
+                    />
 
                     <SimpleTable
                       columns={["Replay Run", "Status", "Window", "Scenarios", "Gate"]}
@@ -661,7 +710,7 @@ export default function Strategies() {
             ) : null}
 
             <SimpleTable
-              columns={["Version", "State", "Tier", "Frozen", "Evidence", "Updated"]}
+              columns={["Version", "State", "Tier", "Frozen", "Budget", "Evidence", "Updated"]}
               rows={family.versions.map((version) => ([
                 <div key={version.version_key}>
                   <div>{version.version_label}</div>
@@ -670,6 +719,10 @@ export default function Strategies() {
                 <Badge key={`${version.version_key}-state`} value={version.version_status} />,
                 <Badge key={`${version.version_key}-tier`} value={version.autonomy_tier} />,
                 version.is_frozen ? "Yes" : "No",
+                <div key={`${version.version_key}-budget`}>
+                  <div>{titleCase(version.risk_budget_status?.capacity_status || "unknown")}</div>
+                  <div style={subtleCellStyle}>{budgetCapacityHint(version.risk_budget_status)}</div>
+                </div>,
                 `${(version.evidence_counts.strategy_runs || 0)} run / ${(version.evidence_counts.paper_trades || 0)} paper / ${(version.evidence_counts.live_orders || 0)} live`,
                 fmtDate(version.updated_at),
               ]))}

@@ -408,6 +408,14 @@ export default function Health() {
                 </span>
               </div>
               <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>{family.description}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginTop: 10 }}>
+                <StatCard label="Current Version" value={family.current_version?.version_label || "-"} />
+                <StatCard label="Budget" value={formatBudgetEnvelope(family.risk_budget_status)} />
+                <StatCard label="Regime" value={formatContinuityStatus(family.risk_budget_status?.regime_label)} />
+                <StatCard label="Capacity" value={formatContinuityStatus(family.risk_budget_status?.capacity_status)} />
+                <StatCard label="Recent Breaches" value={(family.risk_budget_status?.reason_codes || []).length} />
+                <StatCard label="Open Orders" value={`${family.risk_budget_status?.open_order_count ?? 0} / ${family.risk_budget_status?.effective_max_open_orders ?? "-"}`} />
+              </div>
               {family.disabled_reason && (
                 <div style={{ fontSize: 11, color: "var(--yellow)", marginTop: 8 }}>{family.disabled_reason}</div>
               )}
@@ -922,7 +930,7 @@ export default function Health() {
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
             <div style={{ fontSize: 13, fontWeight: 600 }}>Phase 10 Risk Graph and Portfolio Optimizer</div>
             <div style={{ fontSize: 11, color: "var(--text-dim)" }}>
-              {riskGraph?.enabled ? "Enabled" : "Disabled"} | Advisory only | Live disabled {riskGraph?.live_disabled_by_default ? "yes" : "no"}
+              {riskGraph?.enabled ? "Enabled" : "Disabled"} | Family budgets now fail-closed where lifecycle policy exists | Live disabled {riskGraph?.live_disabled_by_default ? "yes" : "no"}
             </div>
           </div>
           <div
@@ -969,6 +977,14 @@ export default function Health() {
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Recent Blocks / No-Quote</div>
               <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
                 {formatActionMix(riskGraph?.recent_block_reason_counts_24h)}
+              </div>
+            </div>
+            <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Family Budget Pressure</div>
+              <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                {strategyFamilies.length
+                  ? strategyFamilies.map((row) => `${row.family}:${row.risk_budget_status?.capacity_status || "unknown"}:${row.risk_budget_status?.regime_label || "unknown"}`).join(" | ")
+                  : "-"}
               </div>
             </div>
           </div>
@@ -1467,6 +1483,11 @@ function formatActionMix(value) {
   return Object.entries(value)
     .map(([action, count]) => `${action}:${count}`)
     .join(" | ");
+}
+
+function formatBudgetEnvelope(status) {
+  if (!status) return "-";
+  return `${Number(status.current_outstanding_usd || 0).toFixed(2)} / ${Number(status.effective_outstanding_cap_usd || 0).toFixed(2)}`;
 }
 
 function formatFreshness(value) {

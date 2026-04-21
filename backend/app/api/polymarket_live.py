@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db import get_db
 from app.execution.polymarket_control_plane import (
     arm_pilot,
@@ -90,6 +91,7 @@ class PolymarketLiveStatusOut(BaseModel):
     outstanding_live_orders: int
     outstanding_reservations: float
     recent_fills_24h: int
+    active_family_budget: dict[str, Any] | None = None
     live_submission_permitted: bool
 
 
@@ -648,6 +650,8 @@ async def get_polymarket_live_fills(
 async def get_polymarket_live_reservations(
     asset_id: str | None = Query(default=None),
     condition_id: str | None = Query(default=None),
+    strategy_family: str | None = Query(default=None),
+    strategy_version_id: int | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
@@ -655,6 +659,8 @@ async def get_polymarket_live_reservations(
         db,
         asset_id=asset_id,
         condition_id=condition_id,
+        strategy_family=strategy_family,
+        strategy_version_id=strategy_version_id,
         limit=limit,
     )
     return RowsOut(rows=rows, limit=limit)

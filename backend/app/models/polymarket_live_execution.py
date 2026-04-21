@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
@@ -19,6 +20,9 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+if TYPE_CHECKING:
+    from app.models.execution_decision import ExecutionDecision
 
 
 def _utcnow() -> datetime:
@@ -334,6 +338,11 @@ class CapitalReservation(Base):
         UUID(as_uuid=True),
         ForeignKey("live_orders.id", ondelete="SET NULL"),
     )
+    strategy_family: Mapped[str | None] = mapped_column(String(32))
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     condition_id: Mapped[str | None] = mapped_column(String(255))
     asset_id: Mapped[str | None] = mapped_column(String(255))
     reservation_kind: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -343,6 +352,8 @@ class CapitalReservation(Base):
     open_amount: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    regime_label: Mapped[str | None] = mapped_column(String(32))
+    budget_metadata_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     details_json: Mapped[dict | list | str | None] = mapped_column(JSONB)
     observed_at_local: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_utcnow)
     fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -353,6 +364,8 @@ class CapitalReservation(Base):
     __table_args__ = (
         UniqueConstraint("fingerprint", name="uq_capital_reservations_fingerprint"),
         Index("ix_capital_reservations_live_order_observed", "live_order_id", "observed_at_local"),
+        Index("ix_capital_reservations_strategy_observed", "strategy_family", "observed_at_local"),
+        Index("ix_capital_reservations_strategy_version_observed", "strategy_version_id", "observed_at_local"),
         Index("ix_capital_reservations_condition_observed", "condition_id", "observed_at_local"),
         Index("ix_capital_reservations_status_observed", "status", "observed_at_local"),
     )

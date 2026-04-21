@@ -28,6 +28,7 @@ from app.models.market import Market
 from app.models.scheduler_lease import SchedulerLease
 from app.models.signal import Signal, SignalEvaluation
 from app.paper_trading.analysis import get_overdue_open_trade_count
+from app.risk.budgets import build_family_budget_summaries
 from app.strategy_families import build_strategy_family_reviews
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
@@ -327,6 +328,9 @@ class StrategyFamilyReviewOut(BaseModel):
     primary_surface: str
     description: str
     disabled_reason: str | None = None
+    current_version: dict[str, Any] | None = None
+    risk_budget_policy: dict[str, Any] | None = None
+    risk_budget_status: dict[str, Any] | None = None
 
 
 class SchedulerLeaseStatus(BaseModel):
@@ -682,7 +686,20 @@ async def health(db: AsyncSession = Depends(get_db)):
         ).scalar()
         or 0
     )
-    strategy_families = build_strategy_family_reviews()
+    strategy_family_reviews = build_strategy_family_reviews()
+    budget_summary_by_family = {
+        row["family"]: row
+        for row in await build_family_budget_summaries(db)
+    }
+    strategy_families = [
+        {
+            **row,
+            "current_version": budget_summary_by_family.get(row["family"], {}).get("current_version"),
+            "risk_budget_policy": budget_summary_by_family.get(row["family"], {}).get("risk_budget_policy"),
+            "risk_budget_status": budget_summary_by_family.get(row["family"], {}).get("risk_budget_status"),
+        }
+        for row in strategy_family_reviews
+    ]
     scheduler_lease_status = _build_scheduler_lease_status(
         now=now,
         scheduler_lease=scheduler_lease,

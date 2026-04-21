@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import Any
 
@@ -112,6 +111,8 @@ async def get_exposure_snapshots(
     node_type: str | None = Query(default=None),
     condition_id: str | None = Query(default=None),
     asset_id: str | None = Query(default=None),
+    strategy_family: str | None = Query(default=None),
+    strategy_version_id: int | None = Query(default=None),
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -122,6 +123,8 @@ async def get_exposure_snapshots(
         node_type=node_type,
         condition_id=condition_id,
         asset_id=asset_id,
+        strategy_family=strategy_family,
+        strategy_version_id=strategy_version_id,
         start=start,
         end=end,
         limit=limit,
@@ -135,6 +138,8 @@ async def get_optimizer_recommendations(
     reason_code: str | None = Query(default=None),
     condition_id: str | None = Query(default=None),
     asset_id: str | None = Query(default=None),
+    strategy_family: str | None = Query(default=None),
+    strategy_version_id: int | None = Query(default=None),
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -146,6 +151,8 @@ async def get_optimizer_recommendations(
         reason_code=reason_code,
         condition_id=condition_id,
         asset_id=asset_id,
+        strategy_family=strategy_family,
+        strategy_version_id=strategy_version_id,
         start=start,
         end=end,
         limit=limit,
@@ -157,6 +164,8 @@ async def get_optimizer_recommendations(
 async def get_inventory_controls(
     condition_id: str | None = Query(default=None),
     asset_id: str | None = Query(default=None),
+    strategy_family: str | None = Query(default=None),
+    strategy_version_id: int | None = Query(default=None),
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
@@ -166,6 +175,8 @@ async def get_inventory_controls(
         db,
         condition_id=condition_id,
         asset_id=asset_id,
+        strategy_family=strategy_family,
+        strategy_version_id=strategy_version_id,
         start=start,
         end=end,
         limit=limit,

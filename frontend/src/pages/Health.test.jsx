@@ -341,6 +341,21 @@ const healthPayload = {
       primary_surface: "paper_trading",
       description: "Frozen confluence benchmark used to prove or falsify edge honestly.",
       disabled_reason: null,
+      current_version: {
+        version_label: "Frozen Benchmark v1",
+      },
+      risk_budget_policy: {
+        capital: { outstanding_notional_usd: 100.0 },
+      },
+      risk_budget_status: {
+        current_outstanding_usd: 25.0,
+        effective_outstanding_cap_usd: 100.0,
+        regime_label: "thin_liquidity",
+        capacity_status: "constrained",
+        reason_codes: ["incident_pressure", "capacity_ceiling_exceeded"],
+        open_order_count: 1,
+        effective_max_open_orders: 12,
+      },
     },
     {
       family: "cross_venue_basis",
@@ -351,6 +366,21 @@ const healthPayload = {
       primary_surface: "structure",
       description: "Cross-venue spread research stays informational until paired executable hedge routing exists.",
       disabled_reason: "Paired executable hedge routing is not implemented yet.",
+      current_version: {
+        version_label: "Cross-Venue Basis Disabled v1",
+      },
+      risk_budget_policy: {
+        capital: { outstanding_notional_usd: 0.0 },
+      },
+      risk_budget_status: {
+        current_outstanding_usd: 0.0,
+        effective_outstanding_cap_usd: 0.0,
+        regime_label: "halted",
+        capacity_status: "breached",
+        reason_codes: ["capacity_ceiling_exceeded"],
+        open_order_count: 0,
+        effective_max_open_orders: 0,
+      },
     },
   ],
 };
@@ -838,6 +868,10 @@ describe("Health", () => {
     expect(screen.getByText("2 overdue open trade(s) remain past market end.")).toBeInTheDocument();
     expect(screen.getByText("Strategy Families")).toBeInTheDocument();
     expect(screen.getByText("Cross-Venue Basis")).toBeInTheDocument();
+    expect(screen.getByText("Frozen Benchmark v1")).toBeInTheDocument();
+    expect(screen.getByText("25.00 / 100.00")).toBeInTheDocument();
+    expect(screen.getAllByText("thin liquidity").length).toBeGreaterThan(0);
+    expect(screen.getByText(/default_strategy:constrained:thin_liquidity/)).toBeInTheDocument();
     expect(screen.getByText("Paired executable hedge routing is not implemented yet.")).toBeInTheDocument();
     expect(screen.getAllByText(/Live disabled/).length).toBeGreaterThan(0);
     expect(screen.getByText(/cross_now:2/)).toBeInTheDocument();

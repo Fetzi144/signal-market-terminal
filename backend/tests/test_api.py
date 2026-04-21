@@ -33,6 +33,10 @@ async def test_health_endpoint(client):
     assert "default_strategy_runtime" in data
     assert "runtime_invariants" in data
     assert "strategy_families" in data
+    assert any(row["family"] == "default_strategy" for row in data["strategy_families"])
+    default_family = next(row for row in data["strategy_families"] if row["family"] == "default_strategy")
+    assert default_family["risk_budget_status"] is not None
+    assert default_family["risk_budget_policy"] is not None
 
 
 @pytest.mark.asyncio
@@ -158,8 +162,11 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert families["default_strategy"]["current_version"]["version_status"] == "benchmark"
     assert families["default_strategy"]["current_version"]["evidence_counts"]["strategy_runs"] >= 1
     assert families["default_strategy"]["current_version"]["evidence_alignment"]["surface_status"] == "registry_only"
+    assert families["default_strategy"]["current_version"]["risk_budget_policy"]["capital"]["outstanding_notional_usd"] is not None
+    assert families["default_strategy"]["current_version"]["risk_budget_status"]["capacity_status"] == "narrowed"
     assert families["exec_policy"]["family_kind"] == "infrastructure"
     assert families["exec_policy"]["current_version"]["autonomy_tier"] == "assisted_live"
+    assert families["exec_policy"]["current_version"]["risk_budget_status"]["strategy_family"] == "exec_policy"
     assert data["gate_policies"][0]["policy_key"] == "promotion_gate_policy_v1"
 
     detail_response = await client.get(f"/api/v1/strategies/versions/{families['default_strategy']['current_version']['id']}")
@@ -167,6 +174,8 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     detail_payload = detail_response.json()
     assert detail_payload["version"]["version_key"] == "default_strategy_benchmark_v1"
     assert detail_payload["family"]["family"] == "default_strategy"
+    assert detail_payload["version"]["risk_budget_policy"]["capacity"]["max_open_orders"] == 12
+    assert detail_payload["version"]["risk_budget_status"]["strategy_family"] == "default_strategy"
     assert detail_payload["replay_runs"] == []
     assert detail_payload["live_shadow_evaluations"] == []
     assert detail_payload["gate_history"] == []
