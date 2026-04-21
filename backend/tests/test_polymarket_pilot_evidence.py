@@ -430,5 +430,8 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert scorecards_response.json()["rows"]
     assert guardrails_response.json()["rows"]
     assert readiness_response.json()["rows"]
+    assert scorecards_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert readiness_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert readiness_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
     assert health_response.json()["polymarket_phase12"]["daily_realized_pnl"]["net_realized_pnl"] is not None
     assert "recent_guardrail_triggers" in health_response.json()["polymarket_phase12"]

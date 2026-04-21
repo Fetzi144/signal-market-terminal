@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.ingestion.polymarket_common import utcnow
+from app.strategies.registry import (
+    get_latest_promotion_evaluation_by_version,
+    get_strategy_version_snapshot_map,
+)
 from app.metrics import (
     polymarket_live_kill_switch,
     polymarket_live_last_reconcile_success_timestamp,
@@ -58,6 +62,16 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(inner) for inner in value]
     return value
+
+
+async def _strategy_lifecycle_maps(
+    session: AsyncSession,
+    *,
+    version_ids: list[int] | set[int] | tuple[int, ...],
+) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
+    version_map = await get_strategy_version_snapshot_map(session, version_ids=version_ids)
+    evaluation_map = await get_latest_promotion_evaluation_by_version(session, version_ids=version_ids)
+    return version_map, evaluation_map
 
 
 async def fetch_live_state_row(session: AsyncSession) -> PolymarketLiveState | None:
@@ -199,7 +213,12 @@ async def mark_reconcile_finished(
     return state
 
 
-def serialize_live_order(order: LiveOrder) -> dict[str, Any]:
+def serialize_live_order(
+    order: LiveOrder,
+    *,
+    strategy_version: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": str(order.id),
         "execution_decision_id": str(order.execution_decision_id) if order.execution_decision_id is not None else None,
@@ -224,6 +243,9 @@ def serialize_live_order(order: LiveOrder) -> dict[str, Any]:
         "status": order.status,
         "dry_run": order.dry_run,
         "strategy_family": order.strategy_family,
+        "strategy_version_id": order.strategy_version_id,
+        "strategy_version": strategy_version,
+        "latest_promotion_evaluation": latest_promotion_evaluation,
         "pilot_config_id": order.pilot_config_id,
         "pilot_run_id": str(order.pilot_run_id) if order.pilot_run_id is not None else None,
         "manual_approval_required": order.manual_approval_required,
@@ -247,10 +269,20 @@ def serialize_live_order(order: LiveOrder) -> dict[str, Any]:
     }
 
 
-def serialize_live_order_event(event: LiveOrderEvent) -> dict[str, Any]:
+def serialize_live_order_event(
+    event: LiveOrderEvent,
+    *,
+    live_order: LiveOrder | None = None,
+    strategy_version: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": event.id,
         "live_order_id": str(event.live_order_id),
+        "strategy_family": live_order.strategy_family if live_order is not None else None,
+        "strategy_version_id": live_order.strategy_version_id if live_order is not None else None,
+        "strategy_version": strategy_version,
+        "latest_promotion_evaluation": latest_promotion_evaluation,
         "raw_user_event_id": event.raw_user_event_id,
         "source_kind": event.source_kind,
         "event_type": event.event_type,
@@ -264,7 +296,13 @@ def serialize_live_order_event(event: LiveOrderEvent) -> dict[str, Any]:
     }
 
 
-def serialize_live_fill(fill: LiveFill) -> dict[str, Any]:
+def serialize_live_fill(
+    fill: LiveFill,
+    *,
+    live_order: LiveOrder | None = None,
+    strategy_version: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": fill.id,
         "live_order_id": str(fill.live_order_id) if fill.live_order_id is not None else None,
@@ -279,6 +317,10 @@ def serialize_live_fill(fill: LiveFill) -> dict[str, Any]:
         "fee_paid": _serialize_decimal(fill.fee_paid),
         "fee_currency": fill.fee_currency,
         "maker_taker": fill.maker_taker,
+        "strategy_family": live_order.strategy_family if live_order is not None else None,
+        "strategy_version_id": live_order.strategy_version_id if live_order is not None else None,
+        "strategy_version": strategy_version,
+        "latest_promotion_evaluation": latest_promotion_evaluation,
         "event_ts_exchange": fill.event_ts_exchange,
         "observed_at_local": fill.observed_at_local,
         "raw_user_event_id": fill.raw_user_event_id,
@@ -286,6 +328,64 @@ def serialize_live_fill(fill: LiveFill) -> dict[str, Any]:
         "fingerprint": fill.fingerprint,
         "created_at": fill.created_at,
     }
+
+
+async def serialize_live_orders_with_lifecycle(
+    session: AsyncSession,
+    rows: list[LiveOrder],
+) -> list[dict[str, Any]]:
+    version_ids = {int(row.strategy_version_id) for row in rows if row.strategy_version_id is not None}
+    version_map, evaluation_map = await _strategy_lifecycle_maps(session, version_ids=version_ids)
+    return [
+        serialize_live_order(
+            row,
+            strategy_version=version_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+            latest_promotion_evaluation=evaluation_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+        )
+        for row in rows
+    ]
+
+
+async def serialize_live_order_events_with_lifecycle(
+    session: AsyncSession,
+    rows: list[tuple[LiveOrderEvent, LiveOrder | None]],
+) -> list[dict[str, Any]]:
+    version_ids = {
+        int(order.strategy_version_id)
+        for _event, order in rows
+        if order is not None and order.strategy_version_id is not None
+    }
+    version_map, evaluation_map = await _strategy_lifecycle_maps(session, version_ids=version_ids)
+    return [
+        serialize_live_order_event(
+            event,
+            live_order=order,
+            strategy_version=version_map.get(int(order.strategy_version_id)) if order is not None and order.strategy_version_id is not None else None,
+            latest_promotion_evaluation=evaluation_map.get(int(order.strategy_version_id)) if order is not None and order.strategy_version_id is not None else None,
+        )
+        for event, order in rows
+    ]
+
+
+async def serialize_live_fills_with_lifecycle(
+    session: AsyncSession,
+    rows: list[tuple[LiveFill, LiveOrder | None]],
+) -> list[dict[str, Any]]:
+    version_ids = {
+        int(order.strategy_version_id)
+        for _fill, order in rows
+        if order is not None and order.strategy_version_id is not None
+    }
+    version_map, evaluation_map = await _strategy_lifecycle_maps(session, version_ids=version_ids)
+    return [
+        serialize_live_fill(
+            fill,
+            live_order=order,
+            strategy_version=version_map.get(int(order.strategy_version_id)) if order is not None and order.strategy_version_id is not None else None,
+            latest_promotion_evaluation=evaluation_map.get(int(order.strategy_version_id)) if order is not None and order.strategy_version_id is not None else None,
+        )
+        for fill, order in rows
+    ]
 
 
 def serialize_capital_reservation(reservation: CapitalReservation) -> dict[str, Any]:
@@ -341,8 +441,8 @@ async def list_live_orders(
         query = query.where(LiveOrder.created_at >= _ensure_utc(start))
     if end is not None:
         query = query.where(LiveOrder.created_at <= _ensure_utc(end))
-    result = await session.execute(query.limit(limit))
-    return [serialize_live_order(row) for row in result.scalars().all()]
+    rows = (await session.execute(query.limit(limit))).scalars().all()
+    return await serialize_live_orders_with_lifecycle(session, rows)
 
 
 async def list_live_order_events(
@@ -360,7 +460,7 @@ async def list_live_order_events(
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     query = (
-        select(LiveOrderEvent)
+        select(LiveOrderEvent, LiveOrder)
         .join(LiveOrder, LiveOrder.id == LiveOrderEvent.live_order_id)
         .order_by(LiveOrderEvent.observed_at_local.desc(), LiveOrderEvent.id.desc())
     )
@@ -382,8 +482,8 @@ async def list_live_order_events(
         query = query.where(LiveOrderEvent.observed_at_local >= _ensure_utc(start))
     if end is not None:
         query = query.where(LiveOrderEvent.observed_at_local <= _ensure_utc(end))
-    result = await session.execute(query.limit(limit))
-    return [serialize_live_order_event(row) for row in result.scalars().all()]
+    rows = (await session.execute(query.limit(limit))).all()
+    return await serialize_live_order_events_with_lifecycle(session, rows)
 
 
 async def list_live_fills(
@@ -400,29 +500,31 @@ async def list_live_fills(
     end: datetime | None = None,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
-    query = select(LiveFill).order_by(LiveFill.observed_at_local.desc(), LiveFill.id.desc())
+    query = (
+        select(LiveFill, LiveOrder)
+        .join(LiveOrder, LiveOrder.id == LiveFill.live_order_id, isouter=True)
+        .order_by(LiveFill.observed_at_local.desc(), LiveFill.id.desc())
+    )
     if asset_id:
         query = query.where(LiveFill.asset_id == asset_id)
     if condition_id:
         query = query.where(LiveFill.condition_id == condition_id)
     if status:
         query = query.where(LiveFill.fill_status == status)
-    if client_order_id or venue_order_id or strategy_family or approval_state:
-        query = query.join(LiveOrder, LiveOrder.id == LiveFill.live_order_id)
-        if client_order_id:
-            query = query.where(LiveOrder.client_order_id == client_order_id)
-        if venue_order_id:
-            query = query.where(LiveOrder.venue_order_id == venue_order_id)
-        if strategy_family:
-            query = query.where(LiveOrder.strategy_family == strategy_family)
-        if approval_state:
-            query = query.where(LiveOrder.approval_state == approval_state)
+    if client_order_id:
+        query = query.where(LiveOrder.client_order_id == client_order_id)
+    if venue_order_id:
+        query = query.where(LiveOrder.venue_order_id == venue_order_id)
+    if strategy_family:
+        query = query.where(LiveOrder.strategy_family == strategy_family)
+    if approval_state:
+        query = query.where(LiveOrder.approval_state == approval_state)
     if start is not None:
         query = query.where(LiveFill.observed_at_local >= _ensure_utc(start))
     if end is not None:
         query = query.where(LiveFill.observed_at_local <= _ensure_utc(end))
-    result = await session.execute(query.limit(limit))
-    return [serialize_live_fill(row) for row in result.scalars().all()]
+    rows = (await session.execute(query.limit(limit))).all()
+    return await serialize_live_fills_with_lifecycle(session, rows)
 
 
 async def list_current_reservations(

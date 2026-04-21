@@ -73,6 +73,19 @@ Current behavior:
 
 This keeps replay inside the same lifecycle contract as live readiness evidence without widening autonomy.
 
+### 6. Live API lifecycle metadata exposure
+
+The current live and pilot evidence APIs now expose version and gate metadata directly instead of requiring the operator to cross-reference the registry page manually.
+
+Current behavior:
+
+* live orders, live fills, and live order events now carry `strategy_version` snapshots and the latest version-scoped promotion evaluation when available
+* pilot status now exposes the active strategy version and latest gate verdict for the active family
+* scorecards and readiness reports now return lifecycle metadata alongside the evidence artifact itself
+* the Pilot Console now shows the current lifecycle version and gate verdict while remaining a supervised operator surface
+
+This is still read-only lifecycle surfacing. It does not change submit modes or widen autonomy.
+
 ## What This Still Does Not Do
 
 The repo is still not widening autonomy here.
@@ -99,7 +112,7 @@ After that, the next milestone-ready step is:
 
 After this pass, the next best step becomes:
 
-* expose version and gate metadata more broadly across the live APIs so replay and live evidence can be compared from both directions
+* add a narrower cross-surface comparison view that lines up replay, live shadow, scorecards, and readiness artifacts for the same strategy version
 
 ## Validation Completed
 

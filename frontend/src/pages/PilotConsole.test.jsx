@@ -51,6 +51,17 @@ const summaryPayload = {
       id: "run-1",
       status: "armed",
     },
+    active_strategy_version: {
+      id: 2,
+      version_key: "exec_policy_infra_v1",
+      version_label: "Execution Policy Infra v1",
+      version_status: "promoted",
+    },
+    latest_promotion_evaluation: {
+      id: 22,
+      evaluation_status: "observe",
+      evaluation_kind: "pilot_readiness_gate",
+    },
   },
   approvals: [
     {
@@ -75,6 +86,10 @@ const summaryPayload = {
     {
       id: "order-1",
       client_order_id: "client-1",
+      strategy_version: {
+        version_key: "exec_policy_infra_v1",
+        version_label: "Execution Policy Infra v1",
+      },
       status: "approval_pending",
       approval_state: "queued",
       requested_size: "25",
@@ -108,6 +123,17 @@ const summaryPayload = {
   evidence_summary: {
     approval_expired_count_24h: 1,
     daily_realized_pnl: { net_realized_pnl: -2.5 },
+    strategy_version: {
+      id: 2,
+      version_key: "exec_policy_infra_v1",
+      version_label: "Execution Policy Infra v1",
+      version_status: "promoted",
+    },
+    latest_promotion_evaluation: {
+      id: 22,
+      evaluation_status: "observe",
+      evaluation_kind: "pilot_readiness_gate",
+    },
     live_shadow_summary: {
       average_gap_bps_24h: 4.2,
       worst_gap_bps_24h: 9.8,
@@ -116,6 +142,13 @@ const summaryPayload = {
     latest_readiness_report: {
       status: "manual_only",
       generated_at: "2026-04-15T10:04:00Z",
+      strategy_version: {
+        version_key: "exec_policy_infra_v1",
+        version_label: "Execution Policy Infra v1",
+      },
+      latest_promotion_evaluation: {
+        evaluation_status: "blocked",
+      },
     },
   },
   guardrail_events: [
@@ -130,6 +163,10 @@ const summaryPayload = {
   scorecards: [
     {
       id: 1,
+      strategy_version: {
+        version_key: "exec_policy_infra_v1",
+        version_label: "Execution Policy Infra v1",
+      },
       window_start: "2026-04-14T00:00:00Z",
       window_end: "2026-04-15T00:00:00Z",
       status: "watch",
@@ -142,6 +179,13 @@ const summaryPayload = {
     {
       id: 1,
       generated_at: "2026-04-15T10:04:00Z",
+      strategy_version: {
+        version_key: "exec_policy_infra_v1",
+        version_label: "Execution Policy Infra v1",
+      },
+      latest_promotion_evaluation: {
+        evaluation_status: "blocked",
+      },
       status: "manual_only",
       approval_backlog_count: 1,
       shadow_gap_breach_count: 0,
@@ -188,6 +232,8 @@ describe("PilotConsole", () => {
     expect(screen.getByText("Live vs Shadow")).toBeInTheDocument();
     expect(screen.getByText("Recent Incidents")).toBeInTheDocument();
     expect(screen.getByText("phase12-exec (exec_policy)")).toBeInTheDocument();
+    expect(screen.getAllByText("Execution Policy Infra v1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("observe").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Arm" }));
     await waitFor(() => {

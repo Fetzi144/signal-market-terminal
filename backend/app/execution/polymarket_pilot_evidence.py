@@ -41,7 +41,13 @@ from app.strategies.promotion import (
     map_readiness_status_to_promotion_verdict,
     upsert_promotion_evaluation,
 )
-from app.strategies.registry import PROMOTION_GATE_POLICY_V1, get_current_strategy_version, sync_strategy_registry
+from app.strategies.registry import (
+    PROMOTION_GATE_POLICY_V1,
+    get_current_strategy_version,
+    get_latest_promotion_evaluation_by_version,
+    get_strategy_version_snapshot_map,
+    sync_strategy_registry,
+)
 
 SUPPORTED_PHASE12_FAMILY = "exec_policy"
 ACTIVE_FILL_STATUSES = {"matched", "mined", "confirmed"}
@@ -83,6 +89,16 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, list):
         return [_json_safe(inner) for inner in value]
     return value
+
+
+async def _strategy_lifecycle_maps(
+    session: AsyncSession,
+    *,
+    version_ids: list[int] | set[int] | tuple[int, ...],
+) -> tuple[dict[int, dict[str, Any]], dict[int, dict[str, Any]]]:
+    version_map = await get_strategy_version_snapshot_map(session, version_ids=version_ids)
+    evaluation_map = await get_latest_promotion_evaluation_by_version(session, version_ids=version_ids)
+    return version_map, evaluation_map
 
 
 async def _record_phase13a_readiness_evaluation(
@@ -299,11 +315,18 @@ def serialize_position_lot_event(row: PositionLotEvent) -> dict[str, Any]:
     }
 
 
-def serialize_pilot_scorecard(row: PolymarketPilotScorecard) -> dict[str, Any]:
+def serialize_pilot_scorecard(
+    row: PolymarketPilotScorecard,
+    *,
+    strategy_version: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": row.id,
         "strategy_family": row.strategy_family,
         "strategy_version_id": row.strategy_version_id,
+        "strategy_version": strategy_version,
+        "latest_promotion_evaluation": latest_promotion_evaluation,
         "window_start": row.window_start,
         "window_end": row.window_end,
         "status": row.status,
@@ -343,11 +366,18 @@ def serialize_pilot_guardrail_event(row: PolymarketPilotGuardrailEvent) -> dict[
     }
 
 
-def serialize_pilot_readiness_report(row: PolymarketPilotReadinessReport) -> dict[str, Any]:
+def serialize_pilot_readiness_report(
+    row: PolymarketPilotReadinessReport,
+    *,
+    strategy_version: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": row.id,
         "strategy_family": row.strategy_family,
         "strategy_version_id": row.strategy_version_id,
+        "strategy_version": strategy_version,
+        "latest_promotion_evaluation": latest_promotion_evaluation,
         "window_start": row.window_start,
         "window_end": row.window_end,
         "status": row.status,
@@ -361,6 +391,38 @@ def serialize_pilot_readiness_report(row: PolymarketPilotReadinessReport) -> dic
         "created_at": row.created_at,
         "updated_at": row.updated_at,
     }
+
+
+async def serialize_pilot_scorecards_with_lifecycle(
+    session: AsyncSession,
+    rows: list[PolymarketPilotScorecard],
+) -> list[dict[str, Any]]:
+    version_ids = {int(row.strategy_version_id) for row in rows if row.strategy_version_id is not None}
+    version_map, evaluation_map = await _strategy_lifecycle_maps(session, version_ids=version_ids)
+    return [
+        serialize_pilot_scorecard(
+            row,
+            strategy_version=version_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+            latest_promotion_evaluation=evaluation_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+        )
+        for row in rows
+    ]
+
+
+async def serialize_pilot_readiness_reports_with_lifecycle(
+    session: AsyncSession,
+    rows: list[PolymarketPilotReadinessReport],
+) -> list[dict[str, Any]]:
+    version_ids = {int(row.strategy_version_id) for row in rows if row.strategy_version_id is not None}
+    version_map, evaluation_map = await _strategy_lifecycle_maps(session, version_ids=version_ids)
+    return [
+        serialize_pilot_readiness_report(
+            row,
+            strategy_version=version_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+            latest_promotion_evaluation=evaluation_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+        )
+        for row in rows
+    ]
 
 
 async def list_position_lots(
@@ -442,7 +504,7 @@ async def list_pilot_scorecards(
     if end is not None:
         query = query.where(PolymarketPilotScorecard.window_start <= _ensure_utc(end))
     rows = (await session.execute(query.limit(limit))).scalars().all()
-    return [serialize_pilot_scorecard(row) for row in rows]
+    return await serialize_pilot_scorecards_with_lifecycle(session, rows)
 
 
 async def list_pilot_guardrail_events(
@@ -492,7 +554,7 @@ async def list_pilot_readiness_reports(
     if end is not None:
         query = query.where(PolymarketPilotReadinessReport.window_start <= _ensure_utc(end))
     rows = (await session.execute(query.limit(limit))).scalars().all()
-    return [serialize_pilot_readiness_report(row) for row in rows]
+    return await serialize_pilot_readiness_reports_with_lifecycle(session, rows)
 
 
 class PolymarketPilotEvidenceService:
@@ -1017,7 +1079,7 @@ class PolymarketPilotEvidenceService:
         await session.flush()
         if existing is None:
             polymarket_pilot_scorecards_total.labels(strategy_family=family, status=row.status).inc()
-        return serialize_pilot_scorecard(row)
+        return (await serialize_pilot_scorecards_with_lifecycle(session, [row]))[0]
 
     async def generate_readiness_report(
         self,
@@ -1187,7 +1249,7 @@ class PolymarketPilotEvidenceService:
         if existing is None:
             polymarket_pilot_readiness_reports_total.labels(strategy_family=family, status=row.status).inc()
         polymarket_pilot_latest_readiness_report_timestamp.set(generated_at.timestamp())
-        return serialize_pilot_readiness_report(row)
+        return (await serialize_pilot_readiness_reports_with_lifecycle(session, [row]))[0]
 
     async def enforce_periodic_guardrails(
         self,
@@ -1429,8 +1491,30 @@ class PolymarketPilotEvidenceService:
                 )
             )
         ).scalars().all()
+        strategy_version = await get_current_strategy_version(session, family)
+        latest_promotion_evaluation = None
+        if strategy_version is not None and strategy_version.id is not None:
+            latest_promotion_evaluation = (
+                await get_latest_promotion_evaluation_by_version(session, version_ids=[int(strategy_version.id)])
+            ).get(int(strategy_version.id))
+        latest_scorecard_payload = (
+            await serialize_pilot_scorecards_with_lifecycle(session, [latest_scorecard])
+            if latest_scorecard is not None
+            else []
+        )
+        latest_readiness_payload = (
+            await serialize_pilot_readiness_reports_with_lifecycle(session, [latest_readiness])
+            if latest_readiness is not None
+            else []
+        )
         return {
             "strategy_family": family,
+            "strategy_version": (
+                (await get_strategy_version_snapshot_map(session, version_ids=[int(strategy_version.id)]))[int(strategy_version.id)]
+                if strategy_version is not None and strategy_version.id is not None
+                else None
+            ),
+            "latest_promotion_evaluation": latest_promotion_evaluation,
             "window_start": day_start,
             "window_end": day_end,
             "daily_realized_pnl": pnl,
@@ -1443,6 +1527,6 @@ class PolymarketPilotEvidenceService:
                 "coverage_limited_count_24h": sum(1 for row in shadow_rows if row.coverage_limited),
             },
             "recent_guardrail_triggers": [serialize_pilot_guardrail_event(row) for row in recent_guardrails],
-            "latest_scorecard": serialize_pilot_scorecard(latest_scorecard) if latest_scorecard is not None else None,
-            "latest_readiness_report": serialize_pilot_readiness_report(latest_readiness) if latest_readiness is not None else None,
+            "latest_scorecard": latest_scorecard_payload[0] if latest_scorecard_payload else None,
+            "latest_readiness_report": latest_readiness_payload[0] if latest_readiness_payload else None,
         }

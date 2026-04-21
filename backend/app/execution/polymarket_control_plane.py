@@ -45,6 +45,9 @@ from app.execution.polymarket_live_state import (
     serialize_live_fill,
     serialize_live_order,
     serialize_live_order_event,
+    serialize_live_fills_with_lifecycle,
+    serialize_live_order_events_with_lifecycle,
+    serialize_live_orders_with_lifecycle,
 )
 from app.execution.polymarket_pilot_evidence import (
     PolymarketPilotEvidenceService,
@@ -85,6 +88,11 @@ from app.models.polymarket_replay import (
     PolymarketReplayOrder,
     PolymarketReplayRun,
     PolymarketReplayScenario,
+)
+from app.strategies.registry import (
+    get_current_strategy_version,
+    get_latest_promotion_evaluation_by_version,
+    serialize_strategy_version_snapshot,
 )
 
 RUN_ACTIVE_STATUSES = {"armed", "running", "paused"}
@@ -1051,6 +1059,16 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
     state = await fetch_live_state_row(session)
     config = await get_active_pilot_config(session)
     run = await get_open_pilot_run(session, pilot_config_id=config.id) if config is not None else None
+    strategy_version = (
+        await get_current_strategy_version(session, config.strategy_family)
+        if config is not None and config.strategy_family
+        else None
+    )
+    latest_evaluation = None
+    if strategy_version is not None and strategy_version.id is not None:
+        latest_evaluation = (
+            await get_latest_promotion_evaluation_by_version(session, version_ids=[int(strategy_version.id)])
+        ).get(int(strategy_version.id))
     approval_queue_count = int(
         (
             await session.execute(
@@ -1076,6 +1094,8 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
         "default_strategy_family": settings.polymarket_pilot_default_strategy_family,
         "active_pilot": serialize_pilot_config(config) if config is not None else None,
         "active_run": serialize_pilot_run(run) if run is not None else None,
+        "active_strategy_version": serialize_strategy_version_snapshot(strategy_version),
+        "latest_promotion_evaluation": latest_evaluation,
         "manual_approval_required": _approval_required(config),
         "approval_queue_count": approval_queue_count,
         "heartbeat_status": _heartbeat_status(state, needed=bool(config is not None and config.armed and open_live_orders > 0)),
@@ -1120,6 +1140,21 @@ async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, An
             .limit(25)
         )
     ).scalars().all()
+    related_order_ids = {
+        row.live_order_id
+        for row in [*recent_events, *blocked_events]
+        if row.live_order_id is not None
+    }
+    related_order_ids.update(row.live_order_id for row in recent_fills if row.live_order_id is not None)
+    related_orders = (
+        await session.execute(
+            select(LiveOrder).where(LiveOrder.id.in_(tuple(related_order_ids)))
+        )
+    ).scalars().all() if related_order_ids else []
+    order_map = {row.id: row for row in related_orders}
+    recent_event_pairs = [(row, order_map.get(row.live_order_id)) for row in recent_events]
+    blocked_event_pairs = [(row, order_map.get(row.live_order_id)) for row in blocked_events]
+    recent_fill_pairs = [(row, order_map.get(row.live_order_id) if row.live_order_id is not None else None) for row in recent_fills]
     return {
         "pilot": pilot_status,
         "active_pilot_family": active_config.strategy_family if active_config is not None else None,
@@ -1140,10 +1175,10 @@ async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, An
             strategy_family=active_config.strategy_family if active_config is not None else SUPPORTED_PHASE12_FAMILY,
             limit=10,
         ),
-        "recent_orders": [serialize_live_order(row) for row in recent_orders],
-        "recent_fills": [serialize_live_fill(row) for row in recent_fills],
-        "recent_order_events": [serialize_live_order_event(row) for row in recent_events],
-        "recent_blocked_submissions": [serialize_live_order_event(row) for row in blocked_events],
+        "recent_orders": await serialize_live_orders_with_lifecycle(session, recent_orders),
+        "recent_fills": await serialize_live_fills_with_lifecycle(session, recent_fill_pairs),
+        "recent_order_events": await serialize_live_order_events_with_lifecycle(session, recent_event_pairs),
+        "recent_blocked_submissions": await serialize_live_order_events_with_lifecycle(session, blocked_event_pairs),
         "live_shadow_summary": await compute_live_shadow_summary(session),
         "evidence_summary": evidence_summary,
     }
@@ -1191,6 +1226,19 @@ async def fetch_market_tape_view(
     trade_rows = (await session.execute(trade_query.limit(limit))).scalars().all()
     order_rows = (await session.execute(order_query.limit(limit))).scalars().all()
     event_rows = (await session.execute(event_query.limit(limit))).scalars().all()
+    event_order_map = {row.id: row for row in order_rows}
+    missing_event_order_ids = {
+        row.live_order_id
+        for row in event_rows
+        if row.live_order_id is not None and row.live_order_id not in event_order_map
+    }
+    if missing_event_order_ids:
+        extra_event_orders = (
+            await session.execute(
+                select(LiveOrder).where(LiveOrder.id.in_(tuple(missing_event_order_ids)))
+            )
+        ).scalars().all()
+        event_order_map.update({row.id: row for row in extra_event_orders})
     recon_row = (await session.execute(recon_query.limit(1))).scalar_one_or_none()
     structure_rows = (await session.execute(structure_query.limit(5))).scalars().all()
     quote_rows = (await session.execute(quote_query.limit(5))).scalars().all()
@@ -1231,8 +1279,14 @@ async def fetch_market_tape_view(
             }
             for row in trade_rows
         ],
-        "live_orders": [serialize_live_order(row) for row in order_rows],
-        "live_order_events": [serialize_live_order_event(row) for row in event_rows],
+        "live_orders": await serialize_live_orders_with_lifecycle(session, order_rows),
+        "live_order_events": await serialize_live_order_events_with_lifecycle(
+            session,
+            [
+                (row, event_order_map.get(row.live_order_id))
+                for row in event_rows
+            ],
+        ),
         "structure_context": [
             {
                 "id": row.id,

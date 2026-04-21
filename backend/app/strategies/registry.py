@@ -488,6 +488,64 @@ def _serialize_strategy_version(
     }
 
 
+def serialize_strategy_version_snapshot(row: StrategyVersion | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "family_id": row.family_id,
+        "version_key": row.version_key,
+        "version_label": row.version_label,
+        "strategy_name": row.strategy_name,
+        "version_status": row.version_status,
+        "autonomy_tier": row.autonomy_tier,
+        "is_current": row.is_current,
+        "is_frozen": row.is_frozen,
+        "created_at": _ensure_utc(row.created_at).isoformat() if row.created_at else None,
+        "updated_at": _ensure_utc(row.updated_at).isoformat() if row.updated_at else None,
+    }
+
+
+async def get_strategy_version_snapshot_map(
+    session: AsyncSession,
+    *,
+    version_ids: list[int] | set[int] | tuple[int, ...],
+) -> dict[int, dict[str, Any]]:
+    normalized_ids = sorted({int(value) for value in version_ids if value is not None})
+    if not normalized_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(StrategyVersion).where(StrategyVersion.id.in_(normalized_ids))
+        )
+    ).scalars().all()
+    return {
+        int(row.id): serialize_strategy_version_snapshot(row)
+        for row in rows
+    }
+
+
+async def get_latest_promotion_evaluation_by_version(
+    session: AsyncSession,
+    *,
+    version_ids: list[int] | set[int] | tuple[int, ...],
+) -> dict[int, dict[str, Any]]:
+    normalized_ids = sorted({int(value) for value in version_ids if value is not None})
+    if not normalized_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.strategy_version_id.in_(normalized_ids))
+            .order_by(PromotionEvaluation.created_at.desc(), PromotionEvaluation.id.desc())
+        )
+    ).scalars().all()
+    latest_by_version: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        latest_by_version.setdefault(int(row.strategy_version_id), serialize_promotion_evaluation(row))
+    return latest_by_version
+
+
 async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]:
     await sync_strategy_registry(session)
     evidence_counts = await _version_evidence_counts(session)
@@ -576,4 +634,3 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
         "gate_policies": [serialize_promotion_gate_policy(row) for row in policies],
         "generated_at": _ensure_utc(datetime.now(timezone.utc)).isoformat(),
     }
-

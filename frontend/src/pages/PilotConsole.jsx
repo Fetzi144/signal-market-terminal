@@ -92,6 +92,8 @@ export default function PilotConsole() {
   const scorecards = summary?.scorecards || [];
   const readinessReports = summary?.readiness_reports || [];
   const latestReadiness = evidence?.latest_readiness_report || readinessReports[0] || null;
+  const activeStrategyVersion = summary?.pilot?.active_strategy_version || evidence?.strategy_version || null;
+  const latestGate = evidence?.latest_promotion_evaluation || summary?.pilot?.latest_promotion_evaluation || latestReadiness?.latest_promotion_evaluation || null;
 
   return (
     <div style={pageStyle}>
@@ -172,6 +174,8 @@ export default function PilotConsole() {
           <StatCard label="Pilot Enabled" value={summary?.pilot?.pilot_enabled ? "Yes" : "No"} />
           <StatCard label="Armed" value={activePilot?.armed ? "Yes" : "No"} />
           <StatCard label="Run State" value={activeRun?.status || "idle"} />
+          <StatCard label="Lifecycle Version" value={activeStrategyVersion?.version_label || "-"} />
+          <StatCard label="Gate Verdict" value={latestGate?.evaluation_status || "-"} />
           <StatCard label="Manual Approval" value={summary?.pilot?.manual_approval_required ? "On" : "Off"} />
           <StatCard label="Approval Queue" value={summary?.pilot?.approval_queue_count ?? 0} />
           <StatCard label="Expired (24h)" value={evidence?.approval_expired_count_24h ?? 0} />
@@ -262,9 +266,10 @@ export default function PilotConsole() {
             <h3 style={sectionTitleStyle}>Evidence Summary</h3>
           </div>
           <SimpleTable
-            columns={["Window", "Status", "Net P&L", "Avg Gap", "Coverage"]}
+            columns={["Window", "Version", "Status", "Net P&L", "Avg Gap", "Coverage"]}
             rows={scorecards.map((card) => ([
               `${formatShortDateTime(card.window_start)} -> ${formatShortDateTime(card.window_end)}`,
+              card.strategy_version?.version_label || card.strategy_version?.version_key || "-",
               card.status,
               formatCurrency(card.net_pnl),
               formatBps(card.avg_shadow_gap_bps),
@@ -274,10 +279,12 @@ export default function PilotConsole() {
           />
           <div style={{ marginTop: 12 }}>
             <SimpleTable
-              columns={["Generated", "Status", "Backlog", "Breaches"]}
+              columns={["Generated", "Version", "Status", "Gate", "Backlog", "Breaches"]}
               rows={readinessReports.map((report) => ([
                 formatShortDateTime(report.generated_at),
+                report.strategy_version?.version_label || report.strategy_version?.version_key || "-",
                 report.status,
+                report.latest_promotion_evaluation?.evaluation_status || "-",
                 report.approval_backlog_count ?? 0,
                 report.shadow_gap_breach_count ?? 0,
               ]))}
@@ -291,10 +298,11 @@ export default function PilotConsole() {
             <h3 style={sectionTitleStyle}>Recent Orders</h3>
           </div>
           <SimpleTable
-            columns={["Created", "Client ID", "Status", "Approval", "Size"]}
+            columns={["Created", "Client ID", "Version", "Status", "Approval", "Size"]}
             rows={recentOrders.map((order) => ([
               formatShortDateTime(order.created_at),
               order.client_order_id,
+              order.strategy_version?.version_key || "-",
               order.status,
               order.approval_state,
               formatNumber(order.requested_size),
