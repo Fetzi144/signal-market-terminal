@@ -16,7 +16,6 @@ from app.execution.polymarket_control_plane import (
 from app.execution.polymarket_gateway import PolymarketGateway
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
 
-
 _pilot_evidence = PolymarketPilotEvidenceService()
 
 
@@ -59,6 +58,11 @@ class PolymarketHeartbeatService:
                 incident_type="heartbeat_missed",
                 details={"error": str(exc)},
                 pilot_run=context["pilot_run"],
+                strategy_family=(
+                    context["pilot_config"].strategy_family
+                    if context.get("pilot_config") is not None
+                    else settings.polymarket_pilot_default_strategy_family
+                ),
             )
             strategy_family = (
                 context["pilot_config"].strategy_family

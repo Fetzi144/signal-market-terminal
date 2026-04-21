@@ -1,7 +1,7 @@
 """Health and observability endpoint."""
-from typing import Any
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.models.scheduler_lease import SchedulerLease
 from app.execution.polymarket_control_plane import fetch_pilot_status
 from app.execution.polymarket_live_state import fetch_polymarket_live_status
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
@@ -19,13 +18,14 @@ from app.ingestion.polymarket_execution_policy import fetch_polymarket_execution
 from app.ingestion.polymarket_maker_economics import fetch_polymarket_maker_status
 from app.ingestion.polymarket_metadata import fetch_polymarket_meta_sync_status
 from app.ingestion.polymarket_microstructure import fetch_polymarket_feature_status
+from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
 from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.ingestion.polymarket_risk_graph import fetch_polymarket_risk_graph_status
-from app.ingestion.polymarket_raw_storage import fetch_polymarket_raw_storage_status
 from app.ingestion.polymarket_stream import fetch_polymarket_stream_status
 from app.ingestion.structure_engine import fetch_market_structure_status
 from app.models.ingestion import IngestionRun
 from app.models.market import Market
+from app.models.scheduler_lease import SchedulerLease
 from app.models.signal import Signal, SignalEvaluation
 from app.paper_trading.analysis import get_overdue_open_trade_count
 from app.strategy_families import build_strategy_family_reviews
@@ -300,11 +300,14 @@ class PolymarketPhase12Status(BaseModel):
     pilot_armed: bool
     pilot_paused: bool
     active_pilot_family: str | None = None
+    strategy_version: dict[str, Any] | None = None
+    latest_promotion_evaluation: dict[str, Any] | None = None
     manual_approval_required: bool
     approval_queue_count: int
     heartbeat_status: str
     user_stream_connected: bool
     recent_incident_count_24h: int
+    recent_incidents: list[dict[str, Any]]
     live_shadow_summary: dict[str, Any]
     daily_realized_pnl: dict[str, Any]
     approval_expired_count_24h: int
@@ -990,11 +993,16 @@ async def health(db: AsyncSession = Depends(get_db)):
             pilot_armed=bool(polymarket_phase12_pilot["active_pilot"] and polymarket_phase12_pilot["active_pilot"]["armed"]),
             pilot_paused=bool(polymarket_phase12_pilot["active_run"] and polymarket_phase12_pilot["active_run"]["status"] == "paused"),
             active_pilot_family=polymarket_phase12_pilot["active_pilot"]["strategy_family"] if polymarket_phase12_pilot["active_pilot"] is not None else None,
+            strategy_version=polymarket_phase12_pilot["active_strategy_version"] or polymarket_phase12_evidence["strategy_version"],
+            latest_promotion_evaluation=(
+                polymarket_phase12_pilot["latest_promotion_evaluation"] or polymarket_phase12_evidence["latest_promotion_evaluation"]
+            ),
             manual_approval_required=polymarket_phase12_pilot["manual_approval_required"],
             approval_queue_count=polymarket_phase12_pilot["approval_queue_count"],
             heartbeat_status=polymarket_phase12_pilot["heartbeat_status"],
             user_stream_connected=polymarket_phase7a["user_stream_connected"],
             recent_incident_count_24h=polymarket_phase12_pilot["recent_incident_count_24h"],
+            recent_incidents=polymarket_phase12_pilot["recent_incidents"],
             live_shadow_summary=polymarket_phase12_evidence["live_shadow_summary"],
             daily_realized_pnl=polymarket_phase12_evidence["daily_realized_pnl"],
             approval_expired_count_24h=polymarket_phase12_evidence["approval_expired_count_24h"],

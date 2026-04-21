@@ -101,6 +101,35 @@ async def _strategy_lifecycle_maps(
     return version_map, evaluation_map
 
 
+async def resolve_pilot_strategy_version_id(
+    session: AsyncSession,
+    *,
+    live_order: LiveOrder | None = None,
+    strategy_family: str | None = None,
+    pilot_run: PolymarketPilotRun | None = None,
+) -> int | None:
+    if live_order is not None and live_order.strategy_version_id is not None:
+        return int(live_order.strategy_version_id)
+
+    family: str | None = None
+    if live_order is not None and live_order.strategy_family:
+        family = _normalized_strategy_family(live_order.strategy_family)
+    elif strategy_family:
+        family = _normalized_strategy_family(strategy_family)
+    elif pilot_run is not None and pilot_run.pilot_config_id is not None:
+        config = await session.get(PolymarketPilotConfig, pilot_run.pilot_config_id)
+        if config is not None and config.strategy_family:
+            family = _normalized_strategy_family(config.strategy_family)
+
+    if not family:
+        return None
+
+    strategy_version = await get_current_strategy_version(session, family)
+    if strategy_version is None or strategy_version.id is None:
+        return None
+    return int(strategy_version.id)
+
+
 async def _record_phase13a_readiness_evaluation(
     session: AsyncSession,
     *,
@@ -348,10 +377,18 @@ def serialize_pilot_scorecard(
     }
 
 
-def serialize_pilot_guardrail_event(row: PolymarketPilotGuardrailEvent) -> dict[str, Any]:
+def serialize_pilot_guardrail_event(
+    row: PolymarketPilotGuardrailEvent,
+    *,
+    strategy_version: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": row.id,
         "strategy_family": row.strategy_family,
+        "strategy_version_id": row.strategy_version_id,
+        "strategy_version": strategy_version,
+        "latest_promotion_evaluation": latest_promotion_evaluation,
         "guardrail_type": row.guardrail_type,
         "severity": row.severity,
         "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
@@ -420,6 +457,26 @@ async def serialize_pilot_readiness_reports_with_lifecycle(
             row,
             strategy_version=version_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
             latest_promotion_evaluation=evaluation_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+        )
+        for row in rows
+    ]
+
+
+async def serialize_pilot_guardrail_events_with_lifecycle(
+    session: AsyncSession,
+    rows: list[PolymarketPilotGuardrailEvent],
+) -> list[dict[str, Any]]:
+    version_ids = {int(row.strategy_version_id) for row in rows if row.strategy_version_id is not None}
+    version_map, evaluation_map = await _strategy_lifecycle_maps(session, version_ids=version_ids)
+    return [
+        serialize_pilot_guardrail_event(
+            row,
+            strategy_version=version_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+            latest_promotion_evaluation=(
+                evaluation_map.get(int(row.strategy_version_id))
+                if row.strategy_version_id is not None
+                else None
+            ),
         )
         for row in rows
     ]
@@ -529,7 +586,7 @@ async def list_pilot_guardrail_events(
     if end is not None:
         query = query.where(PolymarketPilotGuardrailEvent.observed_at_local <= _ensure_utc(end))
     rows = (await session.execute(query.limit(limit))).scalars().all()
-    return [serialize_pilot_guardrail_event(row) for row in rows]
+    return await serialize_pilot_guardrail_events_with_lifecycle(session, rows)
 
 
 async def list_pilot_readiness_reports(
@@ -630,6 +687,12 @@ class PolymarketPilotEvidenceService:
     ) -> PolymarketPilotGuardrailEvent:
         row = PolymarketPilotGuardrailEvent(
             strategy_family=_normalized_strategy_family(strategy_family),
+            strategy_version_id=await resolve_pilot_strategy_version_id(
+                session,
+                live_order=live_order,
+                strategy_family=strategy_family,
+                pilot_run=pilot_run,
+            ),
             guardrail_type=guardrail_type,
             severity=severity,
             live_order_id=live_order.id if live_order is not None else None,
@@ -1344,7 +1407,7 @@ class PolymarketPilotEvidenceService:
                 )
                 if created:
                     triggered.append(row)
-        return [serialize_pilot_guardrail_event(row) for row in triggered]
+        return await serialize_pilot_guardrail_events_with_lifecycle(session, triggered)
 
     async def maybe_generate_scheduled_artifacts(
         self,
@@ -1526,7 +1589,7 @@ class PolymarketPilotEvidenceService:
                 "breach_count_24h": sum(1 for row in recent_guardrails if row.guardrail_type == "shadow_gap_breach"),
                 "coverage_limited_count_24h": sum(1 for row in shadow_rows if row.coverage_limited),
             },
-            "recent_guardrail_triggers": [serialize_pilot_guardrail_event(row) for row in recent_guardrails],
+            "recent_guardrail_triggers": await serialize_pilot_guardrail_events_with_lifecycle(session, recent_guardrails),
             "latest_scorecard": latest_scorecard_payload[0] if latest_scorecard_payload else None,
             "latest_readiness_report": latest_readiness_payload[0] if latest_readiness_payload else None,
         }

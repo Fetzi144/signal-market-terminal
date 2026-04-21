@@ -32,6 +32,8 @@ The following evidence surfaces now carry `strategy_version_id` in persistence:
 * live orders
 * pilot scorecards
 * pilot readiness reports
+* pilot incidents
+* pilot guardrail events
 
 This keeps the Phase 13A registry tied to real evidence instead of standing apart as metadata only.
 
@@ -113,6 +115,20 @@ Current behavior:
 
 This is still Phase 13A lifecycle surfacing, not a rollout or capital-allocation change.
 
+### 9. Pilot incident and guardrail lifecycle attribution
+
+Pilot incidents and guardrail events now behave like durable lifecycle evidence instead of staying as mostly raw Phase 12 audit rows.
+
+Current behavior:
+
+* `polymarket_control_plane_incidents` and `polymarket_pilot_guardrail_events` now persist `strategy_version_id`
+* write paths attribute incidents and guardrails on insert from linked live orders first and otherwise fall back conservatively to current family or pilot-run context
+* the Phase 13A registry backfill pass now fills missing linkage for older incident and guardrail rows where the family or linked order makes attribution knowable
+* incident and guardrail APIs now return the version snapshot plus the latest version-scoped promotion evaluation when available
+* the Pilot Console and Health surfaces now show incident and guardrail rows as belonging to a lifecycle version rather than leaving them as detached audit rows
+
+This closes the highest-value remaining Phase 13A evidence-integrity gap without widening autonomy or adding new submit behavior.
+
 ## What This Still Does Not Do
 
 The repo is still not widening autonomy here.
@@ -124,6 +140,7 @@ Specifically, this pass does not:
 * auto-demote families
 * add capital-budget enforcement beyond current systems
 * add family-level autonomy tiers beyond the current seeded registry values
+* unify replay, readiness, scorecard, incident, and guardrail policy verdicts behind one rolling promotion-gate history backend
 * add direct deep links from version detail into the existing replay, live, and health pages with shared version filters
 
 That is intentional. This pass stays inside Phase 13A rather than jumping into later milestones prematurely.
@@ -132,7 +149,7 @@ That is intentional. This pass stays inside Phase 13A rather than jumping into l
 
 The next best step after this pass is:
 
-* add strategy-version filters and deep links across the existing replay, live, and pilot APIs so the new detail panel can hand off into native surfaces without client-side guesswork
+* build a unified promotion-gate backend and rolling-window evidence history so replay, readiness, scorecards, incidents, and guardrails can share one durable gate timeline per strategy version
 
 ## Validation Completed
 
@@ -140,4 +157,5 @@ Focused validation for this implementation slice covered:
 
 * backend strategies API tests for both registry and version-detail payloads
 * backend replay and pilot-evidence tests for version-detail drilldown artifacts
-* frontend tests for the `Strategies` inspect workflow
+* backend control-plane and pilot-evidence tests for incident or guardrail write-time attribution and lifecycle-aware API serialization
+* frontend tests for lifecycle-aware incident and guardrail visibility in `Pilot Console` and `Health`

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -122,6 +122,10 @@ class PolymarketControlPlaneIncident(Base):
         UUID(as_uuid=True),
         ForeignKey("polymarket_pilot_runs.id", ondelete="SET NULL"),
     )
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
     incident_type: Mapped[str] = mapped_column(String(64), nullable=False)
     live_order_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -142,6 +146,7 @@ class PolymarketControlPlaneIncident(Base):
 
     __table_args__ = (
         Index("ix_pm_control_incidents_run_observed", "pilot_run_id", "observed_at_local"),
+        Index("ix_pm_control_incidents_strategy_version_observed", "strategy_version_id", "observed_at_local"),
         Index("ix_pm_control_incidents_type_observed", "incident_type", "observed_at_local"),
         Index("ix_pm_control_incidents_severity_observed", "severity", "observed_at_local"),
     )
@@ -235,6 +240,10 @@ class PolymarketPilotGuardrailEvent(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     strategy_family: Mapped[str] = mapped_column(String(32), nullable=False)
+    strategy_version_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("strategy_versions.id", ondelete="SET NULL"),
+    )
     guardrail_type: Mapped[str] = mapped_column(String(64), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
     live_order_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -260,6 +269,7 @@ class PolymarketPilotGuardrailEvent(Base):
 
     __table_args__ = (
         Index("ix_pm_guardrail_events_strategy_observed", "strategy_family", "observed_at_local"),
+        Index("ix_pm_guardrail_events_strategy_version_observed", "strategy_version_id", "observed_at_local"),
         Index("ix_pm_guardrail_events_type_observed", "guardrail_type", "observed_at_local"),
         Index("ix_pm_guardrail_events_run_observed", "pilot_run_id", "observed_at_local"),
     )

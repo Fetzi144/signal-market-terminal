@@ -13,8 +13,12 @@ from app.default_strategy import get_default_strategy_contract
 from app.models.paper_trade import PaperTrade
 from app.models.polymarket_live_execution import LiveOrder
 from app.models.polymarket_pilot import (
+    PolymarketControlPlaneIncident,
     PolymarketLiveShadowEvaluation,
+    PolymarketPilotConfig,
+    PolymarketPilotGuardrailEvent,
     PolymarketPilotReadinessReport,
+    PolymarketPilotRun,
     PolymarketPilotScorecard,
 )
 from app.models.polymarket_replay import PolymarketReplayRun
@@ -24,11 +28,11 @@ from app.models.strategy_registry import (
     VERSION_STATUS_BENCHMARK,
     VERSION_STATUS_CANDIDATE,
     VERSION_STATUS_PROMOTED,
+    DemotionEvent,
     PromotionEvaluation,
     PromotionGatePolicy,
     StrategyFamilyRegistry,
     StrategyVersion,
-    DemotionEvent,
 )
 from app.models.strategy_run import StrategyRun
 from app.strategies.promotion import (
@@ -385,6 +389,77 @@ async def _backfill_phase13a_links(
         )
     ).scalars().all()
     for row in replay_rows:
+        version = version_by_family.get(str(row.strategy_family).strip().lower())
+        if version is not None:
+            row.strategy_version_id = version.id
+
+    incident_order_rows = (
+        await session.execute(
+            select(
+                PolymarketControlPlaneIncident,
+                LiveOrder.strategy_version_id,
+                LiveOrder.strategy_family,
+            )
+            .join(LiveOrder, LiveOrder.id == PolymarketControlPlaneIncident.live_order_id)
+            .where(PolymarketControlPlaneIncident.strategy_version_id.is_(None))
+        )
+    ).all()
+    for row, strategy_version_id, strategy_family in incident_order_rows:
+        if strategy_version_id is not None:
+            row.strategy_version_id = strategy_version_id
+            continue
+        if strategy_family is None:
+            continue
+        version = version_by_family.get(str(strategy_family).strip().lower())
+        if version is not None:
+            row.strategy_version_id = version.id
+
+    incident_run_rows = (
+        await session.execute(
+            select(PolymarketControlPlaneIncident, PolymarketPilotConfig.strategy_family)
+            .join(PolymarketPilotRun, PolymarketPilotRun.id == PolymarketControlPlaneIncident.pilot_run_id)
+            .join(PolymarketPilotConfig, PolymarketPilotConfig.id == PolymarketPilotRun.pilot_config_id)
+            .where(PolymarketControlPlaneIncident.strategy_version_id.is_(None))
+        )
+    ).all()
+    for row, strategy_family in incident_run_rows:
+        if strategy_family is None:
+            continue
+        version = version_by_family.get(str(strategy_family).strip().lower())
+        if version is not None:
+            row.strategy_version_id = version.id
+
+    guardrail_order_rows = (
+        await session.execute(
+            select(
+                PolymarketPilotGuardrailEvent,
+                LiveOrder.strategy_version_id,
+                LiveOrder.strategy_family,
+            )
+            .join(LiveOrder, LiveOrder.id == PolymarketPilotGuardrailEvent.live_order_id)
+            .where(PolymarketPilotGuardrailEvent.strategy_version_id.is_(None))
+        )
+    ).all()
+    for row, strategy_version_id, strategy_family in guardrail_order_rows:
+        if strategy_version_id is not None:
+            row.strategy_version_id = strategy_version_id
+            continue
+        if strategy_family is None:
+            continue
+        version = version_by_family.get(str(strategy_family).strip().lower())
+        if version is not None:
+            row.strategy_version_id = version.id
+
+    guardrail_rows = (
+        await session.execute(
+            select(PolymarketPilotGuardrailEvent)
+            .where(
+                PolymarketPilotGuardrailEvent.strategy_version_id.is_(None),
+                PolymarketPilotGuardrailEvent.strategy_family.is_not(None),
+            )
+        )
+    ).scalars().all()
+    for row in guardrail_rows:
         version = version_by_family.get(str(row.strategy_family).strip().lower())
         if version is not None:
             row.strategy_version_id = version.id

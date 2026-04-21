@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.execution.polymarket_control_plane_serializers import (
     serialize_control_plane_incident,
-    serialize_pilot_approval_event,
     serialize_pilot_config,
     serialize_pilot_run,
     serialize_shadow_evaluation,
@@ -20,32 +19,57 @@ from app.execution.polymarket_control_plane_utils import (
     BPS_Q,
     PRICE_Q,
     SUPPORTED_PHASE12_FAMILY,
-    SUPPORTED_PILOT_FAMILIES,
     ZERO,
-    approval_required as _approval_required,
-    details_with as _details_with,
     effective_kill_switch_enabled,
+)
+from app.execution.polymarket_control_plane_utils import (
+    approval_required as _approval_required,
+)
+from app.execution.polymarket_control_plane_utils import (
+    details_with as _details_with,
+)
+from app.execution.polymarket_control_plane_utils import (
     ensure_utc as _ensure_utc,
+)
+from app.execution.polymarket_control_plane_utils import (
     guardrail_from_submission_reason as _guardrail_from_submission_reason,
+)
+from app.execution.polymarket_control_plane_utils import (
     heartbeat_status as _heartbeat_status,
+)
+from app.execution.polymarket_control_plane_utils import (
     json_safe as _json_safe,
+)
+from app.execution.polymarket_control_plane_utils import (
     live_order_notional as _live_order_notional,
+)
+from app.execution.polymarket_control_plane_utils import (
     normalize_strategy_family as _normalize_strategy_family,
+)
+from app.execution.polymarket_control_plane_utils import (
     pilot_limit_decimal as _pilot_limit_decimal,
+)
+from app.execution.polymarket_control_plane_utils import (
     pilot_limit_int as _pilot_limit_int,
+)
+from app.execution.polymarket_control_plane_utils import (
     price_gap_bps as _price_gap_bps,
+)
+from app.execution.polymarket_control_plane_utils import (
     serialize_decimal as _serialize_decimal,
+)
+from app.execution.polymarket_control_plane_utils import (
     stable_hash as _stable_hash,
+)
+from app.execution.polymarket_control_plane_utils import (
     to_decimal as _to_decimal,
 )
 from app.execution.polymarket_live_state import (
     LIVE_ORDER_TERMINAL_STATUSES,
     ensure_live_state_row,
     fetch_live_state_row,
-    serialize_live_fill,
-    serialize_live_order,
-    serialize_live_order_event,
     serialize_live_fills_with_lifecycle,
+    serialize_live_order,
     serialize_live_order_events_with_lifecycle,
     serialize_live_orders_with_lifecycle,
 )
@@ -54,6 +78,7 @@ from app.execution.polymarket_pilot_evidence import (
     list_pilot_guardrail_events,
     list_pilot_readiness_reports,
     list_pilot_scorecards,
+    resolve_pilot_strategy_version_id,
 )
 from app.ingestion.polymarket_common import utcnow
 from app.metrics import (
@@ -68,8 +93,8 @@ from app.metrics import (
     polymarket_restart_pauses_total,
     polymarket_shadow_gap_breaches_total,
 )
-from app.models.market_structure import MarketStructureOpportunity
 from app.models.execution_decision import ExecutionDecision
+from app.models.market_structure import MarketStructureOpportunity
 from app.models.polymarket_live_execution import LiveFill, LiveOrder, LiveOrderEvent, PolymarketLiveState
 from app.models.polymarket_maker import PolymarketQuoteRecommendation
 from app.models.polymarket_metadata import PolymarketEventDim, PolymarketMarketDim
@@ -92,12 +117,34 @@ from app.models.polymarket_replay import (
 from app.strategies.registry import (
     get_current_strategy_version,
     get_latest_promotion_evaluation_by_version,
+    get_strategy_version_snapshot_map,
     serialize_strategy_version_snapshot,
 )
 
 RUN_ACTIVE_STATUSES = {"armed", "running", "paused"}
 REPLAY_SUCCESS_STATUSES = {"completed", "completed_warnings"}
 _pilot_evidence = PolymarketPilotEvidenceService()
+
+
+async def _serialize_control_plane_incidents_with_lifecycle(
+    session: AsyncSession,
+    rows: list[PolymarketControlPlaneIncident],
+) -> list[dict[str, Any]]:
+    version_ids = {int(row.strategy_version_id) for row in rows if row.strategy_version_id is not None}
+    version_map = await get_strategy_version_snapshot_map(session, version_ids=version_ids)
+    evaluation_map = await get_latest_promotion_evaluation_by_version(session, version_ids=version_ids)
+    return [
+        serialize_control_plane_incident(
+            row,
+            strategy_version=version_map.get(int(row.strategy_version_id)) if row.strategy_version_id is not None else None,
+            latest_promotion_evaluation=(
+                evaluation_map.get(int(row.strategy_version_id))
+                if row.strategy_version_id is not None
+                else None
+            ),
+        )
+        for row in rows
+    ]
 
 
 async def list_pilot_configs(
@@ -342,11 +389,18 @@ async def record_control_plane_incident(
     details: dict[str, Any] | None = None,
     live_order: LiveOrder | None = None,
     pilot_run: PolymarketPilotRun | None = None,
+    strategy_family: str | None = None,
     condition_id: str | None = None,
     asset_id: str | None = None,
 ) -> PolymarketControlPlaneIncident:
     row = PolymarketControlPlaneIncident(
         pilot_run_id=pilot_run.id if pilot_run is not None else None,
+        strategy_version_id=await resolve_pilot_strategy_version_id(
+            session,
+            live_order=live_order,
+            strategy_family=strategy_family,
+            pilot_run=pilot_run,
+        ),
         severity=severity,
         incident_type=incident_type,
         live_order_id=live_order.id if live_order is not None else None,
@@ -428,6 +482,7 @@ async def pause_active_pilot(
             details=details,
             live_order=live_order,
             pilot_run=run,
+            strategy_family=config.strategy_family,
         )
     if incident_type == "restart_425":
         polymarket_restart_pauses_total.inc()
@@ -847,7 +902,7 @@ async def list_control_plane_incidents(
     if end is not None:
         query = query.where(PolymarketControlPlaneIncident.observed_at_local <= _ensure_utc(end))
     rows = (await session.execute(query.limit(limit))).scalars().all()
-    return [serialize_control_plane_incident(row) for row in rows]
+    return await _serialize_control_plane_incidents_with_lifecycle(session, rows)
 
 async def list_live_shadow_evaluations(
     session: AsyncSession,
@@ -1059,6 +1114,7 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
     state = await fetch_live_state_row(session)
     config = await get_active_pilot_config(session)
     run = await get_open_pilot_run(session, pilot_config_id=config.id) if config is not None else None
+    incidents_since = utcnow() - timedelta(hours=24)
     strategy_version = (
         await get_current_strategy_version(session, config.strategy_family)
         if config is not None and config.strategy_family
@@ -1081,13 +1137,18 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
         (
             await session.execute(
                 select(func.count(PolymarketControlPlaneIncident.id)).where(
-                    PolymarketControlPlaneIncident.observed_at_local >= utcnow() - timedelta(hours=24)
+                    PolymarketControlPlaneIncident.observed_at_local >= incidents_since
                 )
             )
         ).scalar_one()
         or 0
     )
     open_live_orders = await active_live_order_count(session, pilot_config=config)
+    recent_incidents = await list_control_plane_incidents(
+        session,
+        start=incidents_since,
+        limit=5,
+    )
     return {
         "pilot_enabled": settings.polymarket_pilot_enabled,
         "supported_strategy_family": SUPPORTED_PHASE12_FAMILY,
@@ -1103,6 +1164,7 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
         "heartbeat_last_success_at": state.heartbeat_last_success_at if state is not None else None,
         "heartbeat_last_error": state.heartbeat_last_error if state is not None else None,
         "recent_incident_count_24h": incidents_24h,
+        "recent_incidents": recent_incidents,
         "open_live_order_count": open_live_orders,
         "kill_switch_enabled": effective_kill_switch_enabled(state),
     }

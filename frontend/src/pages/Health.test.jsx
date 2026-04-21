@@ -258,11 +258,39 @@ const healthPayload = {
     pilot_armed: false,
     pilot_paused: false,
     active_pilot_family: null,
+    strategy_version: {
+      id: 2,
+      version_key: "exec_policy_infra_v1",
+      version_label: "Execution Policy Infra v1",
+    },
+    latest_promotion_evaluation: {
+      id: 22,
+      evaluation_status: "blocked",
+      evaluation_kind: "pilot_readiness_gate",
+    },
     manual_approval_required: true,
     approval_queue_count: 2,
     heartbeat_status: "idle",
     user_stream_connected: false,
     recent_incident_count_24h: 1,
+    recent_incidents: [
+      {
+        id: 7,
+        observed_at_local: "2026-04-13T10:05:45Z",
+        incident_type: "submission_blocked",
+        strategy_version_id: 2,
+        strategy_version: {
+          version_key: "exec_policy_infra_v1",
+          version_label: "Execution Policy Infra v1",
+        },
+        latest_promotion_evaluation: {
+          evaluation_status: "blocked",
+          evaluation_kind: "pilot_readiness_gate",
+        },
+        severity: "warning",
+        details_json: { reason: "manual_approval_required" },
+      },
+    ],
     live_shadow_summary: {
       recent_count_24h: 2,
       average_gap_bps_24h: 6.5,
@@ -278,6 +306,16 @@ const healthPayload = {
         id: 1,
         guardrail_type: "approval_ttl",
         observed_at_local: "2026-04-13T10:06:00Z",
+        strategy_version_id: 2,
+        strategy_version: {
+          version_key: "exec_policy_infra_v1",
+          version_label: "Execution Policy Infra v1",
+        },
+        latest_promotion_evaluation: {
+          evaluation_status: "blocked",
+          evaluation_kind: "pilot_readiness_gate",
+        },
+        action_taken: "block",
       },
     ],
     latest_readiness_status: "manual_only",
@@ -815,7 +853,12 @@ describe("Health", () => {
     expect(screen.getByText("Pending Approval")).toBeInTheDocument();
     expect(screen.getByText("Gap Breaches")).toBeInTheDocument();
     expect(screen.getByText("Shadow Evaluation")).toBeInTheDocument();
+    expect(screen.getByText("Lifecycle Version")).toBeInTheDocument();
+    expect(screen.getByText("Gate Verdict")).toBeInTheDocument();
+    expect(screen.getByText("Recent Pilot Incidents")).toBeInTheDocument();
+    expect(screen.getByText("Recent Pilot Guardrails")).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();
+    expect(screen.getAllByText("Execution Policy Infra v1").length).toBeGreaterThan(0);
     expect(screen.getByText("Will the market stay healthy?")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Run Resync" }));

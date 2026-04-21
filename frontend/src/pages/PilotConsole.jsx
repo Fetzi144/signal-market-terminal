@@ -225,10 +225,12 @@ export default function PilotConsole() {
             <h3 style={sectionTitleStyle}>Guardrail Events</h3>
           </div>
           <SimpleTable
-            columns={["When", "Guardrail", "Action", "Details"]}
+            columns={["When", "Guardrail", "Version", "Gate", "Action", "Details"]}
             rows={guardrails.map((event) => ([
               formatShortDateTime(event.observed_at_local),
               event.guardrail_type,
+              formatLifecycleVersion(event),
+              formatLifecycleGate(event),
               event.action_taken,
               event.details_json?.reason || event.details_json?.error || event.details_json?.gap_bps || "-",
             ]))}
@@ -317,10 +319,12 @@ export default function PilotConsole() {
           <h3 style={sectionTitleStyle}>Recent Incidents</h3>
         </div>
         <SimpleTable
-          columns={["When", "Type", "Severity", "Details"]}
+          columns={["When", "Type", "Version", "Gate", "Severity", "Details"]}
           rows={incidents.map((incident) => ([
             formatShortDateTime(incident.observed_at_local),
             incident.incident_type,
+            formatLifecycleVersion(incident),
+            formatLifecycleGate(incident),
             incident.severity,
             incident.details_json?.reason || incident.details_json?.error || incident.asset_id || "operator event",
           ]))}
@@ -409,6 +413,14 @@ function formatCurrency(value) {
 function formatBps(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return `${Number(value).toFixed(1)} bps`;
+}
+
+function formatLifecycleVersion(row) {
+  return row?.strategy_version?.version_label || row?.strategy_version?.version_key || "-";
+}
+
+function formatLifecycleGate(row) {
+  return row?.latest_promotion_evaluation?.evaluation_status || "-";
 }
 
 const pageStyle = {

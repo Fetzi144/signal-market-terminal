@@ -43,6 +43,7 @@ async def _record_disconnect_incident(
         incident_type="user_stream_disconnect",
         details={"reason": reason},
         pilot_run=run,
+        strategy_family=config.strategy_family,
     )
 
 

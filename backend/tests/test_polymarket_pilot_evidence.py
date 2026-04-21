@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
-from app.execution.polymarket_control_plane import expire_stale_approvals
+from app.execution.polymarket_control_plane import expire_stale_approvals, record_control_plane_incident
 from app.execution.polymarket_order_manager import PolymarketOrderManager
 from app.execution.polymarket_pilot_evidence import (
     PolymarketPilotEvidenceService,
@@ -220,6 +220,8 @@ async def test_max_daily_loss_guardrail_triggers(session, monkeypatch):
     guardrails = await service.enforce_periodic_guardrails(session, now=now)
 
     assert any(event["guardrail_type"] == "max_daily_loss" for event in guardrails)
+    assert any(event["strategy_version_id"] is not None for event in guardrails)
+    assert any(event["strategy_version"]["version_key"] == "exec_policy_infra_v1" for event in guardrails)
 
 
 @pytest.mark.asyncio
@@ -242,6 +244,13 @@ async def test_approval_ttl_expiration_creates_guardrail_and_audit(session, monk
 
     expired = await expire_stale_approvals(session)
     guardrails = await list_pilot_guardrail_events(session, guardrail_type="approval_ttl", limit=10)
+    incidents = (
+        await session.execute(
+            select(PolymarketControlPlaneIncident).where(
+                PolymarketControlPlaneIncident.live_order_id == order.id
+            )
+        )
+    ).scalars().all()
     approval_events = (await session.execute(
         select(PolymarketPilotApprovalEvent).where(PolymarketPilotApprovalEvent.live_order_id == order.id)
     )).scalars().all()
@@ -249,7 +258,10 @@ async def test_approval_ttl_expiration_creates_guardrail_and_audit(session, monk
     assert expired == 1
     assert order.approval_state == "expired"
     assert any(event["guardrail_type"] == "approval_ttl" for event in guardrails)
+    assert any(event["strategy_version_id"] == order.strategy_version_id for event in guardrails)
+    assert any(event["strategy_version"]["version_key"] == "exec_policy_infra_v1" for event in guardrails)
     assert [event.action for event in approval_events] == ["queued", "expired"]
+    assert [incident.strategy_version_id for incident in incidents] == [order.strategy_version_id]
 
 
 @pytest.mark.asyncio
@@ -409,6 +421,13 @@ async def test_evidence_api_endpoints_and_health(client, engine):
             live_order=sell_order,
             details={"reason": "manual_test"},
         )
+        await record_control_plane_incident(
+            session,
+            severity="warning",
+            incident_type="submission_blocked",
+            live_order=sell_order,
+            details={"reason": "manual_test"},
+        )
         await service.generate_scorecard(
             session,
             strategy_family="exec_policy",
@@ -426,6 +445,7 @@ async def test_evidence_api_endpoints_and_health(client, engine):
 
     lots_response = await client.get("/api/v1/ingest/polymarket/live/position-lots?strategy_family=exec_policy")
     lot_events_response = await client.get("/api/v1/ingest/polymarket/live/position-lot-events?strategy_family=exec_policy")
+    incidents_response = await client.get("/api/v1/ingest/polymarket/live/incidents?incident_type=submission_blocked")
     scorecards_response = await client.get("/api/v1/ingest/polymarket/live/pilot/scorecards?strategy_family=exec_policy")
     guardrails_response = await client.get("/api/v1/ingest/polymarket/live/pilot/guardrail-events?strategy_family=exec_policy")
     readiness_response = await client.get("/api/v1/ingest/polymarket/live/pilot/readiness-reports?strategy_family=exec_policy")
@@ -442,6 +462,7 @@ async def test_evidence_api_endpoints_and_health(client, engine):
 
     assert lots_response.status_code == 200
     assert lot_events_response.status_code == 200
+    assert incidents_response.status_code == 200
     assert scorecards_response.status_code == 200
     assert guardrails_response.status_code == 200
     assert readiness_response.status_code == 200
@@ -451,17 +472,27 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert strategies_response.status_code == 200
     assert lots_response.json()["rows"]
     assert lot_events_response.json()["rows"]
+    assert incidents_response.json()["rows"]
     assert scorecards_response.json()["rows"]
     assert guardrails_response.json()["rows"]
     assert readiness_response.json()["rows"]
+    assert incidents_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert incidents_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
     assert scorecards_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert guardrails_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert guardrails_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
     assert readiness_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert readiness_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
     families = {row["family"]: row for row in strategies_response.json()["families"]}
     alignment = families["exec_policy"]["current_version"]["evidence_alignment"]
     assert alignment["live_shadow"]["recent_count_24h"] >= 1
-    assert alignment["latest_scorecard"]["status"] in {"ok", "watch", "cut"}
-    assert alignment["latest_readiness_report"]["status"] in {"manual_only", "candidate_for_semi_auto", "blocked"}
+    assert alignment["latest_scorecard"]["status"] in {"ok", "watch", "degraded", "blocked"}
+    assert alignment["latest_readiness_report"]["status"] in {
+        "manual_only",
+        "candidate_for_semi_auto",
+        "not_ready",
+        "blocked",
+    }
     detail_response = await client.get(
         f"/api/v1/strategies/versions/{families['exec_policy']['current_version']['id']}"
     )
@@ -473,3 +504,6 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] in {"pilot_readiness_gate", "replay_gate"}
     assert health_response.json()["polymarket_phase12"]["daily_realized_pnl"]["net_realized_pnl"] is not None
     assert "recent_guardrail_triggers" in health_response.json()["polymarket_phase12"]
+    assert health_response.json()["polymarket_phase12"]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert health_response.json()["polymarket_phase12"]["recent_guardrail_triggers"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
+    assert health_response.json()["polymarket_phase12"]["recent_incidents"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"

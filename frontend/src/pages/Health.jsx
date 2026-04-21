@@ -264,6 +264,8 @@ export default function Health() {
   const riskGraph = health?.polymarket_phase10 || null;
   const replayStatus = health?.polymarket_phase11 || null;
   const phase12Status = health?.polymarket_phase12 || null;
+  const phase12RecentIncidents = phase12Status?.recent_incidents || [];
+  const phase12RecentGuardrails = phase12Status?.recent_guardrail_triggers || [];
   const structureStatus = health?.polymarket_phase8a || streamStatus?.structure_engine || null;
   const schedulerLease = health?.scheduler_lease || null;
   const defaultStrategyRuntime = health?.default_strategy_runtime || null;
@@ -1072,6 +1074,8 @@ export default function Health() {
             <StatCard label="Pilot Enabled" value={phase12Status?.pilot_enabled ? "Yes" : "No"} />
             <StatCard label="Pilot Paused" value={phase12Status?.pilot_paused ? "Yes" : "No"} />
             <StatCard label="Active Family" value={phase12Status?.active_pilot_family || "none"} />
+            <StatCard label="Lifecycle Version" value={formatLifecycleVersion(phase12Status)} />
+            <StatCard label="Gate Verdict" value={formatLifecycleGate(phase12Status)} />
             <StatCard label="Approval Queue" value={phase12Status?.approval_queue_count ?? 0} />
             <StatCard label="Heartbeat" value={phase12Status?.heartbeat_status || "-"} />
             <StatCard label="User Stream" value={phase12Status?.user_stream_connected ? "Connected" : "Disconnected"} />
@@ -1107,9 +1111,40 @@ export default function Health() {
             <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Recent Guardrails</div>
               <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
-                {(phase12Status?.recent_guardrail_triggers || []).slice(0, 3).map((event) => event.guardrail_type).join(", ") || "No recent triggers."}
+                {phase12RecentGuardrails
+                  .slice(0, 3)
+                  .map((event) => `${event.guardrail_type} @ ${formatLifecycleVersion(event)}`)
+                  .join(", ") || "No recent triggers."}
               </div>
             </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginTop: 16 }}>
+            <TablePanel
+              title="Recent Pilot Incidents"
+              subtitle={`${phase12RecentIncidents.length} most recent`}
+              emptyLabel="No recent pilot incidents recorded."
+              columns={["When", "Type", "Version", "Gate", "Summary"]}
+              rows={phase12RecentIncidents.map((incident) => [
+                formatShortDateTime(incident.observed_at_local || incident.created_at),
+                incident.incident_type,
+                formatLifecycleVersion(incident),
+                formatLifecycleGate(incident),
+                summarizeIncident(incident),
+              ])}
+            />
+            <TablePanel
+              title="Recent Pilot Guardrails"
+              subtitle={`${phase12RecentGuardrails.length} most recent`}
+              emptyLabel="No recent pilot guardrails recorded."
+              columns={["When", "Guardrail", "Version", "Gate", "Action"]}
+              rows={phase12RecentGuardrails.map((event) => [
+                formatShortDateTime(event.observed_at_local),
+                event.guardrail_type,
+                formatLifecycleVersion(event),
+                formatLifecycleGate(event),
+                event.action_taken || "-",
+              ])}
+            />
           </div>
         </div>
 
@@ -1487,6 +1522,14 @@ function formatUsd(value) {
 function formatBps(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return `${Number(value).toFixed(1)} bps`;
+}
+
+function formatLifecycleVersion(row) {
+  return row?.strategy_version?.version_label || row?.strategy_version?.version_key || "-";
+}
+
+function formatLifecycleGate(row) {
+  return row?.latest_promotion_evaluation?.evaluation_status || "-";
 }
 
 function formatReplayVariantSummary(metric) {

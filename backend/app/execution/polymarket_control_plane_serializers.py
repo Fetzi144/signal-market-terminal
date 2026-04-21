@@ -66,10 +66,18 @@ def serialize_pilot_approval_event(row: PolymarketPilotApprovalEvent) -> dict[st
     }
 
 
-def serialize_control_plane_incident(row: PolymarketControlPlaneIncident) -> dict[str, Any]:
+def serialize_control_plane_incident(
+    row: PolymarketControlPlaneIncident,
+    *,
+    strategy_version: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "id": row.id,
         "pilot_run_id": str(row.pilot_run_id) if row.pilot_run_id is not None else None,
+        "strategy_version_id": row.strategy_version_id,
+        "strategy_version": strategy_version,
+        "latest_promotion_evaluation": latest_promotion_evaluation,
         "severity": row.severity,
         "incident_type": row.incident_type,
         "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,

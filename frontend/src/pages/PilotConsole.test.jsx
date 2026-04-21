@@ -78,6 +78,15 @@ const summaryPayload = {
       id: 1,
       observed_at_local: "2026-04-15T10:01:00Z",
       incident_type: "submission_blocked",
+      strategy_version_id: 2,
+      strategy_version: {
+        version_key: "exec_policy_infra_v1",
+        version_label: "Execution Policy Infra v1",
+      },
+      latest_promotion_evaluation: {
+        evaluation_status: "blocked",
+        evaluation_kind: "pilot_readiness_gate",
+      },
       severity: "warning",
       details_json: { reason: "manual_approval_required" },
     },
@@ -156,6 +165,15 @@ const summaryPayload = {
       id: 10,
       observed_at_local: "2026-04-15T10:02:00Z",
       guardrail_type: "approval_ttl",
+      strategy_version_id: 2,
+      strategy_version: {
+        version_key: "exec_policy_infra_v1",
+        version_label: "Execution Policy Infra v1",
+      },
+      latest_promotion_evaluation: {
+        evaluation_status: "blocked",
+        evaluation_kind: "pilot_readiness_gate",
+      },
       action_taken: "block",
       details_json: { reason: "approval_expired" },
     },
@@ -234,6 +252,8 @@ describe("PilotConsole", () => {
     expect(screen.getByText("phase12-exec (exec_policy)")).toBeInTheDocument();
     expect(screen.getAllByText("Execution Policy Infra v1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("observe").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Gate").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "Arm" }));
     await waitFor(() => {

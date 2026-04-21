@@ -138,7 +138,7 @@ async def test_manual_approval_queue_is_durable_and_expires(session, monkeypatch
     ).scalars().all()
     incidents = (
         await session.execute(
-            select(PolymarketControlPlaneIncident.incident_type).where(
+            select(PolymarketControlPlaneIncident).where(
                 PolymarketControlPlaneIncident.live_order_id == order.id
             )
         )
@@ -148,7 +148,8 @@ async def test_manual_approval_queue_is_durable_and_expires(session, monkeypatch
     assert order.approval_state == "expired"
     assert order.status == "submit_blocked"
     assert approval_actions == ["queued", "expired"]
-    assert "approval_timeout" in incidents
+    assert [incident.incident_type for incident in incidents] == ["approval_timeout"]
+    assert incidents[0].strategy_version_id == order.strategy_version_id
 
 
 @pytest.mark.asyncio
@@ -178,6 +179,8 @@ async def test_heartbeat_runs_only_when_needed_and_failure_pauses_pilot(session,
     assert run is not None
     assert run.status == "paused"
     assert incidents
+    assert incidents[0]["strategy_version_id"] is not None
+    assert incidents[0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
 
 
 @pytest.mark.asyncio
