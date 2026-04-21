@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from collections.abc import Collection
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -12,9 +13,23 @@ from app.models.strategy_registry import DemotionEvent, PromotionEvaluation, Pro
 
 PROMOTION_EVALUATION_KIND_PILOT_READINESS = "pilot_readiness_gate"
 PROMOTION_EVALUATION_KIND_REPLAY = "replay_gate"
+PROMOTION_EVALUATION_KIND_SCORECARD = "scorecard_gate"
+PROMOTION_EVALUATION_KIND_INCIDENT = "incident_gate"
+PROMOTION_EVALUATION_KIND_GUARDRAIL = "guardrail_gate"
 PROMOTION_EVALUATION_STATUS_BLOCKED = "blocked"
 PROMOTION_EVALUATION_STATUS_OBSERVE = "observe"
 PROMOTION_EVALUATION_STATUS_CANDIDATE = "candidate"
+PRIMARY_PROMOTION_EVALUATION_KINDS = frozenset({
+    PROMOTION_EVALUATION_KIND_PILOT_READINESS,
+    PROMOTION_EVALUATION_KIND_REPLAY,
+})
+SUPPORTING_PROMOTION_EVALUATION_KINDS = frozenset({
+    PROMOTION_EVALUATION_KIND_SCORECARD,
+    PROMOTION_EVALUATION_KIND_INCIDENT,
+    PROMOTION_EVALUATION_KIND_GUARDRAIL,
+})
+ALL_PROMOTION_EVALUATION_KINDS = PRIMARY_PROMOTION_EVALUATION_KINDS | SUPPORTING_PROMOTION_EVALUATION_KINDS
+PROMOTION_EVIDENCE_ROLLING_WINDOW = timedelta(hours=24)
 
 
 def _json_safe(value: Any) -> Any:
@@ -42,6 +57,28 @@ def hash_json_payload(payload: Any) -> str | None:
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
+def normalize_promotion_evaluation_kinds(
+    kinds: Collection[str] | None = None,
+    *,
+    include_supporting: bool = False,
+) -> tuple[str, ...]:
+    if kinds is not None:
+        return tuple(sorted({str(kind).strip() for kind in kinds if str(kind).strip()}))
+    selected = ALL_PROMOTION_EVALUATION_KINDS if include_supporting else PRIMARY_PROMOTION_EVALUATION_KINDS
+    return tuple(sorted(selected))
+
+
+def rolling_promotion_window_bounds(
+    observed_at: datetime | None,
+    *,
+    window: timedelta = PROMOTION_EVIDENCE_ROLLING_WINDOW,
+) -> tuple[datetime | None, datetime | None]:
+    end = _ensure_utc(observed_at)
+    if end is None:
+        return None, None
+    return end - window, end
+
+
 def map_readiness_status_to_promotion_verdict(readiness_status: str | None) -> tuple[str, str]:
     normalized = str(readiness_status or "").strip().lower()
     if normalized == "candidate_for_semi_auto":
@@ -64,6 +101,38 @@ def map_replay_summary_to_promotion_verdict(
         return PROMOTION_EVALUATION_STATUS_BLOCKED, "shadow_only"
     # Replay is a promotion input in Phase 13A, not sufficient proof for a wider tier.
     return PROMOTION_EVALUATION_STATUS_OBSERVE, "shadow_only"
+
+
+def map_scorecard_status_to_promotion_verdict(scorecard_status: str | None) -> tuple[str, str]:
+    normalized = str(scorecard_status or "").strip().lower()
+    if normalized == "blocked":
+        return PROMOTION_EVALUATION_STATUS_BLOCKED, "shadow_only"
+    # A scorecard alone is a gate input, not sufficient proof for wider autonomy in Phase 13A.
+    return PROMOTION_EVALUATION_STATUS_OBSERVE, "assisted_live"
+
+
+def map_incident_summary_to_promotion_verdict(
+    *,
+    incident_count: int = 0,
+) -> tuple[str, str]:
+    if incident_count > 0:
+        return PROMOTION_EVALUATION_STATUS_BLOCKED, "shadow_only"
+    return PROMOTION_EVALUATION_STATUS_OBSERVE, "assisted_live"
+
+
+def map_guardrail_summary_to_promotion_verdict(
+    *,
+    guardrail_count: int = 0,
+    serious_guardrail_count: int = 0,
+    shadow_gap_breach_count: int = 0,
+    latest_severity: str | None = None,
+) -> tuple[str, str]:
+    normalized_severity = str(latest_severity or "").strip().lower()
+    if serious_guardrail_count > 0 or shadow_gap_breach_count > 0 or normalized_severity in {"error", "critical"}:
+        return PROMOTION_EVALUATION_STATUS_BLOCKED, "shadow_only"
+    if guardrail_count > 0:
+        return PROMOTION_EVALUATION_STATUS_OBSERVE, "assisted_live"
+    return PROMOTION_EVALUATION_STATUS_OBSERVE, "assisted_live"
 
 
 async def upsert_promotion_evaluation(

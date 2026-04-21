@@ -36,9 +36,19 @@ from app.models.strategy_registry import (
 )
 from app.models.strategy_run import StrategyRun
 from app.strategies.promotion import (
+    PRIMARY_PROMOTION_EVALUATION_KINDS,
+    PROMOTION_EVALUATION_KIND_GUARDRAIL,
+    PROMOTION_EVALUATION_KIND_INCIDENT,
+    PROMOTION_EVALUATION_KIND_SCORECARD,
+    hash_json_payload,
+    map_guardrail_summary_to_promotion_verdict,
+    map_incident_summary_to_promotion_verdict,
+    map_scorecard_status_to_promotion_verdict,
+    rolling_promotion_window_bounds,
     serialize_demotion_event,
     serialize_promotion_evaluation,
     serialize_promotion_gate_policy,
+    upsert_promotion_evaluation,
 )
 from app.strategy_families import build_strategy_family_reviews
 
@@ -69,6 +79,18 @@ def _to_decimal(value: Any) -> Decimal | None:
 def _serialize_decimal(value: Any) -> str | None:
     decimal_value = _to_decimal(value)
     return None if decimal_value is None else format(decimal_value, "f")
+
+
+def _count_labels(values: list[str | None]) -> dict[str, int]:
+    normalized = [
+        str(value).strip()
+        for value in values
+        if value not in (None, "")
+    ]
+    return {
+        label: sum(1 for value in normalized if value == label)
+        for label in sorted(set(normalized))
+    }
 
 
 def _builtin_family_manifest() -> list[dict[str, Any]]:
@@ -274,7 +296,12 @@ async def sync_strategy_registry(session: AsyncSession) -> dict[str, Any]:
         gate_policy_rows[seed_row["policy_key"]] = row
 
     await session.flush()
-    await _backfill_phase13a_links(session, version_rows)
+    await _backfill_phase13a_links(
+        session,
+        version_rows,
+        family_rows=family_rows,
+        gate_policy_rows=gate_policy_rows,
+    )
 
     return {
         "family_rows": family_rows,
@@ -286,9 +313,14 @@ async def sync_strategy_registry(session: AsyncSession) -> dict[str, Any]:
 async def _backfill_phase13a_links(
     session: AsyncSession,
     version_rows: dict[str, StrategyVersion],
+    *,
+    family_rows: dict[str, StrategyFamilyRegistry],
+    gate_policy_rows: dict[str, PromotionGatePolicy],
 ) -> None:
     version_by_family = {family: row for family, row in version_rows.items() if row.id is not None}
+    version_by_id = {int(row.id): row for row in version_by_family.values() if row.id is not None}
     default_version = version_by_family.get(STRATEGY_FAMILY_DEFAULT)
+    gate_policy = gate_policy_rows.get(PROMOTION_GATE_POLICY_V1)
 
     if default_version is not None:
         default_runs = (
@@ -463,6 +495,302 @@ async def _backfill_phase13a_links(
         version = version_by_family.get(str(row.strategy_family).strip().lower())
         if version is not None:
             row.strategy_version_id = version.id
+
+    scorecard_history_rows = (
+        await session.execute(
+            select(PolymarketPilotScorecard)
+            .where(PolymarketPilotScorecard.strategy_version_id.is_not(None))
+            .order_by(PolymarketPilotScorecard.window_end.asc(), PolymarketPilotScorecard.id.asc())
+        )
+    ).scalars().all()
+    for row in scorecard_history_rows:
+        if row.strategy_version_id is None:
+            continue
+        version = version_by_id.get(int(row.strategy_version_id))
+        family = str(row.strategy_family or "").strip().lower()
+        family_row = family_rows.get(family)
+        if version is None or family_row is None:
+            continue
+        live_orders = (
+            await session.execute(
+                select(LiveOrder).where(
+                    LiveOrder.strategy_family == family,
+                    LiveOrder.dry_run.is_(False),
+                    LiveOrder.created_at >= row.window_start,
+                    LiveOrder.created_at < row.window_end,
+                )
+            )
+        ).scalars().all()
+        incidents = (
+            await session.execute(
+                select(PolymarketControlPlaneIncident).where(
+                    PolymarketControlPlaneIncident.strategy_version_id == row.strategy_version_id,
+                    PolymarketControlPlaneIncident.observed_at_local >= row.window_start,
+                    PolymarketControlPlaneIncident.observed_at_local < row.window_end,
+                )
+            )
+        ).scalars().all()
+        guardrails = (
+            await session.execute(
+                select(PolymarketPilotGuardrailEvent).where(
+                    PolymarketPilotGuardrailEvent.strategy_version_id == row.strategy_version_id,
+                    PolymarketPilotGuardrailEvent.observed_at_local >= row.window_start,
+                    PolymarketPilotGuardrailEvent.observed_at_local < row.window_end,
+                )
+            )
+        ).scalars().all()
+        shadow_rows = (
+            await session.execute(
+                select(PolymarketLiveShadowEvaluation)
+                .join(LiveOrder, LiveOrder.id == PolymarketLiveShadowEvaluation.live_order_id, isouter=True)
+                .where(
+                    LiveOrder.strategy_family == family,
+                    PolymarketLiveShadowEvaluation.updated_at >= row.window_start,
+                    PolymarketLiveShadowEvaluation.updated_at < row.window_end,
+                )
+            )
+        ).scalars().all()
+        scorecard_details = row.details_json if isinstance(row.details_json, dict) else {}
+        execution_policy_versions = sorted({
+            str(order.policy_version).strip()
+            for order in live_orders
+            if order.policy_version not in (None, "")
+        })
+        market_universe = sorted({
+            str(value)
+            for order in live_orders
+            for value in (order.condition_id, order.asset_id)
+            if value
+        })
+        severe_guardrail_count = sum(1 for guardrail in guardrails if guardrail.action_taken in {"pause_pilot", "disarm_pilot", "kill_switch"})
+        shadow_gap_breach_count = sum(1 for guardrail in guardrails if guardrail.guardrail_type == "shadow_gap_breach")
+        coverage_limited_count = sum(1 for shadow_row in shadow_rows if shadow_row.coverage_limited)
+        evaluation_status, recommended_tier = map_scorecard_status_to_promotion_verdict(row.status)
+        await upsert_promotion_evaluation(
+            session,
+            family_id=family_row.id,
+            strategy_version_id=int(row.strategy_version_id),
+            gate_policy_id=gate_policy.id if gate_policy is not None else None,
+            evaluation_kind=PROMOTION_EVALUATION_KIND_SCORECARD,
+            evaluation_status=evaluation_status,
+            autonomy_tier=recommended_tier,
+            evaluation_window_start=row.window_start,
+            evaluation_window_end=row.window_end,
+            provenance_json={
+                "source": "polymarket_pilot_scorecard",
+                "strategy_family": family,
+                "strategy_version_key": version.version_key,
+                "strategy_version_status": version.version_status,
+                "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+                "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+                "scorecard_id": row.id,
+                "execution_policy_version": (
+                    execution_policy_versions[0]
+                    if len(execution_policy_versions) == 1
+                    else "mixed"
+                    if execution_policy_versions
+                    else None
+                ),
+                "risk_policy_version": None,
+                "fee_schedule_version": "live_fill_fee_history_unversioned",
+                "reward_schedule_version": "not_tracked_in_phase13a",
+                "market_universe_hash": hash_json_payload(market_universe),
+                "config_hash": hash_json_payload(
+                    {
+                        "strategy_version_key": version.version_key,
+                        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+                        "window_label": scorecard_details.get("window_label"),
+                        "daily_loss_guardrail_usd": settings.polymarket_pilot_max_daily_loss_usd,
+                        "shadow_gap_breach_bps": settings.polymarket_pilot_shadow_gap_breach_bps,
+                    }
+                ),
+            },
+            summary_json={
+                "scorecard_status": row.status,
+                "recommended_tier": recommended_tier,
+                "live_order_count": len(live_orders),
+                "fills_count": row.fills_count,
+                "approval_count": row.approval_count,
+                "rejection_count": row.rejection_count,
+                "approval_expired_count": row.approval_expired_count,
+                "incident_count": len(incidents),
+                "guardrail_count": len(guardrails),
+                "serious_guardrail_count": severe_guardrail_count,
+                "shadow_gap_breach_count": shadow_gap_breach_count,
+                "coverage_limited_count": coverage_limited_count,
+                "net_pnl": _serialize_decimal(row.net_pnl),
+                "avg_shadow_gap_bps": _serialize_decimal(row.avg_shadow_gap_bps),
+                "worst_shadow_gap_bps": _serialize_decimal(row.worst_shadow_gap_bps),
+            },
+        )
+
+    incident_history_rows = (
+        await session.execute(
+            select(PolymarketControlPlaneIncident)
+            .where(PolymarketControlPlaneIncident.strategy_version_id.is_not(None))
+            .order_by(PolymarketControlPlaneIncident.observed_at_local.asc(), PolymarketControlPlaneIncident.id.asc())
+        )
+    ).scalars().all()
+    for row in incident_history_rows:
+        if row.strategy_version_id is None:
+            continue
+        version = version_by_id.get(int(row.strategy_version_id))
+        family = next(
+            (name for name, version_row in version_by_family.items() if version_row.id == row.strategy_version_id),
+            None,
+        )
+        family_row = family_rows.get(family) if family is not None else None
+        if version is None or family_row is None:
+            continue
+        window_start, window_end = rolling_promotion_window_bounds(row.observed_at_local)
+        if window_start is None or window_end is None:
+            continue
+        incidents = (
+            await session.execute(
+                select(PolymarketControlPlaneIncident)
+                .where(
+                    PolymarketControlPlaneIncident.strategy_version_id == row.strategy_version_id,
+                    PolymarketControlPlaneIncident.observed_at_local >= window_start,
+                    PolymarketControlPlaneIncident.observed_at_local <= window_end,
+                )
+            )
+        ).scalars().all()
+        evaluation_status, recommended_tier = map_incident_summary_to_promotion_verdict(
+            incident_count=len(incidents),
+        )
+        market_universe = sorted({
+            str(value)
+            for incident in incidents
+            for value in (incident.condition_id, incident.asset_id)
+            if value
+        })
+        await upsert_promotion_evaluation(
+            session,
+            family_id=family_row.id,
+            strategy_version_id=int(row.strategy_version_id),
+            gate_policy_id=gate_policy.id if gate_policy is not None else None,
+            evaluation_kind=PROMOTION_EVALUATION_KIND_INCIDENT,
+            evaluation_status=evaluation_status,
+            autonomy_tier=recommended_tier,
+            evaluation_window_start=window_start,
+            evaluation_window_end=window_end,
+            provenance_json={
+                "source": "polymarket_control_plane_incident",
+                "strategy_family": family,
+                "strategy_version_key": version.version_key,
+                "strategy_version_status": version.version_status,
+                "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+                "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+                "incident_id": row.id,
+                "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
+                "pilot_run_id": str(row.pilot_run_id) if row.pilot_run_id is not None else None,
+                "rolling_window_hours": 24,
+                "market_universe_hash": hash_json_payload(market_universe),
+                "config_hash": hash_json_payload(
+                    {
+                        "rolling_window_hours": 24,
+                        "strategy_version_key": version.version_key,
+                        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+                    }
+                ),
+            },
+            summary_json={
+                "incident_count_24h": len(incidents),
+                "incident_type_counts_24h": _count_labels([incident.incident_type for incident in incidents]),
+                "severity_counts_24h": _count_labels([incident.severity for incident in incidents]),
+                "latest_incident_type": row.incident_type,
+                "latest_severity": row.severity,
+            },
+        )
+
+    guardrail_history_rows = (
+        await session.execute(
+            select(PolymarketPilotGuardrailEvent)
+            .where(PolymarketPilotGuardrailEvent.strategy_version_id.is_not(None))
+            .order_by(PolymarketPilotGuardrailEvent.observed_at_local.asc(), PolymarketPilotGuardrailEvent.id.asc())
+        )
+    ).scalars().all()
+    for row in guardrail_history_rows:
+        if row.strategy_version_id is None:
+            continue
+        version = version_by_id.get(int(row.strategy_version_id))
+        family = str(row.strategy_family or "").strip().lower()
+        family_row = family_rows.get(family)
+        if version is None or family_row is None:
+            continue
+        window_start, window_end = rolling_promotion_window_bounds(row.observed_at_local)
+        if window_start is None or window_end is None:
+            continue
+        guardrails = (
+            await session.execute(
+                select(PolymarketPilotGuardrailEvent)
+                .where(
+                    PolymarketPilotGuardrailEvent.strategy_version_id == row.strategy_version_id,
+                    PolymarketPilotGuardrailEvent.observed_at_local >= window_start,
+                    PolymarketPilotGuardrailEvent.observed_at_local <= window_end,
+                )
+            )
+        ).scalars().all()
+        serious_guardrail_count = sum(1 for guardrail in guardrails if guardrail.action_taken in {"pause_pilot", "disarm_pilot", "kill_switch"})
+        shadow_gap_breach_count = sum(1 for guardrail in guardrails if guardrail.guardrail_type == "shadow_gap_breach")
+        evaluation_status, recommended_tier = map_guardrail_summary_to_promotion_verdict(
+            guardrail_count=len(guardrails),
+            serious_guardrail_count=serious_guardrail_count,
+            shadow_gap_breach_count=shadow_gap_breach_count,
+            latest_severity=row.severity,
+        )
+        market_universe = sorted({
+            str(value)
+            for guardrail in guardrails
+            for value in (guardrail.live_order_id, guardrail.guardrail_type)
+            if value is not None
+        })
+        await upsert_promotion_evaluation(
+            session,
+            family_id=family_row.id,
+            strategy_version_id=int(row.strategy_version_id),
+            gate_policy_id=gate_policy.id if gate_policy is not None else None,
+            evaluation_kind=PROMOTION_EVALUATION_KIND_GUARDRAIL,
+            evaluation_status=evaluation_status,
+            autonomy_tier=recommended_tier,
+            evaluation_window_start=window_start,
+            evaluation_window_end=window_end,
+            provenance_json={
+                "source": "polymarket_pilot_guardrail_event",
+                "strategy_family": family,
+                "strategy_version_key": version.version_key,
+                "strategy_version_status": version.version_status,
+                "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+                "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+                "guardrail_event_id": row.id,
+                "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
+                "pilot_run_id": str(row.pilot_run_id) if row.pilot_run_id is not None else None,
+                "rolling_window_hours": 24,
+                "market_universe_hash": hash_json_payload(market_universe),
+                "config_hash": hash_json_payload(
+                    {
+                        "rolling_window_hours": 24,
+                        "strategy_version_key": version.version_key,
+                        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+                        "shadow_gap_breach_bps": settings.polymarket_pilot_shadow_gap_breach_bps,
+                        "max_daily_loss_usd": settings.polymarket_pilot_max_daily_loss_usd,
+                    }
+                ),
+            },
+            summary_json={
+                "guardrail_count_24h": len(guardrails),
+                "serious_guardrail_count_24h": serious_guardrail_count,
+                "shadow_gap_breach_count_24h": shadow_gap_breach_count,
+                "guardrail_type_counts_24h": _count_labels([guardrail.guardrail_type for guardrail in guardrails]),
+                "action_counts_24h": _count_labels([guardrail.action_taken for guardrail in guardrails]),
+                "severity_counts_24h": _count_labels([guardrail.severity for guardrail in guardrails]),
+                "latest_guardrail_type": row.guardrail_type,
+                "latest_action_taken": row.action_taken,
+                "latest_severity": row.severity,
+                "latest_trigger_value": _serialize_decimal(row.trigger_value),
+                "latest_threshold_value": _serialize_decimal(row.threshold_value),
+            },
+        )
 
 
 async def get_current_strategy_version(
@@ -880,9 +1208,20 @@ async def get_strategy_version_detail_payload(
     evaluation_rows = (
         await session.execute(
             select(PromotionEvaluation)
-            .where(PromotionEvaluation.strategy_version_id == version.id)
+            .where(
+                PromotionEvaluation.strategy_version_id == version.id,
+                PromotionEvaluation.evaluation_kind.in_(tuple(sorted(PRIMARY_PROMOTION_EVALUATION_KINDS))),
+            )
             .order_by(PromotionEvaluation.created_at.desc(), PromotionEvaluation.id.desc())
             .limit(event_limit)
+        )
+    ).scalars().all()
+    gate_history_rows = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.strategy_version_id == version.id)
+            .order_by(PromotionEvaluation.created_at.desc(), PromotionEvaluation.id.desc())
+            .limit(max(event_limit * 3, event_limit))
         )
     ).scalars().all()
     demotion_rows = (
@@ -910,6 +1249,7 @@ async def get_strategy_version_detail_payload(
         "scorecards": [_serialize_scorecard_alignment(row) for row in scorecard_rows],
         "readiness_reports": [_serialize_readiness_alignment(row) for row in readiness_rows],
         "promotion_evaluations": [serialize_promotion_evaluation(row) for row in evaluation_rows],
+        "gate_history": [serialize_promotion_evaluation(row) for row in gate_history_rows],
         "demotion_events": [serialize_demotion_event(row) for row in demotion_rows],
         "generated_at": _ensure_utc(datetime.now(timezone.utc)).isoformat(),
     }
@@ -992,14 +1332,24 @@ async def get_latest_promotion_evaluation_by_version(
     session: AsyncSession,
     *,
     version_ids: list[int] | set[int] | tuple[int, ...],
+    include_supporting: bool = False,
 ) -> dict[int, dict[str, Any]]:
     normalized_ids = sorted({int(value) for value in version_ids if value is not None})
     if not normalized_ids:
         return {}
+    evaluation_kinds = tuple(sorted(PRIMARY_PROMOTION_EVALUATION_KINDS if not include_supporting else {
+        *PRIMARY_PROMOTION_EVALUATION_KINDS,
+        PROMOTION_EVALUATION_KIND_SCORECARD,
+        PROMOTION_EVALUATION_KIND_INCIDENT,
+        PROMOTION_EVALUATION_KIND_GUARDRAIL,
+    }))
     rows = (
         await session.execute(
             select(PromotionEvaluation)
-            .where(PromotionEvaluation.strategy_version_id.in_(normalized_ids))
+            .where(
+                PromotionEvaluation.strategy_version_id.in_(normalized_ids),
+                PromotionEvaluation.evaluation_kind.in_(evaluation_kinds),
+            )
             .order_by(PromotionEvaluation.created_at.desc(), PromotionEvaluation.id.desc())
         )
     ).scalars().all()
@@ -1045,6 +1395,7 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
     evaluations = (
         await session.execute(
             select(PromotionEvaluation)
+            .where(PromotionEvaluation.evaluation_kind.in_(tuple(sorted(PRIMARY_PROMOTION_EVALUATION_KINDS))))
             .order_by(PromotionEvaluation.created_at.desc(), PromotionEvaluation.id.desc())
         )
     ).scalars().all()

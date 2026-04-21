@@ -95,6 +95,31 @@ function evaluationSourceHint(evaluation) {
   return provenance.readiness_report_id ? `Report ${provenance.readiness_report_id}` : (provenance.source || "-");
 }
 
+function gateHistorySummary(evaluation) {
+  const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "replay_gate") {
+    return `${titleCase(summary.replay_status)} | ${summary.variant_count ?? 0} variants`;
+  }
+  if (evaluation?.evaluation_kind === "pilot_readiness_gate") {
+    const blockers = Array.isArray(summary.readiness_blockers) ? summary.readiness_blockers.length : 0;
+    return `${titleCase(summary.readiness_status)} | ${blockers} blockers`;
+  }
+  if (evaluation?.evaluation_kind === "scorecard_gate") {
+    return `${titleCase(summary.scorecard_status)} | Net ${fmtMetric(summary.net_pnl)} | Incidents ${summary.incident_count ?? 0}`;
+  }
+  if (evaluation?.evaluation_kind === "incident_gate") {
+    return `${summary.incident_count_24h ?? 0} incidents | Latest ${titleCase(summary.latest_incident_type)}`;
+  }
+  if (evaluation?.evaluation_kind === "guardrail_gate") {
+    return `${summary.guardrail_count_24h ?? 0} guardrails | Latest ${titleCase(summary.latest_guardrail_type)}`;
+  }
+  return "-";
+}
+
+function gateHistoryObservedAt(evaluation) {
+  return evaluation?.evaluation_window_end || evaluation?.updated_at || evaluation?.created_at || null;
+}
+
 function renderEmptySurface(label) {
   return <span style={metaStyle}>{label}</span>;
 }
@@ -527,6 +552,11 @@ export default function Strategies() {
                         value={versionDetail.promotion_evaluations?.length ?? 0}
                         hint="Recent version-scoped gate evaluations"
                       />
+                      <MetricCard
+                        label="Gate History"
+                        value={versionDetail.gate_history?.length ?? 0}
+                        hint="Primary and supporting gate snapshots"
+                      />
                     </div>
 
                     <SimpleTable
@@ -584,6 +614,22 @@ export default function Strategies() {
                         row.open_incidents ?? 0,
                       ]))}
                       emptyLabel="No readiness reports linked to this version yet."
+                    />
+
+                    <div style={detailSectionGapStyle} />
+                    <SimpleTable
+                      columns={["Gate Event", "Status", "Window", "Summary", "Observed"]}
+                      rows={(versionDetail.gate_history || []).map((row) => ([
+                        titleCase(row.evaluation_kind),
+                        <div key={`${row.id}-status`}>
+                          <Badge value={row.evaluation_status} />
+                          <div style={subtleCellStyle}>{titleCase(row.autonomy_tier)}</div>
+                        </div>,
+                        `${fmtDate(row.evaluation_window_start)} -> ${fmtDate(row.evaluation_window_end)}`,
+                        gateHistorySummary(row),
+                        fmtDate(gateHistoryObservedAt(row)),
+                      ]))}
+                      emptyLabel="No gate history recorded for this version yet."
                     />
 
                     <div style={detailSectionGapStyle} />

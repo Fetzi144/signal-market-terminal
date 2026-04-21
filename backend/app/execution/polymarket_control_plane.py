@@ -78,6 +78,7 @@ from app.execution.polymarket_pilot_evidence import (
     list_pilot_guardrail_events,
     list_pilot_readiness_reports,
     list_pilot_scorecards,
+    resolve_pilot_strategy_family,
     resolve_pilot_strategy_version_id,
 )
 from app.ingestion.polymarket_common import utcnow
@@ -114,11 +115,20 @@ from app.models.polymarket_replay import (
     PolymarketReplayRun,
     PolymarketReplayScenario,
 )
+from app.strategies.promotion import (
+    PROMOTION_EVALUATION_KIND_INCIDENT,
+    hash_json_payload,
+    map_incident_summary_to_promotion_verdict,
+    rolling_promotion_window_bounds,
+    upsert_promotion_evaluation,
+)
 from app.strategies.registry import (
+    PROMOTION_GATE_POLICY_V1,
     get_current_strategy_version,
     get_latest_promotion_evaluation_by_version,
     get_strategy_version_snapshot_map,
     serialize_strategy_version_snapshot,
+    sync_strategy_registry,
 )
 
 RUN_ACTIVE_STATUSES = {"armed", "running", "paused"}
@@ -145,6 +155,102 @@ async def _serialize_control_plane_incidents_with_lifecycle(
         )
         for row in rows
     ]
+
+
+def _count_labels(values: list[str | None]) -> dict[str, int]:
+    normalized = [
+        str(value).strip()
+        for value in values
+        if value not in (None, "")
+    ]
+    return {
+        label: sum(1 for value in normalized if value == label)
+        for label in sorted(set(normalized))
+    }
+
+
+async def _record_phase13a_incident_evaluation(
+    session: AsyncSession,
+    *,
+    row: PolymarketControlPlaneIncident,
+    strategy_family: str | None,
+) -> None:
+    if row.strategy_version_id is None or not strategy_family:
+        return
+
+    registry_state = await sync_strategy_registry(session)
+    family_row = registry_state["family_rows"].get(strategy_family)
+    gate_policy = registry_state["gate_policy_rows"].get(PROMOTION_GATE_POLICY_V1)
+    version_snapshot = (
+        await get_strategy_version_snapshot_map(session, version_ids=[int(row.strategy_version_id)])
+    ).get(int(row.strategy_version_id))
+    if family_row is None or version_snapshot is None:
+        return
+
+    window_start, window_end = rolling_promotion_window_bounds(row.observed_at_local)
+    if window_start is None or window_end is None:
+        return
+
+    incident_rows = (
+        await session.execute(
+            select(PolymarketControlPlaneIncident)
+            .where(
+                PolymarketControlPlaneIncident.strategy_version_id == row.strategy_version_id,
+                PolymarketControlPlaneIncident.observed_at_local >= window_start,
+                PolymarketControlPlaneIncident.observed_at_local <= window_end,
+            )
+            .order_by(PolymarketControlPlaneIncident.observed_at_local.desc(), PolymarketControlPlaneIncident.id.desc())
+        )
+    ).scalars().all()
+    evaluation_status, recommended_tier = map_incident_summary_to_promotion_verdict(
+        incident_count=len(incident_rows),
+    )
+    market_universe = sorted({
+        str(value)
+        for incident in incident_rows
+        for value in (incident.condition_id, incident.asset_id)
+        if value
+    })
+    summary = {
+        "incident_count_24h": len(incident_rows),
+        "incident_type_counts_24h": _count_labels([incident.incident_type for incident in incident_rows]),
+        "severity_counts_24h": _count_labels([incident.severity for incident in incident_rows]),
+        "latest_incident_type": row.incident_type,
+        "latest_severity": row.severity,
+    }
+    provenance = {
+        "source": "polymarket_control_plane_incident",
+        "strategy_family": strategy_family,
+        "strategy_version_key": version_snapshot["version_key"],
+        "strategy_version_status": version_snapshot["version_status"],
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+        "incident_id": row.id,
+        "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
+        "pilot_run_id": str(row.pilot_run_id) if row.pilot_run_id is not None else None,
+        "rolling_window_hours": 24,
+        "market_universe_hash": hash_json_payload(market_universe),
+        "config_hash": hash_json_payload(
+            {
+                "rolling_window_hours": 24,
+                "strategy_version_key": version_snapshot["version_key"],
+                "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+            }
+        ),
+    }
+    await upsert_promotion_evaluation(
+        session,
+        family_id=family_row.id,
+        strategy_version_id=int(row.strategy_version_id),
+        gate_policy_id=gate_policy.id if gate_policy is not None else None,
+        evaluation_kind=PROMOTION_EVALUATION_KIND_INCIDENT,
+        evaluation_status=evaluation_status,
+        autonomy_tier=recommended_tier,
+        evaluation_window_start=window_start,
+        evaluation_window_end=window_end,
+        provenance_json=provenance,
+        summary_json=summary,
+    )
 
 
 async def list_pilot_configs(
@@ -393,12 +499,18 @@ async def record_control_plane_incident(
     condition_id: str | None = None,
     asset_id: str | None = None,
 ) -> PolymarketControlPlaneIncident:
+    resolved_strategy_family = await resolve_pilot_strategy_family(
+        session,
+        live_order=live_order,
+        strategy_family=strategy_family,
+        pilot_run=pilot_run,
+    )
     row = PolymarketControlPlaneIncident(
         pilot_run_id=pilot_run.id if pilot_run is not None else None,
         strategy_version_id=await resolve_pilot_strategy_version_id(
             session,
             live_order=live_order,
-            strategy_family=strategy_family,
+            strategy_family=resolved_strategy_family,
             pilot_run=pilot_run,
         ),
         severity=severity,
@@ -411,6 +523,11 @@ async def record_control_plane_incident(
     )
     session.add(row)
     await session.flush()
+    await _record_phase13a_incident_evaluation(
+        session,
+        row=row,
+        strategy_family=resolved_strategy_family,
+    )
     polymarket_control_plane_incidents_total.labels(incident_type=incident_type, severity=severity).inc()
     return row
 

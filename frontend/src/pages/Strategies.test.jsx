@@ -592,6 +592,60 @@ beforeEach(() => {
         updated_at: "2026-04-21T08:00:00Z",
       },
     ],
+    gate_history: [
+      {
+        id: 15,
+        family_id: 2,
+        strategy_version_id: 2,
+        gate_policy_id: 1,
+        evaluation_kind: "incident_gate",
+        evaluation_status: "blocked",
+        autonomy_tier: "shadow_only",
+        evaluation_window_start: "2026-04-20T08:15:00Z",
+        evaluation_window_end: "2026-04-21T08:15:00Z",
+        summary_json: {
+          incident_count_24h: 1,
+          latest_incident_type: "submission_blocked",
+        },
+        created_at: "2026-04-21T08:15:00Z",
+        updated_at: "2026-04-21T08:15:00Z",
+      },
+      {
+        id: 14,
+        family_id: 2,
+        strategy_version_id: 2,
+        gate_policy_id: 1,
+        evaluation_kind: "scorecard_gate",
+        evaluation_status: "observe",
+        autonomy_tier: "assisted_live",
+        evaluation_window_start: "2026-04-20T00:00:00Z",
+        evaluation_window_end: "2026-04-21T00:00:00Z",
+        summary_json: {
+          scorecard_status: "watch",
+          net_pnl: "12.50",
+          incident_count: 1,
+        },
+        created_at: "2026-04-21T08:05:00Z",
+        updated_at: "2026-04-21T08:05:00Z",
+      },
+      {
+        id: 12,
+        family_id: 2,
+        strategy_version_id: 2,
+        gate_policy_id: 1,
+        evaluation_kind: "replay_gate",
+        evaluation_status: "observe",
+        autonomy_tier: "shadow_only",
+        evaluation_window_start: "2026-04-20T00:00:00Z",
+        evaluation_window_end: "2026-04-21T00:00:00Z",
+        summary_json: {
+          replay_status: "completed",
+          variant_count: 3,
+        },
+        created_at: "2026-04-21T08:00:00Z",
+        updated_at: "2026-04-21T08:00:00Z",
+      },
+    ],
     demotion_events: [],
     generated_at: "2026-04-21T08:16:00Z",
   });
@@ -625,9 +679,11 @@ describe("Strategies", () => {
       expect(getStrategyVersionDetail).toHaveBeenCalledWith(2);
     });
     expect(await screen.findByText("Version Detail")).toBeInTheDocument();
+    expect(screen.getByText("Gate History")).toBeInTheDocument();
     expect(screen.getByText("No demotion events recorded for this version yet.")).toBeInTheDocument();
     expect(screen.queryByText("No replay runs linked to this version yet.")).not.toBeInTheDocument();
     expect(screen.getAllByText("phase11-exec-1234").length).toBeGreaterThan(0);
     expect(screen.getByText("client-1")).toBeInTheDocument();
+    expect(screen.getByText(/Submission Blocked/)).toBeInTheDocument();
   });
 });

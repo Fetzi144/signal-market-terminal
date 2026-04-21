@@ -169,6 +169,7 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert detail_payload["family"]["family"] == "default_strategy"
     assert detail_payload["replay_runs"] == []
     assert detail_payload["live_shadow_evaluations"] == []
+    assert detail_payload["gate_history"] == []
 
 
 # ── Signals list ────────────────────────────────────────

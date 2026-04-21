@@ -205,6 +205,7 @@ class StrategyVersionDetailOut(BaseModel):
     scorecards: list[StrategyScorecardAlignmentOut]
     readiness_reports: list[StrategyReadinessAlignmentOut]
     promotion_evaluations: list[StrategyLifecycleEventOut]
+    gate_history: list[StrategyLifecycleEventOut]
     demotion_events: list[StrategyLifecycleEventOut]
     generated_at: str
 

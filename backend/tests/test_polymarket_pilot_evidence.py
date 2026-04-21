@@ -218,10 +218,21 @@ async def test_max_daily_loss_guardrail_triggers(session, monkeypatch):
 
     await service.sync_position_lots(session)
     guardrails = await service.enforce_periodic_guardrails(session, now=now)
+    guardrail_evaluation = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.evaluation_kind == "guardrail_gate")
+            .order_by(PromotionEvaluation.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     assert any(event["guardrail_type"] == "max_daily_loss" for event in guardrails)
     assert any(event["strategy_version_id"] is not None for event in guardrails)
     assert any(event["strategy_version"]["version_key"] == "exec_policy_infra_v1" for event in guardrails)
+    assert guardrail_evaluation is not None
+    assert guardrail_evaluation.summary_json["latest_guardrail_type"] == "max_daily_loss"
+    assert guardrail_evaluation.provenance_json["source"] == "polymarket_pilot_guardrail_event"
 
 
 @pytest.mark.asyncio
@@ -251,6 +262,22 @@ async def test_approval_ttl_expiration_creates_guardrail_and_audit(session, monk
             )
         )
     ).scalars().all()
+    incident_evaluation = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.evaluation_kind == "incident_gate")
+            .order_by(PromotionEvaluation.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    guardrail_evaluation = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.evaluation_kind == "guardrail_gate")
+            .order_by(PromotionEvaluation.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     approval_events = (await session.execute(
         select(PolymarketPilotApprovalEvent).where(PolymarketPilotApprovalEvent.live_order_id == order.id)
     )).scalars().all()
@@ -262,6 +289,10 @@ async def test_approval_ttl_expiration_creates_guardrail_and_audit(session, monk
     assert any(event["strategy_version"]["version_key"] == "exec_policy_infra_v1" for event in guardrails)
     assert [event.action for event in approval_events] == ["queued", "expired"]
     assert [incident.strategy_version_id for incident in incidents] == [order.strategy_version_id]
+    assert incident_evaluation is not None
+    assert incident_evaluation.summary_json["latest_incident_type"] == "approval_timeout"
+    assert guardrail_evaluation is not None
+    assert guardrail_evaluation.summary_json["latest_guardrail_type"] == "approval_ttl"
 
 
 @pytest.mark.asyncio
@@ -347,6 +378,14 @@ async def test_scorecard_aggregates_shadow_and_readiness_stays_manual_only(sessi
             .limit(1)
         )
     ).scalar_one_or_none()
+    scorecard_evaluation = (
+        await session.execute(
+            select(PromotionEvaluation)
+            .where(PromotionEvaluation.evaluation_kind == "scorecard_gate")
+            .order_by(PromotionEvaluation.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     assert scorecard["fills_count"] == 2
     assert scorecard["incident_count"] == 1
@@ -354,6 +393,9 @@ async def test_scorecard_aggregates_shadow_and_readiness_stays_manual_only(sessi
     assert scorecard["avg_shadow_gap_bps"] == pytest.approx(5.0)
     assert scorecard["coverage_limited_count"] == 1
     assert readiness["status"] == "not_ready"
+    assert scorecard_evaluation is not None
+    assert scorecard_evaluation.summary_json["scorecard_status"] in {"ok", "watch", "degraded", "blocked"}
+    assert scorecard_evaluation.provenance_json["source"] == "polymarket_pilot_scorecard"
     assert evaluation is not None
     assert evaluation.evaluation_status == "blocked"
     assert evaluation.autonomy_tier == "shadow_only"
@@ -502,6 +544,8 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert len(detail_payload["scorecards"]) >= 1
     assert len(detail_payload["readiness_reports"]) >= 1
     assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] in {"pilot_readiness_gate", "replay_gate"}
+    gate_kinds = {row["evaluation_kind"] for row in detail_payload["gate_history"]}
+    assert {"pilot_readiness_gate", "scorecard_gate", "incident_gate", "guardrail_gate"}.issubset(gate_kinds)
     assert health_response.json()["polymarket_phase12"]["daily_realized_pnl"]["net_realized_pnl"] is not None
     assert "recent_guardrail_triggers" in health_response.json()["polymarket_phase12"]
     assert health_response.json()["polymarket_phase12"]["strategy_version"]["version_key"] == "exec_policy_infra_v1"

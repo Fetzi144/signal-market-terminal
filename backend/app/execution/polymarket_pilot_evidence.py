@@ -36,9 +36,14 @@ from app.models.polymarket_pilot import (
     PolymarketPilotScorecard,
 )
 from app.strategies.promotion import (
+    PROMOTION_EVALUATION_KIND_GUARDRAIL,
     PROMOTION_EVALUATION_KIND_PILOT_READINESS,
+    PROMOTION_EVALUATION_KIND_SCORECARD,
     hash_json_payload,
+    map_guardrail_summary_to_promotion_verdict,
     map_readiness_status_to_promotion_verdict,
+    map_scorecard_status_to_promotion_verdict,
+    rolling_promotion_window_bounds,
     upsert_promotion_evaluation,
 )
 from app.strategies.registry import (
@@ -101,6 +106,24 @@ async def _strategy_lifecycle_maps(
     return version_map, evaluation_map
 
 
+async def resolve_pilot_strategy_family(
+    session: AsyncSession,
+    *,
+    live_order: LiveOrder | None = None,
+    strategy_family: str | None = None,
+    pilot_run: PolymarketPilotRun | None = None,
+) -> str | None:
+    if live_order is not None and live_order.strategy_family:
+        return _normalized_strategy_family(live_order.strategy_family)
+    if strategy_family:
+        return _normalized_strategy_family(strategy_family)
+    if pilot_run is not None and pilot_run.pilot_config_id is not None:
+        config = await session.get(PolymarketPilotConfig, pilot_run.pilot_config_id)
+        if config is not None and config.strategy_family:
+            return _normalized_strategy_family(config.strategy_family)
+    return None
+
+
 async def resolve_pilot_strategy_version_id(
     session: AsyncSession,
     *,
@@ -111,16 +134,12 @@ async def resolve_pilot_strategy_version_id(
     if live_order is not None and live_order.strategy_version_id is not None:
         return int(live_order.strategy_version_id)
 
-    family: str | None = None
-    if live_order is not None and live_order.strategy_family:
-        family = _normalized_strategy_family(live_order.strategy_family)
-    elif strategy_family:
-        family = _normalized_strategy_family(strategy_family)
-    elif pilot_run is not None and pilot_run.pilot_config_id is not None:
-        config = await session.get(PolymarketPilotConfig, pilot_run.pilot_config_id)
-        if config is not None and config.strategy_family:
-            family = _normalized_strategy_family(config.strategy_family)
-
+    family = await resolve_pilot_strategy_family(
+        session,
+        live_order=live_order,
+        strategy_family=strategy_family,
+        pilot_run=pilot_run,
+    )
     if not family:
         return None
 
@@ -128,6 +147,42 @@ async def resolve_pilot_strategy_version_id(
     if strategy_version is None or strategy_version.id is None:
         return None
     return int(strategy_version.id)
+
+
+def _count_labels(values: list[str | None]) -> dict[str, int]:
+    normalized = [
+        str(value).strip()
+        for value in values
+        if value not in (None, "")
+    ]
+    return {
+        label: sum(1 for value in normalized if value == label)
+        for label in sorted(set(normalized))
+    }
+
+
+async def _phase13a_gate_context(
+    session: AsyncSession,
+    *,
+    family: str,
+) -> tuple[Any | None, Any | None]:
+    registry_state = await sync_strategy_registry(session)
+    return (
+        registry_state["family_rows"].get(family),
+        registry_state["gate_policy_rows"].get(PROMOTION_GATE_POLICY_V1),
+    )
+
+
+async def _strategy_version_snapshot(
+    session: AsyncSession,
+    *,
+    strategy_version_id: int | None,
+) -> dict[str, Any] | None:
+    if strategy_version_id is None:
+        return None
+    return (
+        await get_strategy_version_snapshot_map(session, version_ids=[int(strategy_version_id)])
+    ).get(int(strategy_version_id))
 
 
 async def _record_phase13a_readiness_evaluation(
@@ -149,9 +204,7 @@ async def _record_phase13a_readiness_evaluation(
     if strategy_version is None:
         return
 
-    registry_state = await sync_strategy_registry(session)
-    family_row = registry_state["family_rows"].get(family)
-    gate_policy = registry_state["gate_policy_rows"].get(PROMOTION_GATE_POLICY_V1)
+    family_row, gate_policy = await _phase13a_gate_context(session, family=family)
     if family_row is None:
         return
 
@@ -224,6 +277,197 @@ async def _record_phase13a_readiness_evaluation(
         autonomy_tier=recommended_tier,
         evaluation_window_start=readiness_row.window_start,
         evaluation_window_end=readiness_row.window_end,
+        provenance_json=provenance,
+        summary_json=summary,
+    )
+
+
+async def _record_phase13a_scorecard_evaluation(
+    session: AsyncSession,
+    *,
+    family: str,
+    strategy_version,
+    scorecard_row: PolymarketPilotScorecard,
+    live_orders: list[LiveOrder],
+    fills: list[LiveFill],
+    incidents: list[PolymarketControlPlaneIncident],
+    guardrails: list[PolymarketPilotGuardrailEvent],
+    shadow_rows: list[PolymarketLiveShadowEvaluation],
+    approval_count: int,
+    rejection_count: int,
+    expired_count: int,
+) -> None:
+    if strategy_version is None or scorecard_row.id is None:
+        return
+
+    family_row, gate_policy = await _phase13a_gate_context(session, family=family)
+    if family_row is None:
+        return
+
+    evaluation_status, recommended_tier = map_scorecard_status_to_promotion_verdict(scorecard_row.status)
+    execution_policy_versions = sorted({
+        str(row.policy_version).strip()
+        for row in live_orders
+        if row.policy_version not in (None, "")
+    })
+    market_universe = sorted({
+        str(value)
+        for row in live_orders
+        for value in (row.condition_id, row.asset_id)
+        if value
+    })
+    severe_guardrail_count = sum(1 for row in guardrails if row.action_taken in SERIOUS_GUARDRAIL_ACTIONS)
+    shadow_gap_breach_count = sum(1 for row in guardrails if row.guardrail_type == "shadow_gap_breach")
+    coverage_limited_count = sum(1 for row in shadow_rows if row.coverage_limited)
+    scorecard_details = scorecard_row.details_json if isinstance(scorecard_row.details_json, dict) else {}
+    config_payload = {
+        "strategy_version_key": strategy_version.version_key,
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "window_label": scorecard_details.get("window_label"),
+        "daily_loss_guardrail_usd": settings.polymarket_pilot_max_daily_loss_usd,
+        "shadow_gap_breach_bps": settings.polymarket_pilot_shadow_gap_breach_bps,
+    }
+    summary = {
+        "scorecard_status": scorecard_row.status,
+        "recommended_tier": recommended_tier,
+        "live_order_count": len(live_orders),
+        "fills_count": len(fills),
+        "approval_count": approval_count,
+        "rejection_count": rejection_count,
+        "approval_expired_count": expired_count,
+        "incident_count": len(incidents),
+        "guardrail_count": len(guardrails),
+        "serious_guardrail_count": severe_guardrail_count,
+        "shadow_gap_breach_count": shadow_gap_breach_count,
+        "coverage_limited_count": coverage_limited_count,
+        "net_pnl": _serialize_decimal(_to_decimal(scorecard_row.net_pnl)),
+        "avg_shadow_gap_bps": _serialize_decimal(_to_decimal(scorecard_row.avg_shadow_gap_bps)),
+        "worst_shadow_gap_bps": _serialize_decimal(_to_decimal(scorecard_row.worst_shadow_gap_bps)),
+    }
+    provenance = {
+        "source": "polymarket_pilot_scorecard",
+        "strategy_family": family,
+        "strategy_version_key": strategy_version.version_key,
+        "strategy_version_status": strategy_version.version_status,
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+        "scorecard_id": scorecard_row.id,
+        "execution_policy_version": (
+            execution_policy_versions[0]
+            if len(execution_policy_versions) == 1
+            else "mixed"
+            if execution_policy_versions
+            else None
+        ),
+        "risk_policy_version": None,
+        "fee_schedule_version": "live_fill_fee_history_unversioned",
+        "reward_schedule_version": "not_tracked_in_phase13a",
+        "market_universe_hash": hash_json_payload(market_universe),
+        "config_hash": hash_json_payload(config_payload),
+    }
+    await upsert_promotion_evaluation(
+        session,
+        family_id=family_row.id,
+        strategy_version_id=strategy_version.id,
+        gate_policy_id=gate_policy.id if gate_policy is not None else None,
+        evaluation_kind=PROMOTION_EVALUATION_KIND_SCORECARD,
+        evaluation_status=evaluation_status,
+        autonomy_tier=recommended_tier,
+        evaluation_window_start=scorecard_row.window_start,
+        evaluation_window_end=scorecard_row.window_end,
+        provenance_json=provenance,
+        summary_json=summary,
+    )
+
+
+async def _record_phase13a_guardrail_evaluation(
+    session: AsyncSession,
+    *,
+    row: PolymarketPilotGuardrailEvent,
+) -> None:
+    if row.strategy_version_id is None:
+        return
+
+    family = _normalized_strategy_family(row.strategy_family)
+    family_row, gate_policy = await _phase13a_gate_context(session, family=family)
+    version_snapshot = await _strategy_version_snapshot(session, strategy_version_id=int(row.strategy_version_id))
+    if family_row is None or version_snapshot is None:
+        return
+
+    window_start, window_end = rolling_promotion_window_bounds(row.observed_at_local)
+    if window_start is None or window_end is None:
+        return
+
+    guardrail_rows = (
+        await session.execute(
+            select(PolymarketPilotGuardrailEvent)
+            .where(
+                PolymarketPilotGuardrailEvent.strategy_version_id == row.strategy_version_id,
+                PolymarketPilotGuardrailEvent.observed_at_local >= window_start,
+                PolymarketPilotGuardrailEvent.observed_at_local <= window_end,
+            )
+            .order_by(PolymarketPilotGuardrailEvent.observed_at_local.desc(), PolymarketPilotGuardrailEvent.id.desc())
+        )
+    ).scalars().all()
+    serious_guardrail_count = sum(1 for guardrail in guardrail_rows if guardrail.action_taken in SERIOUS_GUARDRAIL_ACTIONS)
+    shadow_gap_breach_count = sum(1 for guardrail in guardrail_rows if guardrail.guardrail_type == "shadow_gap_breach")
+    evaluation_status, recommended_tier = map_guardrail_summary_to_promotion_verdict(
+        guardrail_count=len(guardrail_rows),
+        serious_guardrail_count=serious_guardrail_count,
+        shadow_gap_breach_count=shadow_gap_breach_count,
+        latest_severity=row.severity,
+    )
+    market_universe = sorted({
+        str(value)
+        for guardrail in guardrail_rows
+        for value in (guardrail.live_order_id, guardrail.guardrail_type)
+        if value is not None
+    })
+    summary = {
+        "guardrail_count_24h": len(guardrail_rows),
+        "serious_guardrail_count_24h": serious_guardrail_count,
+        "shadow_gap_breach_count_24h": shadow_gap_breach_count,
+        "guardrail_type_counts_24h": _count_labels([guardrail.guardrail_type for guardrail in guardrail_rows]),
+        "action_counts_24h": _count_labels([guardrail.action_taken for guardrail in guardrail_rows]),
+        "severity_counts_24h": _count_labels([guardrail.severity for guardrail in guardrail_rows]),
+        "latest_guardrail_type": row.guardrail_type,
+        "latest_action_taken": row.action_taken,
+        "latest_severity": row.severity,
+        "latest_trigger_value": _serialize_decimal(_to_decimal(row.trigger_value)),
+        "latest_threshold_value": _serialize_decimal(_to_decimal(row.threshold_value)),
+    }
+    provenance = {
+        "source": "polymarket_pilot_guardrail_event",
+        "strategy_family": family,
+        "strategy_version_key": version_snapshot["version_key"],
+        "strategy_version_status": version_snapshot["version_status"],
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+        "guardrail_event_id": row.id,
+        "live_order_id": str(row.live_order_id) if row.live_order_id is not None else None,
+        "pilot_run_id": str(row.pilot_run_id) if row.pilot_run_id is not None else None,
+        "rolling_window_hours": 24,
+        "market_universe_hash": hash_json_payload(market_universe),
+        "config_hash": hash_json_payload(
+            {
+                "rolling_window_hours": 24,
+                "strategy_version_key": version_snapshot["version_key"],
+                "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+                "shadow_gap_breach_bps": settings.polymarket_pilot_shadow_gap_breach_bps,
+                "max_daily_loss_usd": settings.polymarket_pilot_max_daily_loss_usd,
+            }
+        ),
+    }
+    await upsert_promotion_evaluation(
+        session,
+        family_id=family_row.id,
+        strategy_version_id=int(row.strategy_version_id),
+        gate_policy_id=gate_policy.id if gate_policy is not None else None,
+        evaluation_kind=PROMOTION_EVALUATION_KIND_GUARDRAIL,
+        evaluation_status=evaluation_status,
+        autonomy_tier=recommended_tier,
+        evaluation_window_start=window_start,
+        evaluation_window_end=window_end,
         provenance_json=provenance,
         summary_json=summary,
     )
@@ -705,6 +949,7 @@ class PolymarketPilotEvidenceService:
         )
         session.add(row)
         await session.flush()
+        await _record_phase13a_guardrail_evaluation(session, row=row)
         polymarket_pilot_guardrail_triggers_total.labels(
             strategy_family=row.strategy_family,
             guardrail_type=row.guardrail_type,
@@ -1140,6 +1385,20 @@ class PolymarketPilotEvidenceService:
         if existing is None:
             session.add(row)
         await session.flush()
+        await _record_phase13a_scorecard_evaluation(
+            session,
+            family=family,
+            strategy_version=strategy_version,
+            scorecard_row=row,
+            live_orders=live_orders,
+            fills=fills,
+            incidents=incidents,
+            guardrails=guardrails,
+            shadow_rows=shadow_rows,
+            approval_count=approval_count,
+            rejection_count=rejection_count,
+            expired_count=expired_count,
+        )
         if existing is None:
             polymarket_pilot_scorecards_total.labels(strategy_family=family, status=row.status).inc()
         return (await serialize_pilot_scorecards_with_lifecycle(session, [row]))[0]

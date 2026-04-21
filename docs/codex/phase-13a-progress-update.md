@@ -2,11 +2,11 @@
 
 ## Status
 
-This note records the implementation work completed for the first Phase 13A slices.
+This note records the implementation work completed for Phase 13A.
 
 It does not replace [Phase 13 Proposal - Strategy Lifecycle, Promotion-Grade Evidence, and Bounded Autonomy](</C:/Users/frido/.codex/worktrees/c1cc/Signal Market Terminal/docs/Current roadmaps/phase-13-autonomous-profitability-roadmap.md:1>).
 
-Its purpose is to document what is now implemented in the repo so the next slice can stay aligned with the roadmap instead of reopening already-finished groundwork.
+Its purpose is to document what is now implemented in the repo so later milestones can stay aligned with the roadmap instead of reopening already-finished lifecycle groundwork.
 
 ## Implemented In This Pass
 
@@ -129,6 +129,21 @@ Current behavior:
 
 This closes the highest-value remaining Phase 13A evidence-integrity gap without widening autonomy or adding new submit behavior.
 
+### 10. Unified promotion-gate history and rolling-window evidence timeline
+
+The lifecycle backend now records one durable gate timeline per strategy version instead of leaving replay, readiness, scorecards, incidents, and guardrails as partially separate verdict lanes.
+
+Current behavior:
+
+* replay and readiness remain the primary promotion-evaluation kinds surfaced as the default latest gate verdict across existing live and pilot payloads
+* scorecards now also write durable supporting `promotion_evaluation` rows tied to the exact scorecard window, version, and gate-policy version
+* incidents and guardrails now write durable supporting `promotion_evaluation` rows on insert using conservative rolling 24-hour windows scoped to the exact strategy version
+* the Phase 13A registry backfill pass now reconstructs missing scorecard, incident, and guardrail gate-history rows where the source evidence and version linkage are already persisted
+* `GET /api/v1/strategies/versions/{version_id}` now returns both the primary promotion evaluations and the full gate-history timeline
+* the `Strategies` version-detail panel now shows the unified gate timeline inline instead of forcing operators to infer it from detached source tables
+
+This keeps Phase 13A read-only while finally giving each strategy version a durable, inspectable promotion-gate history rather than only the latest scattered verdicts.
+
 ## What This Still Does Not Do
 
 The repo is still not widening autonomy here.
@@ -140,22 +155,20 @@ Specifically, this pass does not:
 * auto-demote families
 * add capital-budget enforcement beyond current systems
 * add family-level autonomy tiers beyond the current seeded registry values
-* unify replay, readiness, scorecard, incident, and guardrail policy verdicts behind one rolling promotion-gate history backend
-* add direct deep links from version detail into the existing replay, live, and health pages with shared version filters
 
-That is intentional. This pass stays inside Phase 13A rather than jumping into later milestones prematurely.
+That is intentional. Phase 13A is the read-only lifecycle and evidence-integrity slice; the remaining work belongs to later milestones rather than more Phase 13A surface-building.
 
 ## Suggested Next Step
 
-The next best step after this pass is:
+The next best step after Phase 13A is:
 
-* build a unified promotion-gate backend and rolling-window evidence history so replay, readiness, scorecards, incidents, and guardrails can share one durable gate timeline per strategy version
+* move into the next roadmap milestone with hard risk budgets and capital bounds, starting with family-level capital and exposure policy that can block or narrow future autonomy widening honestly
 
 ## Validation Completed
 
 Focused validation for this implementation slice covered:
 
-* backend strategies API tests for both registry and version-detail payloads
+* backend strategies API tests for both registry and version-detail payloads, including unified gate-history detail
 * backend replay and pilot-evidence tests for version-detail drilldown artifacts
-* backend control-plane and pilot-evidence tests for incident or guardrail write-time attribution and lifecycle-aware API serialization
-* frontend tests for lifecycle-aware incident and guardrail visibility in `Pilot Console` and `Health`
+* backend control-plane and pilot-evidence tests for scorecard, incident, and guardrail gate-history recording plus lifecycle-aware API serialization
+* frontend tests for unified gate-history visibility in `Strategies`, alongside lifecycle-aware incident and guardrail visibility in `Pilot Console` and `Health`
