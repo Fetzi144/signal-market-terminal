@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import func, select
@@ -11,7 +12,11 @@ from app.config import settings
 from app.default_strategy import get_default_strategy_contract
 from app.models.paper_trade import PaperTrade
 from app.models.polymarket_live_execution import LiveOrder
-from app.models.polymarket_pilot import PolymarketPilotReadinessReport, PolymarketPilotScorecard
+from app.models.polymarket_pilot import (
+    PolymarketLiveShadowEvaluation,
+    PolymarketPilotReadinessReport,
+    PolymarketPilotScorecard,
+)
 from app.models.polymarket_replay import PolymarketReplayRun
 from app.models.strategy_registry import (
     AUTONOMY_TIER_ASSISTED_LIVE,
@@ -44,6 +49,22 @@ def _ensure_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _serialize_decimal(value: Any) -> str | None:
+    decimal_value = _to_decimal(value)
+    return None if decimal_value is None else format(decimal_value, "f")
 
 
 def _builtin_family_manifest() -> list[dict[str, Any]]:
@@ -456,10 +477,226 @@ async def _version_evidence_counts(session: AsyncSession) -> dict[int, dict[str,
     return counts
 
 
+def _serialize_replay_alignment(row: PolymarketReplayRun | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    config = row.config_json if isinstance(row.config_json, dict) else {}
+    details = row.details_json if isinstance(row.details_json, dict) else {}
+    return {
+        "id": str(row.id),
+        "run_key": row.run_key,
+        "run_type": row.run_type,
+        "reason": row.reason,
+        "status": row.status,
+        "scenario_count": row.scenario_count,
+        "strategy_version_id": row.strategy_version_id,
+        "strategy_version_key": config.get("strategy_version_key"),
+        "strategy_version_label": config.get("strategy_version_label"),
+        "time_window_start": _ensure_utc(row.time_window_start).isoformat() if row.time_window_start else None,
+        "time_window_end": _ensure_utc(row.time_window_end).isoformat() if row.time_window_end else None,
+        "started_at": _ensure_utc(row.started_at).isoformat() if row.started_at else None,
+        "completed_at": _ensure_utc(row.completed_at).isoformat() if row.completed_at else None,
+        "promotion_evaluation": details.get("promotion_evaluation"),
+    }
+
+
+def _serialize_live_shadow_alignment(
+    latest_row: PolymarketLiveShadowEvaluation | None,
+    recent_rows: list[PolymarketLiveShadowEvaluation],
+    *,
+    breach_threshold: Decimal,
+) -> dict[str, Any] | None:
+    if latest_row is None and not recent_rows:
+        return None
+    gap_values = [
+        abs(_to_decimal(row.gap_bps) or Decimal("0"))
+        for row in recent_rows
+        if row.gap_bps is not None and not row.coverage_limited
+    ]
+    avg_gap = sum(gap_values, Decimal("0")) / Decimal(len(gap_values)) if gap_values else None
+    worst_gap = max(gap_values) if gap_values else None
+    breach_count = sum(1 for gap in gap_values if gap >= breach_threshold)
+    coverage_limited_count = sum(1 for row in recent_rows if row.coverage_limited)
+    return {
+        "latest_updated_at": _ensure_utc(latest_row.updated_at).isoformat() if latest_row is not None and latest_row.updated_at else None,
+        "latest_variant_name": latest_row.variant_name if latest_row is not None else None,
+        "latest_reason_code": latest_row.reason_code if latest_row is not None else None,
+        "latest_gap_bps": _serialize_decimal(latest_row.gap_bps if latest_row is not None else None),
+        "latest_realized_net_bps": _serialize_decimal(latest_row.realized_net_bps if latest_row is not None else None),
+        "latest_replay_run_id": str(latest_row.replay_run_id) if latest_row is not None and latest_row.replay_run_id is not None else None,
+        "recent_count_24h": len(recent_rows),
+        "coverage_limited_count_24h": coverage_limited_count,
+        "average_gap_bps_24h": _serialize_decimal(avg_gap),
+        "worst_gap_bps_24h": _serialize_decimal(worst_gap),
+        "breach_count_24h": breach_count,
+    }
+
+
+def _serialize_scorecard_alignment(row: PolymarketPilotScorecard | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "status": row.status,
+        "window_start": _ensure_utc(row.window_start).isoformat() if row.window_start else None,
+        "window_end": _ensure_utc(row.window_end).isoformat() if row.window_end else None,
+        "live_orders_count": row.live_orders_count,
+        "fills_count": row.fills_count,
+        "incident_count": row.incident_count,
+        "net_pnl": _serialize_decimal(row.net_pnl),
+        "avg_shadow_gap_bps": _serialize_decimal(row.avg_shadow_gap_bps),
+        "coverage_limited_count": row.coverage_limited_count,
+        "created_at": _ensure_utc(row.created_at).isoformat() if row.created_at else None,
+    }
+
+
+def _serialize_readiness_alignment(row: PolymarketPilotReadinessReport | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    return {
+        "id": row.id,
+        "status": row.status,
+        "window_start": _ensure_utc(row.window_start).isoformat() if row.window_start else None,
+        "window_end": _ensure_utc(row.window_end).isoformat() if row.window_end else None,
+        "generated_at": _ensure_utc(row.generated_at).isoformat() if row.generated_at else None,
+        "approval_backlog_count": row.approval_backlog_count,
+        "coverage_limited_count": row.coverage_limited_count,
+        "shadow_gap_breach_count": row.shadow_gap_breach_count,
+        "open_incidents": row.open_incidents,
+    }
+
+
+def _evidence_alignment_status(surface_count: int) -> str:
+    if surface_count >= 4:
+        return "complete"
+    if surface_count > 0:
+        return "partial"
+    return "registry_only"
+
+
+async def _version_evidence_alignment(
+    session: AsyncSession,
+    *,
+    versions: list[StrategyVersion],
+) -> dict[int, dict[str, Any]]:
+    version_ids = sorted({int(row.id) for row in versions if row.id is not None})
+    if not version_ids:
+        return {}
+
+    replay_rows = (
+        await session.execute(
+            select(PolymarketReplayRun)
+            .where(PolymarketReplayRun.strategy_version_id.in_(version_ids))
+            .order_by(PolymarketReplayRun.started_at.desc(), PolymarketReplayRun.id.desc())
+        )
+    ).scalars().all()
+    latest_replay_by_version: dict[int, PolymarketReplayRun] = {}
+    for row in replay_rows:
+        if row.strategy_version_id is not None:
+            latest_replay_by_version.setdefault(int(row.strategy_version_id), row)
+
+    latest_shadow_by_version: dict[int, PolymarketLiveShadowEvaluation] = {}
+    recent_shadow_rows_by_version: dict[int, list[PolymarketLiveShadowEvaluation]] = defaultdict(list)
+    shadow_since = datetime.now(timezone.utc) - timedelta(hours=24)
+    shadow_rows = (
+        await session.execute(
+            select(PolymarketLiveShadowEvaluation, LiveOrder.strategy_version_id)
+            .join(LiveOrder, LiveOrder.id == PolymarketLiveShadowEvaluation.live_order_id)
+            .where(LiveOrder.strategy_version_id.in_(version_ids))
+            .order_by(PolymarketLiveShadowEvaluation.updated_at.desc(), PolymarketLiveShadowEvaluation.id.desc())
+        )
+    ).all()
+    for shadow_row, strategy_version_id in shadow_rows:
+        if strategy_version_id is None:
+            continue
+        version_id = int(strategy_version_id)
+        latest_shadow_by_version.setdefault(version_id, shadow_row)
+        if shadow_row.updated_at is not None and _ensure_utc(shadow_row.updated_at) >= shadow_since:
+            recent_shadow_rows_by_version[version_id].append(shadow_row)
+
+    scorecard_rows = (
+        await session.execute(
+            select(PolymarketPilotScorecard)
+            .where(PolymarketPilotScorecard.strategy_version_id.in_(version_ids))
+            .order_by(
+                PolymarketPilotScorecard.window_end.desc(),
+                PolymarketPilotScorecard.created_at.desc(),
+                PolymarketPilotScorecard.id.desc(),
+            )
+        )
+    ).scalars().all()
+    latest_scorecard_by_version: dict[int, PolymarketPilotScorecard] = {}
+    for row in scorecard_rows:
+        if row.strategy_version_id is not None:
+            latest_scorecard_by_version.setdefault(int(row.strategy_version_id), row)
+
+    readiness_rows = (
+        await session.execute(
+            select(PolymarketPilotReadinessReport)
+            .where(PolymarketPilotReadinessReport.strategy_version_id.in_(version_ids))
+            .order_by(
+                PolymarketPilotReadinessReport.generated_at.desc(),
+                PolymarketPilotReadinessReport.id.desc(),
+            )
+        )
+    ).scalars().all()
+    latest_readiness_by_version: dict[int, PolymarketPilotReadinessReport] = {}
+    for row in readiness_rows:
+        if row.strategy_version_id is not None:
+            latest_readiness_by_version.setdefault(int(row.strategy_version_id), row)
+
+    latest_evaluations = await get_latest_promotion_evaluation_by_version(session, version_ids=version_ids)
+    breach_threshold = Decimal(str(settings.polymarket_pilot_shadow_gap_breach_bps))
+
+    payload: dict[int, dict[str, Any]] = {}
+    for version in versions:
+        if version.id is None:
+            continue
+        version_id = int(version.id)
+        latest_replay = _serialize_replay_alignment(latest_replay_by_version.get(version_id))
+        live_shadow = _serialize_live_shadow_alignment(
+            latest_shadow_by_version.get(version_id),
+            recent_shadow_rows_by_version.get(version_id, []),
+            breach_threshold=breach_threshold,
+        )
+        latest_scorecard = _serialize_scorecard_alignment(latest_scorecard_by_version.get(version_id))
+        latest_readiness = _serialize_readiness_alignment(latest_readiness_by_version.get(version_id))
+        surfaces = {
+            "replay": latest_replay,
+            "live_shadow": live_shadow,
+            "scorecard": latest_scorecard,
+            "readiness": latest_readiness,
+        }
+        timestamps = [
+            _ensure_utc(latest_replay_by_version[version_id].completed_at or latest_replay_by_version[version_id].started_at)
+            if version_id in latest_replay_by_version
+            else None,
+            _ensure_utc(latest_shadow_by_version[version_id].updated_at) if version_id in latest_shadow_by_version else None,
+            _ensure_utc(latest_scorecard_by_version[version_id].window_end) if version_id in latest_scorecard_by_version else None,
+            _ensure_utc(latest_readiness_by_version[version_id].generated_at) if version_id in latest_readiness_by_version else None,
+        ]
+        present_surface_keys = [name for name, item in surfaces.items() if item is not None]
+        latest_surface_at = max((timestamp for timestamp in timestamps if timestamp is not None), default=None)
+        payload[version_id] = {
+            "surface_status": _evidence_alignment_status(len(present_surface_keys)),
+            "surfaces_present": len(present_surface_keys),
+            "surface_keys_present": present_surface_keys,
+            "latest_surface_at": latest_surface_at.isoformat() if latest_surface_at is not None else None,
+            "latest_promotion_evaluation": latest_evaluations.get(version_id),
+            "latest_replay_run": latest_replay,
+            "live_shadow": live_shadow,
+            "latest_scorecard": latest_scorecard,
+            "latest_readiness_report": latest_readiness,
+        }
+    return payload
+
+
 def _serialize_strategy_version(
     row: StrategyVersion,
     *,
     evidence_counts: dict[int, dict[str, int]],
+    evidence_alignment: dict[str, Any] | None = None,
+    latest_promotion_evaluation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -472,6 +709,8 @@ def _serialize_strategy_version(
         "is_frozen": row.is_frozen,
         "config_json": row.config_json or {},
         "provenance_json": row.provenance_json or {},
+        "latest_promotion_evaluation": latest_promotion_evaluation,
+        "evidence_alignment": evidence_alignment,
         "evidence_counts": evidence_counts.get(
             row.id,
             {
@@ -567,6 +806,12 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
     for version in versions:
         versions_by_family[version.family_id].append(version)
 
+    alignment_by_version = await _version_evidence_alignment(session, versions=versions)
+    latest_evaluation_by_version = await get_latest_promotion_evaluation_by_version(
+        session,
+        version_ids=[int(row.id) for row in versions if row.id is not None],
+    )
+
     policies = (
         await session.execute(
             select(PromotionGatePolicy).order_by(PromotionGatePolicy.updated_at.desc(), PromotionGatePolicy.id.desc())
@@ -596,7 +841,12 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
     serialized_families = []
     for family in families:
         serialized_versions = [
-            _serialize_strategy_version(version, evidence_counts=evidence_counts)
+            _serialize_strategy_version(
+                version,
+                evidence_counts=evidence_counts,
+                evidence_alignment=alignment_by_version.get(int(version.id)) if version.id is not None else None,
+                latest_promotion_evaluation=latest_evaluation_by_version.get(int(version.id)) if version.id is not None else None,
+            )
             for version in versions_by_family.get(family.id, [])
         ]
         current_version = next((row for row in serialized_versions if row["is_current"]), None)

@@ -86,6 +86,20 @@ Current behavior:
 
 This is still read-only lifecycle surfacing. It does not change submit modes or widen autonomy.
 
+### 7. Cross-surface comparison by strategy version
+
+The lifecycle registry now exposes a compact evidence-alignment summary for each strategy version so replay, live shadow, scorecards, and readiness can be reviewed side by side without hand-matching IDs across pages.
+
+Current behavior:
+
+* every version in the `Strategies` registry now carries an `evidence_alignment` block
+* the alignment block summarizes the latest replay run, latest live-shadow evidence, latest scorecard, and latest readiness report for that exact version
+* live shadow is summarized conservatively from persisted version-linked live orders and still preserves 24-hour gap and coverage counts
+* version rows now also carry the latest version-scoped promotion evaluation so the comparison view can show both the evidence surfaces and the current gate verdict together
+* the `Strategies` page now renders a read-only comparison table for each family instead of forcing the operator to cross-reference multiple pages mentally
+
+This keeps Phase 13A read-only while making the lifecycle evidence materially easier to inspect.
+
 ## What This Still Does Not Do
 
 The repo is still not widening autonomy here.
@@ -96,7 +110,8 @@ Specifically, this pass does not:
 * auto-promote families
 * auto-demote families
 * add capital-budget enforcement beyond current systems
-* make replay itself emit promotion evaluations yet
+* add family-level autonomy tiers beyond the current seeded registry values
+* add a dedicated version-detail workflow for drilling from the comparison row into underlying evidence artifacts
 
 That is intentional. This pass stays inside Phase 13A rather than jumping into later milestones prematurely.
 
@@ -104,20 +119,12 @@ That is intentional. This pass stays inside Phase 13A rather than jumping into l
 
 The next best step after this pass is:
 
-* expose strategy-version metadata and promotion-evaluation references more broadly across existing live and replay APIs
-
-After that, the next milestone-ready step is:
-
-* add replay-backed promotion evaluations so the registry can compare replay and live promotion evidence side by side
-
-After this pass, the next best step becomes:
-
-* add a narrower cross-surface comparison view that lines up replay, live shadow, scorecards, and readiness artifacts for the same strategy version
+* add a focused strategy-version detail path that can drill from the comparison row into the underlying replay run, live shadow evaluations, scorecards, and readiness artifacts without widening autonomy
 
 ## Validation Completed
 
 Focused validation for this implementation slice covered:
 
-* backend strategy-run and strategies API tests
-* backend pilot-evidence tests for persisted promotion evaluations
-* frontend tests for `Strategies`, `PilotConsole`, and `PaperTrading`
+* backend strategies API tests for version-scoped alignment payloads
+* backend replay and pilot-evidence tests for replay, live-shadow, scorecard, and readiness alignment
+* frontend tests for the `Strategies` comparison view

@@ -157,6 +157,7 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert families["default_strategy"]["current_version"]["version_key"] == "default_strategy_benchmark_v1"
     assert families["default_strategy"]["current_version"]["version_status"] == "benchmark"
     assert families["default_strategy"]["current_version"]["evidence_counts"]["strategy_runs"] >= 1
+    assert families["default_strategy"]["current_version"]["evidence_alignment"]["surface_status"] == "registry_only"
     assert families["exec_policy"]["family_kind"] == "infrastructure"
     assert families["exec_policy"]["current_version"]["autonomy_tier"] == "assisted_live"
     assert data["gate_policies"][0]["policy_key"] == "promotion_gate_policy_v1"

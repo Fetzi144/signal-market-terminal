@@ -14,9 +14,9 @@ function fmtMetric(value, digits = 2) {
 }
 
 function badgeColor(value) {
-  if (value === "benchmark" || value === "fresh") return "var(--green)";
-  if (value === "promoted" || value === "assisted_live") return "var(--yellow)";
-  if (value === "demoted" || value === "disabled") return "var(--red)";
+  if (value === "benchmark" || value === "fresh" || value === "candidate" || value === "complete") return "var(--green)";
+  if (value === "promoted" || value === "assisted_live" || value === "observe" || value === "partial") return "var(--yellow)";
+  if (value === "demoted" || value === "disabled" || value === "blocked") return "var(--red)";
   return "var(--text-dim)";
 }
 
@@ -93,6 +93,94 @@ function evaluationSourceHint(evaluation) {
     return provenance.replay_run_key || provenance.source || "-";
   }
   return provenance.readiness_report_id ? `Report ${provenance.readiness_report_id}` : (provenance.source || "-");
+}
+
+function renderEmptySurface(label) {
+  return <span style={metaStyle}>{label}</span>;
+}
+
+function renderGateSurface(evaluation) {
+  if (!evaluation) return renderEmptySurface("No gate");
+  return (
+    <div>
+      <Badge value={evaluation.evaluation_status} />
+      <div style={subtleCellStyle}>{titleCase(evaluation.evaluation_kind)}</div>
+      <div style={subtleCellStyle}>{titleCase(evaluation.autonomy_tier)}</div>
+    </div>
+  );
+}
+
+function renderReplaySurface(alignment) {
+  const replay = alignment?.latest_replay_run;
+  if (!replay) return renderEmptySurface("No replay");
+  return (
+    <div>
+      <div>{titleCase(replay.status)}</div>
+      <div style={subtleCellStyle}>{replay.run_key}</div>
+      <div style={subtleCellStyle}>
+        {replay.scenario_count} scenarios | {fmtDate(replay.completed_at || replay.started_at)}
+      </div>
+    </div>
+  );
+}
+
+function renderLiveShadowSurface(alignment) {
+  const liveShadow = alignment?.live_shadow;
+  if (!liveShadow) return renderEmptySurface("No live shadow");
+  return (
+    <div>
+      <div>{liveShadow.recent_count_24h ?? 0} recent evals</div>
+      <div style={subtleCellStyle}>
+        Avg gap {fmtMetric(liveShadow.average_gap_bps_24h)} bps | Breaches {liveShadow.breach_count_24h ?? 0}
+      </div>
+      <div style={subtleCellStyle}>
+        Coverage-limited {liveShadow.coverage_limited_count_24h ?? 0} | Latest {fmtDate(liveShadow.latest_updated_at)}
+      </div>
+    </div>
+  );
+}
+
+function renderScorecardSurface(alignment) {
+  const scorecard = alignment?.latest_scorecard;
+  if (!scorecard) return renderEmptySurface("No scorecard");
+  return (
+    <div>
+      <div>{titleCase(scorecard.status)}</div>
+      <div style={subtleCellStyle}>
+        Net {fmtMetric(scorecard.net_pnl)} | Gap {fmtMetric(scorecard.avg_shadow_gap_bps)} bps
+      </div>
+      <div style={subtleCellStyle}>
+        Coverage {scorecard.coverage_limited_count ?? 0} | {fmtDate(scorecard.window_end || scorecard.created_at)}
+      </div>
+    </div>
+  );
+}
+
+function renderReadinessSurface(alignment) {
+  const readiness = alignment?.latest_readiness_report;
+  if (!readiness) return renderEmptySurface("No readiness");
+  return (
+    <div>
+      <div>{titleCase(readiness.status)}</div>
+      <div style={subtleCellStyle}>
+        Backlog {readiness.approval_backlog_count ?? 0} | Shadow breaches {readiness.shadow_gap_breach_count ?? 0}
+      </div>
+      <div style={subtleCellStyle}>
+        Incidents {readiness.open_incidents ?? 0} | {fmtDate(readiness.generated_at)}
+      </div>
+    </div>
+  );
+}
+
+function renderAlignmentFreshness(alignment) {
+  if (!alignment) return renderEmptySurface("No surfaces");
+  return (
+    <div>
+      <Badge value={alignment.surface_status} />
+      <div style={subtleCellStyle}>{alignment.surfaces_present ?? 0} linked surfaces</div>
+      <div style={subtleCellStyle}>{fmtDate(alignment.latest_surface_at)}</div>
+    </div>
+  );
 }
 
 function SimpleTable({ columns, rows, emptyLabel }) {
@@ -313,6 +401,31 @@ export default function Strategies() {
                   No promotion evaluation has been recorded yet for this family.
                 </div>
               )}
+            </div>
+
+            <div style={promotionPanelStyle}>
+              <div style={promotionHeaderStyle}>
+                <div style={sectionTitleStyle}>Evidence Alignment</div>
+              </div>
+              <div style={metaStyle}>
+                Latest replay, live shadow, scorecards, and readiness artifacts lined up by strategy version.
+              </div>
+              <SimpleTable
+                columns={["Version", "Gate", "Replay", "Live Shadow", "Scorecard", "Readiness", "Freshness"]}
+                rows={family.versions.map((version) => ([
+                  <div key={`${version.version_key}-alignment`}>
+                    <div>{version.version_label}</div>
+                    <div style={subtleCellStyle}>{version.version_key}</div>
+                  </div>,
+                  renderGateSurface(version.latest_promotion_evaluation || version.evidence_alignment?.latest_promotion_evaluation),
+                  renderReplaySurface(version.evidence_alignment),
+                  renderLiveShadowSurface(version.evidence_alignment),
+                  renderScorecardSurface(version.evidence_alignment),
+                  renderReadinessSurface(version.evidence_alignment),
+                  renderAlignmentFreshness(version.evidence_alignment),
+                ]))}
+                emptyLabel="No version-linked evidence has been aligned yet."
+              />
             </div>
 
             <SimpleTable

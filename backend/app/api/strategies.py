@@ -20,22 +20,6 @@ class StrategyRegistrySummaryOut(BaseModel):
     benchmark_family: str
 
 
-class StrategyRegistryVersionOut(BaseModel):
-    id: int
-    version_key: str
-    version_label: str
-    strategy_name: str | None = None
-    version_status: str
-    autonomy_tier: str
-    is_current: bool
-    is_frozen: bool
-    config_json: dict[str, Any] | list[Any] | str | None = None
-    provenance_json: dict[str, Any] | list[Any] | str | None = None
-    evidence_counts: dict[str, int]
-    created_at: str | None = None
-    updated_at: str | None = None
-
-
 class PromotionGatePolicyOut(BaseModel):
     id: int
     policy_key: str
@@ -64,6 +48,93 @@ class StrategyLifecycleEventOut(BaseModel):
     cooling_off_ends_at: str | None = None
     details_json: dict[str, Any] | list[Any] | str | None = None
     observed_at_local: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class StrategyReplayAlignmentOut(BaseModel):
+    id: str
+    run_key: str
+    run_type: str
+    reason: str
+    status: str
+    scenario_count: int
+    strategy_version_id: int | None = None
+    strategy_version_key: str | None = None
+    strategy_version_label: str | None = None
+    time_window_start: str | None = None
+    time_window_end: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    promotion_evaluation: StrategyLifecycleEventOut | None = None
+
+
+class StrategyLiveShadowAlignmentOut(BaseModel):
+    latest_updated_at: str | None = None
+    latest_variant_name: str | None = None
+    latest_reason_code: str | None = None
+    latest_gap_bps: str | None = None
+    latest_realized_net_bps: str | None = None
+    latest_replay_run_id: str | None = None
+    recent_count_24h: int
+    coverage_limited_count_24h: int
+    average_gap_bps_24h: str | None = None
+    worst_gap_bps_24h: str | None = None
+    breach_count_24h: int
+
+
+class StrategyScorecardAlignmentOut(BaseModel):
+    id: int
+    status: str
+    window_start: str | None = None
+    window_end: str | None = None
+    live_orders_count: int
+    fills_count: int
+    incident_count: int
+    net_pnl: str | None = None
+    avg_shadow_gap_bps: str | None = None
+    coverage_limited_count: int
+    created_at: str | None = None
+
+
+class StrategyReadinessAlignmentOut(BaseModel):
+    id: int
+    status: str
+    window_start: str | None = None
+    window_end: str | None = None
+    generated_at: str | None = None
+    approval_backlog_count: int
+    coverage_limited_count: int
+    shadow_gap_breach_count: int
+    open_incidents: int
+
+
+class StrategyEvidenceAlignmentOut(BaseModel):
+    surface_status: str
+    surfaces_present: int
+    surface_keys_present: list[str]
+    latest_surface_at: str | None = None
+    latest_promotion_evaluation: StrategyLifecycleEventOut | None = None
+    latest_replay_run: StrategyReplayAlignmentOut | None = None
+    live_shadow: StrategyLiveShadowAlignmentOut | None = None
+    latest_scorecard: StrategyScorecardAlignmentOut | None = None
+    latest_readiness_report: StrategyReadinessAlignmentOut | None = None
+
+
+class StrategyRegistryVersionOut(BaseModel):
+    id: int
+    version_key: str
+    version_label: str
+    strategy_name: str | None = None
+    version_status: str
+    autonomy_tier: str
+    is_current: bool
+    is_frozen: bool
+    config_json: dict[str, Any] | list[Any] | str | None = None
+    provenance_json: dict[str, Any] | list[Any] | str | None = None
+    latest_promotion_evaluation: StrategyLifecycleEventOut | None = None
+    evidence_alignment: StrategyEvidenceAlignmentOut | None = None
+    evidence_counts: dict[str, int]
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -100,4 +171,3 @@ async def get_strategy_registry(db: AsyncSession = Depends(get_db)):
     payload = await get_strategy_registry_payload(db)
     await db.commit()
     return StrategyRegistryOut(**payload)
-

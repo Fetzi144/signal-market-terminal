@@ -378,6 +378,28 @@ async def test_evidence_api_endpoints_and_health(client, engine):
         ])
         await session.flush()
         await service.sync_position_lots(session)
+        session.add_all([
+            PolymarketLiveShadowEvaluation(
+                live_order_id=buy_order.id,
+                execution_decision_id=None,
+                variant_name="exec_policy",
+                gap_bps=Decimal("4.2"),
+                realized_net_bps=Decimal("11.8"),
+                coverage_limited=False,
+                created_at=now - timedelta(hours=2),
+                updated_at=now - timedelta(hours=2),
+            ),
+            PolymarketLiveShadowEvaluation(
+                live_order_id=sell_order.id,
+                execution_decision_id=None,
+                variant_name="exec_policy",
+                gap_bps=Decimal("6.3"),
+                realized_net_bps=Decimal("9.7"),
+                coverage_limited=False,
+                created_at=now - timedelta(hours=1),
+                updated_at=now - timedelta(hours=1),
+            ),
+        ])
         await service.record_guardrail_event(
             session,
             strategy_family="exec_policy",
@@ -416,6 +438,7 @@ async def test_evidence_api_endpoints_and_health(client, engine):
         json={"strategy_family": "exec_policy", "window": "daily"},
     )
     health_response = await client.get("/api/v1/health")
+    strategies_response = await client.get("/api/v1/strategies")
 
     assert lots_response.status_code == 200
     assert lot_events_response.status_code == 200
@@ -425,6 +448,7 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert generate_scorecard_response.status_code == 200
     assert generate_readiness_response.status_code == 200
     assert health_response.status_code == 200
+    assert strategies_response.status_code == 200
     assert lots_response.json()["rows"]
     assert lot_events_response.json()["rows"]
     assert scorecards_response.json()["rows"]
@@ -433,5 +457,10 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert scorecards_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert readiness_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert readiness_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
+    families = {row["family"]: row for row in strategies_response.json()["families"]}
+    alignment = families["exec_policy"]["current_version"]["evidence_alignment"]
+    assert alignment["live_shadow"]["recent_count_24h"] >= 1
+    assert alignment["latest_scorecard"]["status"] in {"ok", "watch", "cut"}
+    assert alignment["latest_readiness_report"]["status"] in {"manual_only", "candidate_for_semi_auto", "blocked"}
     assert health_response.json()["polymarket_phase12"]["daily_realized_pnl"]["net_realized_pnl"] is not None
     assert "recent_guardrail_triggers" in health_response.json()["polymarket_phase12"]
