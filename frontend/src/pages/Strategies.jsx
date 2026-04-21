@@ -7,6 +7,12 @@ function fmtDate(value) {
   return new Date(value).toLocaleString();
 }
 
+function fmtMetric(value, digits = 2) {
+  if (value === null || value === undefined || value === "") return "-";
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(digits) : String(value);
+}
+
 function badgeColor(value) {
   if (value === "benchmark" || value === "fresh") return "var(--green)";
   if (value === "promoted" || value === "assisted_live") return "var(--yellow)";
@@ -55,6 +61,38 @@ function EvidencePill({ label, value }) {
       <span style={evidencePillValueStyle}>{value}</span>
     </div>
   );
+}
+
+function evaluationStateHint(evaluation) {
+  const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "replay_gate") return titleCase(summary.replay_status);
+  return titleCase(summary.readiness_status);
+}
+
+function evaluationSummaryValue(evaluation) {
+  const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "replay_gate") {
+    const variantCount = Number(summary.variant_count || 0);
+    return variantCount > 0 ? `${variantCount} variants` : "No variants";
+  }
+  const blockers = Array.isArray(summary.readiness_blockers) ? summary.readiness_blockers : [];
+  return blockers.length > 0 ? `${blockers.length} blockers` : "No blockers";
+}
+
+function evaluationSummaryHint(evaluation) {
+  const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "replay_gate") {
+    return `${titleCase(summary.primary_variant)} | Net ${fmtMetric(summary.primary_variant_net_pnl)} | Coverage ${summary.coverage_limited_scenarios ?? 0}`;
+  }
+  return `Incidents ${summary.incident_count ?? 0} | Backlog ${summary.approval_backlog_count ?? 0}`;
+}
+
+function evaluationSourceHint(evaluation) {
+  const provenance = evaluation?.provenance_json || {};
+  if (evaluation?.evaluation_kind === "replay_gate") {
+    return provenance.replay_run_key || provenance.source || "-";
+  }
+  return provenance.readiness_report_id ? `Report ${provenance.readiness_report_id}` : (provenance.source || "-");
 }
 
 function SimpleTable({ columns, rows, emptyLabel }) {
@@ -168,7 +206,6 @@ export default function Strategies() {
         const currentVersion = family.current_version;
         const evidence = currentVersion?.evidence_counts || {};
         const latestEvaluation = family.latest_promotion_evaluation;
-        const evaluationSummary = latestEvaluation?.summary_json || {};
         const evaluationProvenance = latestEvaluation?.provenance_json || {};
         return (
           <section key={family.family} style={panelStyle}>
@@ -246,9 +283,14 @@ export default function Strategies() {
               {latestEvaluation ? (
                 <div style={statsGridStyle}>
                   <MetricCard
+                    label="Evidence Source"
+                    value={titleCase(latestEvaluation.evaluation_kind)}
+                    hint={evaluationSourceHint(latestEvaluation)}
+                  />
+                  <MetricCard
                     label="Recommended Tier"
                     value={titleCase(latestEvaluation.autonomy_tier)}
-                    hint={titleCase(evaluationSummary.readiness_status)}
+                    hint={evaluationStateHint(latestEvaluation)}
                   />
                   <MetricCard
                     label="Policy"
@@ -257,8 +299,8 @@ export default function Strategies() {
                   />
                   <MetricCard
                     label="Gate Summary"
-                    value={evaluationSummary.readiness_blockers?.length ? `${evaluationSummary.readiness_blockers.length} blockers` : "No blockers"}
-                    hint={`Incidents ${evaluationSummary.incident_count ?? 0} | Backlog ${evaluationSummary.approval_backlog_count ?? 0}`}
+                    value={evaluationSummaryValue(latestEvaluation)}
+                    hint={evaluationSummaryHint(latestEvaluation)}
                   />
                   <MetricCard
                     label="Provenance"

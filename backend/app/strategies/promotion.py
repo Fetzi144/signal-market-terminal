@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.strategy_registry import DemotionEvent, PromotionEvaluation, PromotionGatePolicy
 
 PROMOTION_EVALUATION_KIND_PILOT_READINESS = "pilot_readiness_gate"
+PROMOTION_EVALUATION_KIND_REPLAY = "replay_gate"
 PROMOTION_EVALUATION_STATUS_BLOCKED = "blocked"
 PROMOTION_EVALUATION_STATUS_OBSERVE = "observe"
 PROMOTION_EVALUATION_STATUS_CANDIDATE = "candidate"
@@ -48,6 +49,21 @@ def map_readiness_status_to_promotion_verdict(readiness_status: str | None) -> t
     if normalized == "manual_only":
         return PROMOTION_EVALUATION_STATUS_OBSERVE, "assisted_live"
     return PROMOTION_EVALUATION_STATUS_BLOCKED, "shadow_only"
+
+
+def map_replay_summary_to_promotion_verdict(
+    *,
+    run_status: str | None,
+    coverage_limited_scenarios: int = 0,
+    variant_count: int = 0,
+) -> tuple[str, str]:
+    normalized_status = str(run_status or "").strip().lower()
+    if normalized_status == "failed":
+        return PROMOTION_EVALUATION_STATUS_BLOCKED, "shadow_only"
+    if coverage_limited_scenarios > 0 or variant_count <= 0:
+        return PROMOTION_EVALUATION_STATUS_BLOCKED, "shadow_only"
+    # Replay is a promotion input in Phase 13A, not sufficient proof for a wider tier.
+    return PROMOTION_EVALUATION_STATUS_OBSERVE, "shadow_only"
 
 
 async def upsert_promotion_evaluation(

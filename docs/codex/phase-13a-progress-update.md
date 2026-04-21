@@ -60,6 +60,19 @@ Current behavior:
 
 This is the first real implementation of the roadmap requirement that promotion decisions be durable and provenance-backed.
 
+### 5. Replay-backed promotion evaluations and replay provenance surfacing
+
+Replay runs now also record durable `promotion_evaluation` rows instead of leaving replay as evidence-only metadata.
+
+Current behavior:
+
+* completed and failed replay runs write a replay-gate evaluation tied to family, version, and gate-policy version
+* replay evaluations remain conservative in Phase 13A and keep the recommended tier at `shadow_only`
+* replay run payloads now surface strategy-version provenance and the recorded promotion-evaluation reference
+* the `Strategies` page now distinguishes replay-backed gate evidence from pilot-readiness gate evidence
+
+This keeps replay inside the same lifecycle contract as live readiness evidence without widening autonomy.
+
 ## What This Still Does Not Do
 
 The repo is still not widening autonomy here.
@@ -84,6 +97,10 @@ After that, the next milestone-ready step is:
 
 * add replay-backed promotion evaluations so the registry can compare replay and live promotion evidence side by side
 
+After this pass, the next best step becomes:
+
+* expose version and gate metadata more broadly across the live APIs so replay and live evidence can be compared from both directions
+
 ## Validation Completed
 
 Focused validation for this implementation slice covered:
@@ -91,4 +108,3 @@ Focused validation for this implementation slice covered:
 * backend strategy-run and strategies API tests
 * backend pilot-evidence tests for persisted promotion evaluations
 * frontend tests for `Strategies`, `PilotConsole`, and `PaperTrading`
-

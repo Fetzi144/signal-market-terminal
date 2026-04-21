@@ -29,6 +29,7 @@ from app.models.market_structure import MarketStructureOpportunity
 from app.models.polymarket_maker import PolymarketMakerEconomicsSnapshot, PolymarketQuoteRecommendation
 from app.models.polymarket_raw import PolymarketBookDelta
 from app.models.polymarket_risk import PortfolioOptimizerRecommendation, RiskGraphRun
+from app.models.strategy_registry import PromotionEvaluation
 from app.paper_trading.engine import attempt_open_trade
 from app.strategy_runs.service import ensure_active_default_strategy_run
 from tests.conftest import make_polymarket_market_event
@@ -843,6 +844,7 @@ async def test_replay_api_and_health_surfaces_are_idempotent(client, engine, mon
     summary_response = await client.get("/api/v1/ingest/polymarket/replay/policy-summary")
     status_response = await client.get("/api/v1/ingest/polymarket/replay/status")
     health_response = await client.get("/api/v1/health")
+    strategies_response = await client.get("/api/v1/strategies")
 
     assert runs_response.status_code == 200
     assert scenarios_response.status_code == 200
@@ -851,6 +853,7 @@ async def test_replay_api_and_health_surfaces_are_idempotent(client, engine, mon
     assert summary_response.status_code == 200
     assert status_response.status_code == 200
     assert health_response.status_code == 200
+    assert strategies_response.status_code == 200
 
     scenarios = scenarios_response.json()["rows"]
     assert scenarios
@@ -864,9 +867,26 @@ async def test_replay_api_and_health_surfaces_are_idempotent(client, engine, mon
     assert health_response.json()["polymarket_phase11"]["last_replay_run"]["id"] == first_payload["run"]["id"]
     assert health_response.json()["polymarket_phase11"]["coverage_mode"] == "supported_detectors_only"
     assert health_response.json()["polymarket_phase11"]["supported_detectors"] == ["confluence"]
+    assert first_payload["run"]["strategy_version_key"] == "exec_policy_infra_v1"
+    assert first_payload["run"]["promotion_evaluation"]["evaluation_kind"] == "replay_gate"
+    assert first_payload["run"]["promotion_evaluation"]["evaluation_status"] == "blocked"
+    strategy_families = {row["family"]: row for row in strategies_response.json()["families"]}
+    assert strategy_families["exec_policy"]["latest_promotion_evaluation"]["evaluation_kind"] == "replay_gate"
+    assert strategy_families["exec_policy"]["latest_promotion_evaluation"]["summary_json"]["primary_variant"] == "exec_policy"
 
     async with session_factory() as session:
         traces = await list_polymarket_replay_decision_traces(session, variant_name="exec_policy", limit=20)
         assert traces
         paper_trade = await session.get(type(seeded["paper_trade"]), existing_trade_id)
         assert paper_trade is not None
+        replay_evaluation = (
+            await session.execute(
+                select(PromotionEvaluation)
+                .where(PromotionEvaluation.evaluation_kind == "replay_gate")
+                .order_by(PromotionEvaluation.created_at.desc(), PromotionEvaluation.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+        assert replay_evaluation.summary_json["primary_variant"] == "exec_policy"
+        assert replay_evaluation.summary_json["variant_count"] >= 1
+        assert replay_evaluation.provenance_json["promotion_gate_policy_key"] == "promotion_gate_policy_v1"

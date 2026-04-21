@@ -74,7 +74,18 @@ from app.models.polymarket_risk import (
     PortfolioOptimizerRecommendation,
 )
 from app.models.signal import Signal
-from app.strategies.registry import get_current_strategy_version
+from app.strategies.promotion import (
+    PROMOTION_EVALUATION_KIND_REPLAY,
+    hash_json_payload,
+    map_replay_summary_to_promotion_verdict,
+    serialize_promotion_evaluation,
+    upsert_promotion_evaluation,
+)
+from app.strategies.registry import (
+    PROMOTION_GATE_POLICY_V1,
+    get_current_strategy_version,
+    sync_strategy_registry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +132,11 @@ RUN_TYPE_STRATEGY_FAMILY = {
     "policy_compare": STRATEGY_FAMILY_EXEC_POLICY,
     "maker_replay": "maker",
     "structure_replay": "structure",
+}
+PRIMARY_REPLAY_VARIANT_BY_FAMILY = {
+    STRATEGY_FAMILY_EXEC_POLICY: "exec_policy",
+    "maker": "maker_policy",
+    "structure": "structure_policy",
 }
 
 
@@ -397,6 +413,9 @@ class PolymarketReplaySimulatorService:
                         **run_payload,
                         "advisory_only": True,
                         "live_disabled_by_default": not settings.polymarket_live_trading_enabled,
+                        "strategy_version_key": strategy_version.version_key if strategy_version is not None else None,
+                        "strategy_version_label": strategy_version.version_label if strategy_version is not None else None,
+                        "strategy_version_status": strategy_version.version_status if strategy_version is not None else None,
                     }
                 ),
             )
@@ -481,6 +500,14 @@ class PolymarketReplaySimulatorService:
                     run=run,
                     scenario_metrics=scenario_metrics,
                 )
+                try:
+                    await _record_phase13a_replay_evaluation(
+                        session,
+                        run=run,
+                        strategy_version=strategy_version,
+                    )
+                except Exception:
+                    logger.exception("Failed to record Phase 13A replay promotion evaluation for run %s", run.id)
                 await session.commit()
             except Exception as exc:
                 run.completed_at = _utcnow()
@@ -488,6 +515,14 @@ class PolymarketReplaySimulatorService:
                 run.error_count += 1
                 run.rows_inserted_json = _json_safe(row_counts)
                 run.details_json = _json_safe({"error": str(exc)})
+                try:
+                    await _record_phase13a_replay_evaluation(
+                        session,
+                        run=run,
+                        strategy_version=strategy_version,
+                    )
+                except Exception:
+                    logger.exception("Failed to record blocked replay promotion evaluation for run %s", run.id)
                 await session.commit()
                 polymarket_replay_runs_total.labels(run_type=run_type, status=RUN_STATUS_FAILED).inc()
                 raise
@@ -2880,7 +2915,145 @@ def _serialize_decimal_float(value: Decimal | None) -> float | None:
     return float(value) if value is not None else None
 
 
+def _serialize_run_metric_snapshot(row: PolymarketReplayMetric) -> dict[str, Any]:
+    details = row.details_json if isinstance(row.details_json, dict) else {}
+    return {
+        "variant_name": row.variant_name,
+        "net_pnl": _serialize_decimal_float(_to_decimal(row.net_pnl)),
+        "gross_pnl": _serialize_decimal_float(_to_decimal(row.gross_pnl)),
+        "fees_paid": _serialize_decimal_float(_to_decimal(row.fees_paid)),
+        "rewards_estimated": _serialize_decimal_float(_to_decimal(row.rewards_estimated)),
+        "fill_rate": _serialize_decimal_float(_to_decimal(row.fill_rate)),
+        "cancel_rate": _serialize_decimal_float(_to_decimal(row.cancel_rate)),
+        "slippage_bps": _serialize_decimal_float(_to_decimal(row.slippage_bps)),
+        "drawdown_proxy": _serialize_decimal_float(_to_decimal(row.drawdown_proxy)),
+        "scenario_count": int(details.get("scenario_count") or 0),
+    }
+
+
+async def _record_phase13a_replay_evaluation(
+    session: AsyncSession,
+    *,
+    run: PolymarketReplayRun,
+    strategy_version,
+) -> None:
+    family = str(run.strategy_family or "").strip().lower()
+    if not family or strategy_version is None:
+        return
+
+    registry_state = await sync_strategy_registry(session)
+    family_row = registry_state["family_rows"].get(family)
+    gate_policy = registry_state["gate_policy_rows"].get(PROMOTION_GATE_POLICY_V1)
+    if family_row is None:
+        return
+
+    run_metric_rows = (
+        await session.execute(
+            select(PolymarketReplayMetric)
+            .where(
+                PolymarketReplayMetric.run_id == run.id,
+                PolymarketReplayMetric.metric_scope == "run",
+            )
+            .order_by(PolymarketReplayMetric.variant_name.asc())
+        )
+    ).scalars().all()
+    variant_summaries = {
+        row.variant_name: _serialize_run_metric_snapshot(row)
+        for row in run_metric_rows
+    }
+
+    scenario_scope = (
+        await session.execute(
+            select(PolymarketReplayScenario.condition_id, PolymarketReplayScenario.asset_id)
+            .where(PolymarketReplayScenario.run_id == run.id)
+        )
+    ).all()
+    market_universe = sorted(
+        {
+            str(value)
+            for condition_id, asset_id in scenario_scope
+            for value in (condition_id, asset_id)
+            if value not in (None, "")
+        }
+    )
+    coverage_limited_scenarios = int(
+        ((run.details_json or {}) if isinstance(run.details_json, dict) else {}).get("coverage_limited_scenarios")
+        or 0
+    )
+    primary_variant = PRIMARY_REPLAY_VARIANT_BY_FAMILY.get(family)
+    if primary_variant not in variant_summaries:
+        primary_variant = next(iter(variant_summaries), None)
+    primary_summary = variant_summaries.get(primary_variant or "")
+    evaluation_status, recommended_tier = map_replay_summary_to_promotion_verdict(
+        run_status=run.status,
+        coverage_limited_scenarios=coverage_limited_scenarios,
+        variant_count=len(variant_summaries),
+    )
+    config_json = run.config_json if isinstance(run.config_json, dict) else {}
+    config_payload = {
+        "run_type": run.run_type,
+        "reason": run.reason,
+        "strategy_version_key": strategy_version.version_key,
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "require_complete_book_coverage": settings.polymarket_replay_require_complete_book_coverage,
+        "default_window_minutes": settings.polymarket_replay_default_window_minutes,
+        "passive_fill_timeout_seconds": settings.polymarket_replay_passive_fill_timeout_seconds,
+        "structure_enabled": settings.polymarket_replay_enable_structure,
+        "maker_enabled": settings.polymarket_replay_enable_maker,
+        "risk_adjustments_enabled": settings.polymarket_replay_enable_risk_adjustments,
+        "asset_ids": config_json.get("asset_ids") or [],
+        "condition_ids": config_json.get("condition_ids") or [],
+        "scenario_limit": config_json.get("scenario_limit"),
+    }
+    summary = {
+        "replay_status": run.status,
+        "scenario_count": int(run.scenario_count or 0),
+        "coverage_limited_scenarios": coverage_limited_scenarios,
+        "variant_count": len(variant_summaries),
+        "primary_variant": primary_variant,
+        "primary_variant_net_pnl": primary_summary.get("net_pnl") if primary_summary is not None else None,
+        "primary_variant_fill_rate": primary_summary.get("fill_rate") if primary_summary is not None else None,
+        "primary_variant_rewards_estimated": primary_summary.get("rewards_estimated") if primary_summary is not None else None,
+        "variant_summaries": variant_summaries,
+    }
+    provenance = {
+        "source": "polymarket_replay_run",
+        "strategy_family": family,
+        "strategy_version_key": strategy_version.version_key,
+        "strategy_version_status": strategy_version.version_status,
+        "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
+        "promotion_gate_policy_label": gate_policy.label if gate_policy is not None else None,
+        "replay_run_id": str(run.id),
+        "replay_run_key": run.run_key,
+        "run_type": run.run_type,
+        "execution_policy_version": POLICY_VERSION if family == STRATEGY_FAMILY_EXEC_POLICY else None,
+        "risk_policy_version": "risk_adjusted_variant_enabled" if settings.polymarket_replay_enable_risk_adjustments else None,
+        "fee_schedule_version": "replay_fee_inputs_unversioned",
+        "reward_schedule_version": "replay_reward_inputs_unversioned",
+        "market_universe_hash": hash_json_payload(market_universe),
+        "config_hash": hash_json_payload(config_payload),
+    }
+    evaluation = await upsert_promotion_evaluation(
+        session,
+        family_id=family_row.id,
+        strategy_version_id=strategy_version.id,
+        gate_policy_id=gate_policy.id if gate_policy is not None else None,
+        evaluation_kind=PROMOTION_EVALUATION_KIND_REPLAY,
+        evaluation_status=evaluation_status,
+        autonomy_tier=recommended_tier,
+        evaluation_window_start=run.time_window_start,
+        evaluation_window_end=run.time_window_end,
+        provenance_json=provenance,
+        summary_json=summary,
+    )
+    run_details = dict(run.details_json or {}) if isinstance(run.details_json, dict) else {}
+    run_details["promotion_evaluation"] = serialize_promotion_evaluation(evaluation)
+    run.details_json = _json_safe(run_details)
+
+
 def _serialize_run(row: PolymarketReplayRun) -> dict[str, Any]:
+    config = row.config_json if isinstance(row.config_json, dict) else {}
+    details = row.details_json if isinstance(row.details_json, dict) else {}
     return {
         "id": str(row.id),
         "run_key": row.run_key,
@@ -2888,12 +3061,16 @@ def _serialize_run(row: PolymarketReplayRun) -> dict[str, Any]:
         "reason": row.reason,
         "strategy_family": row.strategy_family,
         "strategy_version_id": row.strategy_version_id,
+        "strategy_version_key": config.get("strategy_version_key"),
+        "strategy_version_label": config.get("strategy_version_label"),
+        "strategy_version_status": config.get("strategy_version_status"),
         "status": row.status,
         "scenario_count": row.scenario_count,
         "started_at": row.started_at,
         "completed_at": row.completed_at,
         "time_window_start": row.time_window_start,
         "time_window_end": row.time_window_end,
+        "promotion_evaluation": details.get("promotion_evaluation"),
         "config_json": row.config_json,
         "rows_inserted_json": row.rows_inserted_json,
         "error_count": row.error_count,

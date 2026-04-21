@@ -175,21 +175,23 @@ beforeEach(() => {
           family_id: 2,
           strategy_version_id: 2,
           gate_policy_id: 1,
-          evaluation_kind: "pilot_readiness_gate",
-          evaluation_status: "candidate",
-          autonomy_tier: "bounded_auto_submit",
+          evaluation_kind: "replay_gate",
+          evaluation_status: "observe",
+          autonomy_tier: "shadow_only",
           evaluation_window_start: "2026-04-20T00:00:00Z",
           evaluation_window_end: "2026-04-21T00:00:00Z",
           provenance_json: {
             promotion_gate_policy_key: "promotion_gate_policy_v1",
             config_hash: "cfg-exec-1234",
             market_universe_hash: "mkt-exec-5678",
+            replay_run_key: "phase11-exec-1234",
           },
           summary_json: {
-            readiness_status: "candidate_for_semi_auto",
-            readiness_blockers: [],
-            incident_count: 0,
-            approval_backlog_count: 0,
+            replay_status: "completed",
+            variant_count: 3,
+            primary_variant: "exec_policy",
+            primary_variant_net_pnl: 12.5,
+            coverage_limited_scenarios: 0,
           },
           created_at: "2026-04-21T08:00:00Z",
           updated_at: "2026-04-21T08:00:00Z",
@@ -215,6 +217,8 @@ describe("Strategies", () => {
     expect(screen.getByText("Promotion Gate Policy v1")).toBeInTheDocument();
     expect(screen.getAllByText("Latest Gate Verdict").length).toBeGreaterThan(0);
     expect(screen.getByText("cfg-exec-1234")).toBeInTheDocument();
+    expect(screen.getByText("Replay Gate")).toBeInTheDocument();
+    expect(screen.getByText("3 variants")).toBeInTheDocument();
     expect(screen.getByText("Benchmark Health")).toBeInTheDocument();
     expect(screen.getByText("Pilot Console")).toBeInTheDocument();
   });
