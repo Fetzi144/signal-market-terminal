@@ -116,11 +116,13 @@ from app.models.polymarket_replay import (
     PolymarketReplayRun,
     PolymarketReplayScenario,
 )
+from app.models.strategy_registry import StrategyFamilyRegistry, StrategyVersion
 from app.risk.budgets import build_strategy_budget_status, serialize_risk_budget_status
 from app.strategies.promotion import (
     PROMOTION_EVALUATION_KIND_INCIDENT,
     hash_json_payload,
     map_incident_summary_to_promotion_verdict,
+    record_promotion_eligibility_evaluation,
     rolling_promotion_window_bounds,
     upsert_promotion_evaluation,
 )
@@ -181,11 +183,24 @@ async def _record_phase13a_incident_evaluation(
     row: PolymarketControlPlaneIncident,
     strategy_family: str | None,
 ) -> None:
-    if row.strategy_version_id is None or not strategy_family:
+    if row.strategy_version_id is None:
+        return
+    resolved_family = str(strategy_family or "").strip().lower() or None
+    if resolved_family is None:
+        family_match = (
+            await session.execute(
+                select(StrategyFamilyRegistry.family)
+                .join(StrategyVersion, StrategyVersion.family_id == StrategyFamilyRegistry.id)
+                .where(StrategyVersion.id == int(row.strategy_version_id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        resolved_family = str(family_match or "").strip().lower() or None
+    if resolved_family is None:
         return
 
     registry_state = await sync_strategy_registry(session)
-    family_row = registry_state["family_rows"].get(strategy_family)
+    family_row = registry_state["family_rows"].get(resolved_family)
     gate_policy = registry_state["gate_policy_rows"].get(PROMOTION_GATE_POLICY_V1)
     version_snapshot = (
         await get_strategy_version_snapshot_map(session, version_ids=[int(row.strategy_version_id)])
@@ -226,7 +241,7 @@ async def _record_phase13a_incident_evaluation(
     }
     provenance = {
         "source": "polymarket_control_plane_incident",
-        "strategy_family": strategy_family,
+        "strategy_family": resolved_family,
         "strategy_version_key": version_snapshot["version_key"],
         "strategy_version_status": version_snapshot["version_status"],
         "promotion_gate_policy_key": gate_policy.policy_key if gate_policy is not None else None,
@@ -256,6 +271,13 @@ async def _record_phase13a_incident_evaluation(
         evaluation_window_end=window_end,
         provenance_json=provenance,
         summary_json=summary,
+    )
+    await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(row.strategy_version_id),
+        trigger_kind=PROMOTION_EVALUATION_KIND_INCIDENT,
+        trigger_ref=str(row.id),
+        observed_at=row.observed_at_local,
     )
 
 

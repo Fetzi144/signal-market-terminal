@@ -27,7 +27,6 @@ from app.ingestion.polymarket_execution_policy import (
     _evaluate_post_best,
     _evaluate_skip,
     _evaluate_step_ahead,
-    _latest_param_history,
     _passive_label_summary,
 )
 from app.ingestion.polymarket_microstructure import (
@@ -48,7 +47,7 @@ from app.metrics import (
     polymarket_replay_variant_net_pnl,
 )
 from app.models.execution_decision import ExecutionDecision
-from app.models.market import Market, Outcome
+from app.models.market import Outcome
 from app.models.market_structure import (
     MarketStructureOpportunity,
     MarketStructureOpportunityLeg,
@@ -69,15 +68,13 @@ from app.models.polymarket_replay import (
     PolymarketReplayRun,
     PolymarketReplayScenario,
 )
-from app.models.polymarket_risk import (
-    InventoryControlSnapshot,
-    PortfolioOptimizerRecommendation,
-)
+from app.models.polymarket_risk import PortfolioOptimizerRecommendation
 from app.models.signal import Signal
 from app.strategies.promotion import (
     PROMOTION_EVALUATION_KIND_REPLAY,
     hash_json_payload,
     map_replay_summary_to_promotion_verdict,
+    record_promotion_eligibility_evaluation,
     serialize_promotion_evaluation,
     upsert_promotion_evaluation,
 )
@@ -3045,6 +3042,13 @@ async def _record_phase13a_replay_evaluation(
         evaluation_window_end=run.time_window_end,
         provenance_json=provenance,
         summary_json=summary,
+    )
+    await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(strategy_version.id),
+        trigger_kind=PROMOTION_EVALUATION_KIND_REPLAY,
+        trigger_ref=str(run.id),
+        observed_at=run.completed_at or run.time_window_end,
     )
     run_details = dict(run.details_json or {}) if isinstance(run.details_json, dict) else {}
     run_details["promotion_evaluation"] = serialize_promotion_evaluation(evaluation)

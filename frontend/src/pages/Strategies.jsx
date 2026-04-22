@@ -65,12 +65,20 @@ function EvidencePill({ label, value }) {
 
 function evaluationStateHint(evaluation) {
   const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "promotion_eligibility_gate") {
+    const decision = summary.decision || {};
+    return decision.eligible ? "Eligible for promotion" : "Not eligible yet";
+  }
   if (evaluation?.evaluation_kind === "replay_gate") return titleCase(summary.replay_status);
   return titleCase(summary.readiness_status);
 }
 
 function evaluationSummaryValue(evaluation) {
   const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "promotion_eligibility_gate") {
+    const decision = summary.decision || {};
+    return decision.eligible ? "Eligible" : "Not Eligible";
+  }
   if (evaluation?.evaluation_kind === "replay_gate") {
     const variantCount = Number(summary.variant_count || 0);
     return variantCount > 0 ? `${variantCount} variants` : "No variants";
@@ -81,6 +89,11 @@ function evaluationSummaryValue(evaluation) {
 
 function evaluationSummaryHint(evaluation) {
   const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "promotion_eligibility_gate") {
+    const decision = summary.decision || {};
+    const blockers = Array.isArray(summary.blocker_codes) ? summary.blocker_codes : [];
+    return `Recommended ${titleCase(decision.recommended_tier)} | ${blockers.length ? blockers.map(titleCase).join(", ") : "No blockers"}`;
+  }
   if (evaluation?.evaluation_kind === "replay_gate") {
     return `${titleCase(summary.primary_variant)} | Net ${fmtMetric(summary.primary_variant_net_pnl)} | Coverage ${summary.coverage_limited_scenarios ?? 0}`;
   }
@@ -89,6 +102,9 @@ function evaluationSummaryHint(evaluation) {
 
 function evaluationSourceHint(evaluation) {
   const provenance = evaluation?.provenance_json || {};
+  if (evaluation?.evaluation_kind === "promotion_eligibility_gate") {
+    return provenance.trigger_kind ? `Triggered by ${titleCase(provenance.trigger_kind)}` : (provenance.source || "-");
+  }
   if (evaluation?.evaluation_kind === "replay_gate") {
     return provenance.replay_run_key || provenance.source || "-";
   }
@@ -97,6 +113,11 @@ function evaluationSourceHint(evaluation) {
 
 function gateHistorySummary(evaluation) {
   const summary = evaluation?.summary_json || {};
+  if (evaluation?.evaluation_kind === "promotion_eligibility_gate") {
+    const decision = summary.decision || {};
+    const blockers = Array.isArray(summary.blocker_codes) ? summary.blocker_codes : [];
+    return `${evaluationSummaryValue(evaluation)} | ${titleCase(decision.recommended_tier)} | ${blockers.length ? blockers.map(titleCase).join(", ") : "No blockers"}`;
+  }
   if (evaluation?.evaluation_kind === "replay_gate") {
     return `${titleCase(summary.replay_status)} | ${summary.variant_count ?? 0} variants`;
   }
@@ -467,7 +488,7 @@ export default function Strategies() {
                   />
                   <MetricCard
                     label="Recommended Autonomy"
-                    value={autonomyStateLabel(currentVersion?.autonomy_state, latestEvaluation.autonomy_tier)}
+                    value={titleCase(currentVersion?.autonomy_state?.recommended_autonomy_tier || latestEvaluation?.summary_json?.decision?.recommended_tier || latestEvaluation.autonomy_tier)}
                     hint={autonomyStateHint(currentVersion?.autonomy_state) || evaluationStateHint(latestEvaluation)}
                   />
                   <MetricCard

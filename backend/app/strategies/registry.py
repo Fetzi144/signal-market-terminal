@@ -55,6 +55,7 @@ from app.strategies.promotion import (
     map_guardrail_summary_to_promotion_verdict,
     map_incident_summary_to_promotion_verdict,
     map_scorecard_status_to_promotion_verdict,
+    record_promotion_eligibility_evaluation,
     rolling_promotion_window_bounds,
     serialize_demotion_event,
     serialize_promotion_evaluation,
@@ -323,6 +324,13 @@ async def sync_strategy_registry(session: AsyncSession) -> dict[str, Any]:
         family_rows=family_rows,
         gate_policy_rows=gate_policy_rows,
     )
+    for row in version_rows.values():
+        if row.id is None:
+            continue
+        await record_promotion_eligibility_evaluation(
+            session,
+            strategy_version_id=int(row.id),
+        )
 
     return {
         "family_rows": family_rows,

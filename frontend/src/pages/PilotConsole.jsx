@@ -178,7 +178,7 @@ export default function PilotConsole() {
           <StatCard label="Run State" value={activeRun?.status || "idle"} />
           <StatCard label="Lifecycle Version" value={activeStrategyVersion?.version_label || "-"} />
           <StatCard label="Autonomy State" value={formatAutonomyState(activeAutonomyState)} />
-          <StatCard label="Gate Verdict" value={latestGate?.evaluation_status || "-"} />
+          <StatCard label="Gate Verdict" value={formatEligibilityVerdict(latestGate)} />
           <StatCard label="Submission Mode" value={titleCase(activeAutonomyState?.submission_mode)} />
           <StatCard label="Manual Approval" value={summary?.pilot?.manual_approval_required ? "On" : "Off"} />
           <StatCard label="Approval Queue" value={summary?.pilot?.approval_queue_count ?? 0} />
@@ -205,7 +205,7 @@ export default function PilotConsole() {
         </div>
         {activeAutonomyState ? (
           <div style={metaStyle}>
-            Autonomy reason: {formatAutonomyReason(activeAutonomyState)} | Blockers: {(activeAutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
+            Recommended tier: {titleCase(activeAutonomyState.recommended_autonomy_tier)} | Autonomy reason: {formatAutonomyReason(activeAutonomyState)} | Blockers: {(activeAutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
           </div>
         ) : null}
       </section>
@@ -445,7 +445,7 @@ function formatLifecycleVersion(row) {
 }
 
 function formatLifecycleGate(row) {
-  return row?.latest_promotion_evaluation?.evaluation_status || "-";
+  return formatEligibilityVerdict(row?.latest_promotion_evaluation);
 }
 
 function titleCase(value) {
@@ -463,12 +463,20 @@ function formatAutonomyReason(state) {
   return titleCase(state.state_reason || state.blocked_reasons?.[0] || state.submission_mode);
 }
 
+function formatEligibilityVerdict(gate) {
+  if (!gate) return "-";
+  if (gate.evaluation_kind === "promotion_eligibility_gate") {
+    return gate.summary_json?.decision?.eligible ? "Eligible" : "Not Eligible";
+  }
+  return titleCase(gate.evaluation_status);
+}
+
 function renderGateAutonomy(row) {
   const gate = row?.latest_promotion_evaluation;
   if (!gate) return "-";
   return (
     <div>
-      <div>{titleCase(gate.evaluation_status)}</div>
+      <div>{formatEligibilityVerdict(gate)}</div>
       <div style={metaStyle}>{titleCase(gate.autonomy_tier)}</div>
     </div>
   );

@@ -60,24 +60,31 @@ const summaryPayload = {
     },
     latest_promotion_evaluation: {
       id: 22,
-      evaluation_status: "observe",
-      evaluation_kind: "pilot_readiness_gate",
-      autonomy_tier: "shadow_only",
+      evaluation_status: "eligible",
+      evaluation_kind: "promotion_eligibility_gate",
+      autonomy_tier: "assisted_live",
+      summary_json: {
+        decision: {
+          eligible: true,
+        },
+      },
     },
     active_autonomy_state: {
+      recommended_autonomy_tier: "assisted_live",
       effective_autonomy_tier: "assisted_live",
       submission_mode: "manual_approval",
       state_reason: "manual_approval_required",
       blocked_reasons: ["manual_approval_required"],
-      gate_kind: "pilot_readiness_gate",
+      gate_kind: "promotion_eligibility_gate",
     },
   },
   active_autonomy_state: {
+    recommended_autonomy_tier: "assisted_live",
     effective_autonomy_tier: "assisted_live",
     submission_mode: "manual_approval",
     state_reason: "manual_approval_required",
     blocked_reasons: ["manual_approval_required"],
-    gate_kind: "pilot_readiness_gate",
+    gate_kind: "promotion_eligibility_gate",
   },
   active_family_budget: {
     strategy_family: "exec_policy",
@@ -165,9 +172,14 @@ const summaryPayload = {
     },
     latest_promotion_evaluation: {
       id: 22,
-      evaluation_status: "observe",
-      evaluation_kind: "pilot_readiness_gate",
-      autonomy_tier: "shadow_only",
+      evaluation_status: "eligible",
+      evaluation_kind: "promotion_eligibility_gate",
+      autonomy_tier: "assisted_live",
+      summary_json: {
+        decision: {
+          eligible: true,
+        },
+      },
     },
     live_shadow_summary: {
       average_gap_bps_24h: 4.2,
@@ -282,13 +294,15 @@ describe("PilotConsole", () => {
     expect(screen.getByText("Autonomy State")).toBeInTheDocument();
     expect(screen.getByText("Assisted Live")).toBeInTheDocument();
     expect(screen.getAllByText("Execution Policy Infra v1").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("observe").length).toBeGreaterThan(0);
+    expect(screen.getByText("Eligible")).toBeInTheDocument();
+    expect(screen.queryByText(/^observe$/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("Gate / Autonomy").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Blocked").length).toBeGreaterThan(0);
     expect(screen.getByText("$25.00 / $75.00")).toBeInTheDocument();
     expect(screen.getByText("thin_liquidity")).toBeInTheDocument();
     expect(screen.getByText("constrained")).toBeInTheDocument();
     expect(screen.getByText("capacity_ceiling_exceeded")).toBeInTheDocument();
+    expect(screen.getByText(/Recommended tier: Assisted Live \| Autonomy reason: Manual Approval Required \| Blockers: Manual Approval Required/)).toBeInTheDocument();
     expect(screen.getByText(/Autonomy reason:/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Arm" }));

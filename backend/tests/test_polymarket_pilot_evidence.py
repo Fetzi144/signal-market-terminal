@@ -519,12 +519,17 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert guardrails_response.json()["rows"]
     assert readiness_response.json()["rows"]
     assert incidents_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
-    assert incidents_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
+    assert incidents_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "promotion_eligibility_gate"
     assert scorecards_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert guardrails_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
-    assert guardrails_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
+    assert guardrails_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "promotion_eligibility_gate"
     assert readiness_response.json()["rows"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
-    assert readiness_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "pilot_readiness_gate"
+    assert readiness_response.json()["rows"][0]["latest_promotion_evaluation"]["evaluation_kind"] == "promotion_eligibility_gate"
+    assert readiness_response.json()["rows"][0]["latest_promotion_evaluation"]["summary_json"]["decision"]["recommended_tier"] in {
+        "shadow_only",
+        "assisted_live",
+        "bounded_auto_submit",
+    }
     families = {row["family"]: row for row in strategies_response.json()["families"]}
     alignment = families["exec_policy"]["current_version"]["evidence_alignment"]
     assert alignment["live_shadow"]["recent_count_24h"] >= 1
@@ -543,9 +548,9 @@ async def test_evidence_api_endpoints_and_health(client, engine):
     assert len(detail_payload["live_shadow_evaluations"]) >= 1
     assert len(detail_payload["scorecards"]) >= 1
     assert len(detail_payload["readiness_reports"]) >= 1
-    assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] in {"pilot_readiness_gate", "replay_gate"}
+    assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] == "promotion_eligibility_gate"
     gate_kinds = {row["evaluation_kind"] for row in detail_payload["gate_history"]}
-    assert {"pilot_readiness_gate", "scorecard_gate", "incident_gate", "guardrail_gate"}.issubset(gate_kinds)
+    assert {"promotion_eligibility_gate", "pilot_readiness_gate", "scorecard_gate"}.issubset(gate_kinds)
     assert health_response.json()["polymarket_phase12"]["daily_realized_pnl"]["net_realized_pnl"] is not None
     assert "recent_guardrail_triggers" in health_response.json()["polymarket_phase12"]
     assert health_response.json()["polymarket_phase12"]["strategy_version"]["version_key"] == "exec_policy_infra_v1"

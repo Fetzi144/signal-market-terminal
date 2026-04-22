@@ -420,7 +420,7 @@ export default function Health() {
               </div>
               {(family.autonomy_state || family.current_version?.autonomy_state) ? (
                 <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8 }}>
-                  Reason {formatAutonomyReason(family.autonomy_state || family.current_version?.autonomy_state)}
+                  Eligibility {formatEligibilityVerdict(family.current_version?.latest_promotion_evaluation || family.latest_promotion_evaluation)} | Reason {formatAutonomyReason(family.autonomy_state || family.current_version?.autonomy_state)} | Recommended {titleCase((family.autonomy_state || family.current_version?.autonomy_state)?.recommended_autonomy_tier)} | Blockers {((family.autonomy_state || family.current_version?.autonomy_state)?.blocked_reasons || []).map(titleCase).join(", ") || "None"}
                 </div>
               ) : null}
               {family.disabled_reason && (
@@ -1116,7 +1116,7 @@ export default function Health() {
           </div>
           {phase12AutonomyState ? (
             <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 12 }}>
-              Autonomy reason {formatAutonomyReason(phase12AutonomyState)} | Blockers {(phase12AutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
+              Recommended tier {titleCase(phase12AutonomyState.recommended_autonomy_tier)} | Autonomy reason {formatAutonomyReason(phase12AutonomyState)} | Blockers {(phase12AutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
             </div>
           ) : null}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
@@ -1564,7 +1564,7 @@ function formatLifecycleVersion(row) {
 }
 
 function formatLifecycleGate(row) {
-  return row?.latest_promotion_evaluation?.evaluation_status || "-";
+  return formatEligibilityVerdict(row?.latest_promotion_evaluation);
 }
 
 function titleCase(value) {
@@ -1582,12 +1582,20 @@ function formatAutonomyReason(state) {
   return titleCase(state.state_reason || state.blocked_reasons?.[0] || state.submission_mode);
 }
 
+function formatEligibilityVerdict(gate) {
+  if (!gate) return "-";
+  if (gate.evaluation_kind === "promotion_eligibility_gate") {
+    return gate.summary_json?.decision?.eligible ? "Eligible" : "Not Eligible";
+  }
+  return titleCase(gate.evaluation_status);
+}
+
 function renderGateAutonomy(row) {
   const gate = row?.latest_promotion_evaluation;
   if (!gate) return "-";
   return (
     <div>
-      <div>{titleCase(gate.evaluation_status)}</div>
+      <div>{formatEligibilityVerdict(gate)}</div>
       <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>{titleCase(gate.autonomy_tier)}</div>
     </div>
   );

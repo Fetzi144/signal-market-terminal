@@ -26,7 +26,10 @@ from app.ingestion.polymarket_replay_simulator import (
 )
 from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.models.market_structure import MarketStructureOpportunity
-from app.models.polymarket_maker import PolymarketMakerEconomicsSnapshot, PolymarketQuoteRecommendation
+from app.models.polymarket_maker import (
+    PolymarketMakerEconomicsSnapshot,
+    PolymarketQuoteRecommendation,
+)
 from app.models.polymarket_raw import PolymarketBookDelta
 from app.models.polymarket_risk import PortfolioOptimizerRecommendation, RiskGraphRun
 from app.models.strategy_registry import PromotionEvaluation
@@ -34,8 +37,11 @@ from app.paper_trading.engine import attempt_open_trade
 from app.strategy_runs.service import ensure_active_default_strategy_run
 from tests.conftest import make_polymarket_market_event
 from tests.test_polymarket_execution_policy import _make_context, _seed_polymarket_execution_fixture
-from tests.test_structure_engine import FIXED_NOW, _seed_executable_neg_risk_setup, _set_structure_defaults
-
+from tests.test_structure_engine import (
+    FIXED_NOW,
+    _seed_executable_neg_risk_setup,
+    _set_structure_defaults,
+)
 
 ZERO = Decimal("0")
 
@@ -301,15 +307,16 @@ async def test_replay_rebuild_is_deterministic_from_stored_snapshot_and_deltas(e
         )
     await service.close()
 
-    marker_projection = lambda replay: [
-        (
-            marker.exchange_time,
-            marker.best_bid,
-            marker.best_ask,
-            marker.last_applied_raw_event_id,
-        )
-        for marker in replay.markers
-    ]
+    def marker_projection(replay):
+        return [
+            (
+                marker.exchange_time,
+                marker.best_bid,
+                marker.best_ask,
+                marker.last_applied_raw_event_id,
+            )
+            for marker in replay.markers
+        ]
 
     assert marker_projection(replay_one) == marker_projection(replay_two)
     assert replay_one.marker_times == sorted(replay_one.marker_times)
@@ -871,8 +878,9 @@ async def test_replay_api_and_health_surfaces_are_idempotent(client, engine, mon
     assert first_payload["run"]["promotion_evaluation"]["evaluation_kind"] == "replay_gate"
     assert first_payload["run"]["promotion_evaluation"]["evaluation_status"] == "blocked"
     strategy_families = {row["family"]: row for row in strategies_response.json()["families"]}
-    assert strategy_families["exec_policy"]["latest_promotion_evaluation"]["evaluation_kind"] == "replay_gate"
-    assert strategy_families["exec_policy"]["latest_promotion_evaluation"]["summary_json"]["primary_variant"] == "exec_policy"
+    assert strategy_families["exec_policy"]["latest_promotion_evaluation"]["evaluation_kind"] == "promotion_eligibility_gate"
+    assert strategy_families["exec_policy"]["latest_promotion_evaluation"]["summary_json"]["decision"]["eligible"] is False
+    assert "readiness_missing" in strategy_families["exec_policy"]["latest_promotion_evaluation"]["summary_json"]["blocker_codes"]
     assert strategy_families["exec_policy"]["current_version"]["evidence_alignment"]["latest_replay_run"]["run_key"] == first_payload["run"]["run_key"]
     assert strategy_families["exec_policy"]["current_version"]["evidence_alignment"]["latest_replay_run"]["promotion_evaluation"]["evaluation_kind"] == "replay_gate"
     detail_response = await client.get(
@@ -881,7 +889,7 @@ async def test_replay_api_and_health_surfaces_are_idempotent(client, engine, mon
     assert detail_response.status_code == 200
     detail_payload = detail_response.json()
     assert detail_payload["replay_runs"][0]["run_key"] == first_payload["run"]["run_key"]
-    assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] == "replay_gate"
+    assert detail_payload["promotion_evaluations"][0]["evaluation_kind"] == "promotion_eligibility_gate"
 
     async with session_factory() as session:
         traces = await list_polymarket_replay_decision_traces(session, variant_name="exec_policy", limit=20)

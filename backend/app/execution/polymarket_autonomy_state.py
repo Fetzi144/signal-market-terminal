@@ -27,6 +27,7 @@ AUTONOMY_TIER_ORDER = {
     AUTONOMY_TIER_BOUNDED_UNATTENDED: 3,
 }
 ALL_PROMOTION_EVALUATION_KINDS = frozenset({
+    "promotion_eligibility_gate",
     "pilot_readiness_gate",
     "replay_gate",
     "scorecard_gate",
@@ -158,6 +159,27 @@ def _gate_blockers(evaluation: dict[str, Any] | None) -> list[str]:
     if not isinstance(summary, dict):
         summary = {}
     kind = str(evaluation.get("evaluation_kind") or "").strip().lower()
+    if kind == "promotion_eligibility_gate":
+        blockers = summary.get("blockers")
+        if isinstance(blockers, list):
+            codes = []
+            for value in blockers:
+                if isinstance(value, dict):
+                    code = str(value.get("code") or "").strip()
+                    if code:
+                        codes.append(code)
+                elif str(value).strip():
+                    codes.append(str(value).strip())
+            if codes:
+                return codes
+        blocker_codes = summary.get("blocker_codes")
+        if isinstance(blocker_codes, list):
+            return [str(value).strip() for value in blocker_codes if str(value).strip()]
+        decision = summary.get("decision")
+        if isinstance(decision, dict):
+            state_reason = str(decision.get("state_reason") or "").strip()
+            return [state_reason] if state_reason else []
+        return []
     if kind == "pilot_readiness_gate":
         blockers = summary.get("readiness_blockers")
         if isinstance(blockers, list):

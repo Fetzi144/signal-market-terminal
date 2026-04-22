@@ -43,6 +43,7 @@ from app.strategies.promotion import (
     map_guardrail_summary_to_promotion_verdict,
     map_readiness_status_to_promotion_verdict,
     map_scorecard_status_to_promotion_verdict,
+    record_promotion_eligibility_evaluation,
     rolling_promotion_window_bounds,
     upsert_promotion_evaluation,
 )
@@ -284,6 +285,13 @@ async def _record_phase13a_readiness_evaluation(
         provenance_json=provenance,
         summary_json=summary,
     )
+    await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(strategy_version.id),
+        trigger_kind=PROMOTION_EVALUATION_KIND_PILOT_READINESS,
+        trigger_ref=str(readiness_row.id),
+        observed_at=readiness_row.generated_at or readiness_row.window_end,
+    )
 
 
 async def _record_phase13a_scorecard_evaluation(
@@ -382,6 +390,13 @@ async def _record_phase13a_scorecard_evaluation(
         provenance_json=provenance,
         summary_json=summary,
     )
+    await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(strategy_version.id),
+        trigger_kind=PROMOTION_EVALUATION_KIND_SCORECARD,
+        trigger_ref=str(scorecard_row.id),
+        observed_at=scorecard_row.window_end or scorecard_row.created_at,
+    )
 
 
 async def _record_phase13a_guardrail_evaluation(
@@ -474,6 +489,13 @@ async def _record_phase13a_guardrail_evaluation(
         evaluation_window_end=window_end,
         provenance_json=provenance,
         summary_json=summary,
+    )
+    await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(row.strategy_version_id),
+        trigger_kind=PROMOTION_EVALUATION_KIND_GUARDRAIL,
+        trigger_ref=str(row.id),
+        observed_at=row.observed_at_local,
     )
 
 

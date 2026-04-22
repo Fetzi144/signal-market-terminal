@@ -162,9 +162,9 @@ That is intentional. Phase 13A is the read-only lifecycle and evidence-integrity
 
 ## Suggested Next Step
 
-The next best step after Phase 13A and the newly-landed Milestone 3 budget slice is:
+The next best step after Phase 13A, Milestone 3 hard budgets, and the first Milestone 4 read-only control-plane slices is:
 
-* move into Milestone 4 with the autonomous control plane and tiered rollout state machine, but keep it strictly bounded by the family-level capital, exposure, capacity, and regime-aware controls that are now enforced
+* continue Milestone 4 with automatic demotion and pause rules so the new autonomy state and deterministic promotion-eligibility verdicts can fail closed without introducing a rollout state machine yet
 
 ## Validation Completed
 

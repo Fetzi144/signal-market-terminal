@@ -15,6 +15,8 @@ from app.execution.polymarket_control_plane import (
 from app.execution.polymarket_gateway import PolymarketGateway
 from app.execution.polymarket_heartbeat import PolymarketHeartbeatService
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
+from app.strategies.promotion import record_promotion_eligibility_evaluation
+from app.strategies.registry import get_current_strategy_version
 
 
 class PolymarketPilotSupervisor:
@@ -38,15 +40,28 @@ class PolymarketPilotSupervisor:
         lot_sync = await self._evidence.sync_position_lots(session)
         guardrails = await self._evidence.enforce_periodic_guardrails(session)
         generated = await self._evidence.maybe_generate_scheduled_artifacts(session)
+        active_config = await get_active_pilot_config(session)
+        active_run = await get_open_pilot_run(session, pilot_config_id=active_config.id) if active_config is not None else None
         if any(event.get("action_taken") == "pause_pilot" for event in guardrails):
-            active_config = await get_active_pilot_config(session)
-            active_run = await get_open_pilot_run(session, pilot_config_id=active_config.id) if active_config is not None else None
             if active_run is not None and active_run.status != "paused":
                 await pause_active_pilot(
                     session,
                     reason="guardrail",
                     details={"guardrail_types": [event["guardrail_type"] for event in guardrails]},
                     incident_type="pilot_guardrail_pause",
+                )
+        if active_config is not None and active_config.strategy_family:
+            strategy_version = await get_current_strategy_version(
+                session,
+                active_config.strategy_family,
+                sync_registry=False,
+            )
+            if strategy_version is not None and strategy_version.id is not None:
+                await record_promotion_eligibility_evaluation(
+                    session,
+                    strategy_version_id=int(strategy_version.id),
+                    trigger_kind="pilot_supervisor_tick",
+                    trigger_ref=str(active_run.id) if active_run is not None else None,
                 )
         return {
             "expired_approvals": expired,

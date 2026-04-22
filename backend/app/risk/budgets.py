@@ -637,6 +637,7 @@ async def record_budget_gate_evaluation(
     from app.strategies.promotion import (
         PROMOTION_EVALUATION_STATUS_BLOCKED,
         PROMOTION_EVALUATION_STATUS_OBSERVE,
+        record_promotion_eligibility_evaluation,
         rolling_promotion_window_bounds,
         upsert_promotion_evaluation,
     )
@@ -665,6 +666,13 @@ async def record_budget_gate_evaluation(
             "strategy_family": strategy_family,
         },
         summary_json=_json_safe(summary_json),
+    )
+    await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(strategy_version_id),
+        trigger_kind=PROMOTION_EVALUATION_KIND_CAPITAL_BUDGET,
+        trigger_ref=str(reason_code),
+        observed_at=observed_at or datetime.now(timezone.utc),
     )
 
 
