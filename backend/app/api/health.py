@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
+from app.execution.polymarket_autonomy_state import (
+    get_latest_demotion_event_by_version,
+    summarize_autonomy_state,
+)
 from app.execution.polymarket_control_plane import fetch_pilot_status
 from app.execution.polymarket_live_state import fetch_polymarket_live_status
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
@@ -27,8 +31,13 @@ from app.models.ingestion import IngestionRun
 from app.models.market import Market
 from app.models.scheduler_lease import SchedulerLease
 from app.models.signal import Signal, SignalEvaluation
+from app.models.strategy_registry import StrategyFamilyRegistry, StrategyVersion
 from app.paper_trading.analysis import get_overdue_open_trade_count
 from app.risk.budgets import build_family_budget_summaries
+from app.strategies.registry import (
+    get_latest_promotion_evaluation_by_version,
+    serialize_strategy_version_snapshot,
+)
 from app.strategy_families import build_strategy_family_reviews
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
@@ -303,6 +312,7 @@ class PolymarketPhase12Status(BaseModel):
     active_pilot_family: str | None = None
     strategy_version: dict[str, Any] | None = None
     latest_promotion_evaluation: dict[str, Any] | None = None
+    autonomy_state: dict[str, Any] | None = None
     manual_approval_required: bool
     approval_queue_count: int
     heartbeat_status: str
@@ -331,6 +341,7 @@ class StrategyFamilyReviewOut(BaseModel):
     current_version: dict[str, Any] | None = None
     risk_budget_policy: dict[str, Any] | None = None
     risk_budget_status: dict[str, Any] | None = None
+    autonomy_state: dict[str, Any] | None = None
 
 
 class SchedulerLeaseStatus(BaseModel):
@@ -691,13 +702,108 @@ async def health(db: AsyncSession = Depends(get_db)):
         row["family"]: row
         for row in await build_family_budget_summaries(db)
     }
+    family_names = [str(row["family"]).strip().lower() for row in strategy_family_reviews]
+    current_version_rows = (
+        await db.execute(
+            select(StrategyVersion, StrategyFamilyRegistry)
+            .join(StrategyFamilyRegistry, StrategyFamilyRegistry.id == StrategyVersion.family_id)
+            .where(
+                StrategyVersion.is_current.is_(True),
+                StrategyFamilyRegistry.family.in_(tuple(family_names)),
+            )
+            .order_by(StrategyFamilyRegistry.family.asc())
+        )
+    ).all()
+    version_rows_by_family = {
+        family_row.family: version_row
+        for version_row, family_row in current_version_rows
+        if version_row.id is not None
+    }
+    latest_supporting_evaluation_by_version = await get_latest_promotion_evaluation_by_version(
+        db,
+        version_ids=[int(row.id) for row in version_rows_by_family.values() if row.id is not None],
+        include_supporting=True,
+    )
+    latest_demotion_by_version = await get_latest_demotion_event_by_version(
+        db,
+        version_ids=[int(row.id) for row in version_rows_by_family.values() if row.id is not None],
+    )
     strategy_families = [
-        {
-            **row,
-            "current_version": budget_summary_by_family.get(row["family"], {}).get("current_version"),
-            "risk_budget_policy": budget_summary_by_family.get(row["family"], {}).get("risk_budget_policy"),
-            "risk_budget_status": budget_summary_by_family.get(row["family"], {}).get("risk_budget_status"),
-        }
+        (
+            lambda family_review, version_row, budget_row, risk_budget_status: {
+                **family_review,
+                "current_version": (
+                    {
+                        **(budget_row.get("current_version") or {}),
+                        **(
+                            {
+                                "version_status": version_row.version_status,
+                                "autonomy_tier": version_row.autonomy_tier,
+                                "is_current": version_row.is_current,
+                                "is_frozen": version_row.is_frozen,
+                                "created_at": serialize_strategy_version_snapshot(version_row).get("created_at"),
+                                "updated_at": serialize_strategy_version_snapshot(version_row).get("updated_at"),
+                            }
+                            if version_row is not None
+                            else {}
+                        ),
+                        "autonomy_state": (
+                            summarize_autonomy_state(
+                                strategy_family=family_review["family"],
+                                family_source="current_registry_version" if version_row is not None else "unresolved",
+                                strategy_version=serialize_strategy_version_snapshot(version_row) if version_row is not None else None,
+                                strategy_version_source="current_registry_version" if version_row is not None else "unresolved",
+                                latest_promotion_evaluation=(
+                                    latest_supporting_evaluation_by_version.get(int(version_row.id))
+                                    if version_row is not None and version_row.id is not None
+                                    else None
+                                ),
+                                latest_demotion_event=(
+                                    latest_demotion_by_version.get(int(version_row.id))
+                                    if version_row is not None and version_row.id is not None
+                                    else None
+                                ),
+                                risk_budget_status=risk_budget_status,
+                                posture=family_review.get("posture"),
+                            )
+                            if version_row is not None
+                            else None
+                        ),
+                    }
+                    if budget_row.get("current_version") is not None or version_row is not None
+                    else None
+                ),
+                "risk_budget_policy": budget_row.get("risk_budget_policy"),
+                "risk_budget_status": risk_budget_status,
+                "autonomy_state": (
+                    summarize_autonomy_state(
+                        strategy_family=family_review["family"],
+                        family_source="current_registry_version" if version_row is not None else "unresolved",
+                        strategy_version=serialize_strategy_version_snapshot(version_row) if version_row is not None else None,
+                        strategy_version_source="current_registry_version" if version_row is not None else "unresolved",
+                        latest_promotion_evaluation=(
+                            latest_supporting_evaluation_by_version.get(int(version_row.id))
+                            if version_row is not None and version_row.id is not None
+                            else None
+                        ),
+                        latest_demotion_event=(
+                            latest_demotion_by_version.get(int(version_row.id))
+                            if version_row is not None and version_row.id is not None
+                            else None
+                        ),
+                        risk_budget_status=risk_budget_status,
+                        posture=family_review.get("posture"),
+                    )
+                    if version_row is not None
+                    else None
+                ),
+            }
+        )(
+            row,
+            version_rows_by_family.get(row["family"]),
+            budget_summary_by_family.get(row["family"], {}),
+            budget_summary_by_family.get(row["family"], {}).get("risk_budget_status"),
+        )
         for row in strategy_family_reviews
     ]
     scheduler_lease_status = _build_scheduler_lease_status(
@@ -1014,6 +1120,7 @@ async def health(db: AsyncSession = Depends(get_db)):
             latest_promotion_evaluation=(
                 polymarket_phase12_pilot["latest_promotion_evaluation"] or polymarket_phase12_evidence["latest_promotion_evaluation"]
             ),
+            autonomy_state=polymarket_phase12_pilot.get("active_autonomy_state"),
             manual_approval_required=polymarket_phase12_pilot["manual_approval_required"],
             approval_queue_count=polymarket_phase12_pilot["approval_queue_count"],
             heartbeat_status=polymarket_phase12_pilot["heartbeat_status"],

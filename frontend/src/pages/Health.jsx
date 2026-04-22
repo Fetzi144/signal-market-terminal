@@ -264,6 +264,7 @@ export default function Health() {
   const riskGraph = health?.polymarket_phase10 || null;
   const replayStatus = health?.polymarket_phase11 || null;
   const phase12Status = health?.polymarket_phase12 || null;
+  const phase12AutonomyState = phase12Status?.autonomy_state || null;
   const phase12RecentIncidents = phase12Status?.recent_incidents || [];
   const phase12RecentGuardrails = phase12Status?.recent_guardrail_triggers || [];
   const structureStatus = health?.polymarket_phase8a || streamStatus?.structure_engine || null;
@@ -410,12 +411,18 @@ export default function Health() {
               <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.5 }}>{family.description}</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8, marginTop: 10 }}>
                 <StatCard label="Current Version" value={family.current_version?.version_label || "-"} />
+                <StatCard label="Current Autonomy" value={formatAutonomyState(family.autonomy_state || family.current_version?.autonomy_state)} />
                 <StatCard label="Budget" value={formatBudgetEnvelope(family.risk_budget_status)} />
                 <StatCard label="Regime" value={formatContinuityStatus(family.risk_budget_status?.regime_label)} />
                 <StatCard label="Capacity" value={formatContinuityStatus(family.risk_budget_status?.capacity_status)} />
                 <StatCard label="Recent Breaches" value={(family.risk_budget_status?.reason_codes || []).length} />
                 <StatCard label="Open Orders" value={`${family.risk_budget_status?.open_order_count ?? 0} / ${family.risk_budget_status?.effective_max_open_orders ?? "-"}`} />
               </div>
+              {(family.autonomy_state || family.current_version?.autonomy_state) ? (
+                <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 8 }}>
+                  Reason {formatAutonomyReason(family.autonomy_state || family.current_version?.autonomy_state)}
+                </div>
+              ) : null}
               {family.disabled_reason && (
                 <div style={{ fontSize: 11, color: "var(--yellow)", marginTop: 8 }}>{family.disabled_reason}</div>
               )}
@@ -1091,7 +1098,9 @@ export default function Health() {
             <StatCard label="Pilot Paused" value={phase12Status?.pilot_paused ? "Yes" : "No"} />
             <StatCard label="Active Family" value={phase12Status?.active_pilot_family || "none"} />
             <StatCard label="Lifecycle Version" value={formatLifecycleVersion(phase12Status)} />
+            <StatCard label="Autonomy State" value={formatAutonomyState(phase12AutonomyState)} />
             <StatCard label="Gate Verdict" value={formatLifecycleGate(phase12Status)} />
+            <StatCard label="Submission Mode" value={titleCase(phase12AutonomyState?.submission_mode)} />
             <StatCard label="Approval Queue" value={phase12Status?.approval_queue_count ?? 0} />
             <StatCard label="Heartbeat" value={phase12Status?.heartbeat_status || "-"} />
             <StatCard label="User Stream" value={phase12Status?.user_stream_connected ? "Connected" : "Disconnected"} />
@@ -1105,6 +1114,11 @@ export default function Health() {
             <StatCard label="Daily Net P&L" value={formatUsd(phase12Status?.daily_realized_pnl?.net_realized_pnl)} />
             <StatCard label="Readiness" value={phase12Status?.latest_readiness_status || "manual_only"} />
           </div>
+          {phase12AutonomyState ? (
+            <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 12 }}>
+              Autonomy reason {formatAutonomyReason(phase12AutonomyState)} | Blockers {(phase12AutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
+            </div>
+          ) : null}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
             <div style={{ background: "rgba(255, 255, 255, 0.02)", border: "1px solid var(--border)", borderRadius: 10, padding: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Pilot Semantics</div>
@@ -1139,12 +1153,12 @@ export default function Health() {
               title="Recent Pilot Incidents"
               subtitle={`${phase12RecentIncidents.length} most recent`}
               emptyLabel="No recent pilot incidents recorded."
-              columns={["When", "Type", "Version", "Gate", "Summary"]}
+              columns={["When", "Type", "Version", "Gate / Autonomy", "Summary"]}
               rows={phase12RecentIncidents.map((incident) => [
                 formatShortDateTime(incident.observed_at_local || incident.created_at),
                 incident.incident_type,
                 formatLifecycleVersion(incident),
-                formatLifecycleGate(incident),
+                renderGateAutonomy(incident),
                 summarizeIncident(incident),
               ])}
             />
@@ -1152,12 +1166,12 @@ export default function Health() {
               title="Recent Pilot Guardrails"
               subtitle={`${phase12RecentGuardrails.length} most recent`}
               emptyLabel="No recent pilot guardrails recorded."
-              columns={["When", "Guardrail", "Version", "Gate", "Action"]}
+              columns={["When", "Guardrail", "Version", "Gate / Autonomy", "Action"]}
               rows={phase12RecentGuardrails.map((event) => [
                 formatShortDateTime(event.observed_at_local),
                 event.guardrail_type,
                 formatLifecycleVersion(event),
-                formatLifecycleGate(event),
+                renderGateAutonomy(event),
                 event.action_taken || "-",
               ])}
             />
@@ -1551,6 +1565,32 @@ function formatLifecycleVersion(row) {
 
 function formatLifecycleGate(row) {
   return row?.latest_promotion_evaluation?.evaluation_status || "-";
+}
+
+function titleCase(value) {
+  if (!value) return "-";
+  return String(value).replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatAutonomyState(state) {
+  if (!state) return "-";
+  return titleCase(state.effective_autonomy_tier);
+}
+
+function formatAutonomyReason(state) {
+  if (!state) return "-";
+  return titleCase(state.state_reason || state.blocked_reasons?.[0] || state.submission_mode);
+}
+
+function renderGateAutonomy(row) {
+  const gate = row?.latest_promotion_evaluation;
+  if (!gate) return "-";
+  return (
+    <div>
+      <div>{titleCase(gate.evaluation_status)}</div>
+      <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>{titleCase(gate.autonomy_tier)}</div>
+    </div>
+  );
 }
 
 function formatReplayVariantSummary(metric) {

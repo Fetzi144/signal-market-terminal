@@ -56,12 +56,28 @@ const summaryPayload = {
       version_key: "exec_policy_infra_v1",
       version_label: "Execution Policy Infra v1",
       version_status: "promoted",
+      autonomy_tier: "assisted_live",
     },
     latest_promotion_evaluation: {
       id: 22,
       evaluation_status: "observe",
       evaluation_kind: "pilot_readiness_gate",
+      autonomy_tier: "shadow_only",
     },
+    active_autonomy_state: {
+      effective_autonomy_tier: "assisted_live",
+      submission_mode: "manual_approval",
+      state_reason: "manual_approval_required",
+      blocked_reasons: ["manual_approval_required"],
+      gate_kind: "pilot_readiness_gate",
+    },
+  },
+  active_autonomy_state: {
+    effective_autonomy_tier: "assisted_live",
+    submission_mode: "manual_approval",
+    state_reason: "manual_approval_required",
+    blocked_reasons: ["manual_approval_required"],
+    gate_kind: "pilot_readiness_gate",
   },
   active_family_budget: {
     strategy_family: "exec_policy",
@@ -94,6 +110,7 @@ const summaryPayload = {
       latest_promotion_evaluation: {
         evaluation_status: "blocked",
         evaluation_kind: "pilot_readiness_gate",
+        autonomy_tier: "shadow_only",
       },
       severity: "warning",
       details_json: { reason: "manual_approval_required" },
@@ -150,6 +167,7 @@ const summaryPayload = {
       id: 22,
       evaluation_status: "observe",
       evaluation_kind: "pilot_readiness_gate",
+      autonomy_tier: "shadow_only",
     },
     live_shadow_summary: {
       average_gap_bps_24h: 4.2,
@@ -165,6 +183,7 @@ const summaryPayload = {
       },
       latest_promotion_evaluation: {
         evaluation_status: "blocked",
+        autonomy_tier: "shadow_only",
       },
     },
   },
@@ -181,6 +200,7 @@ const summaryPayload = {
       latest_promotion_evaluation: {
         evaluation_status: "blocked",
         evaluation_kind: "pilot_readiness_gate",
+        autonomy_tier: "shadow_only",
       },
       action_taken: "block",
       details_json: { reason: "approval_expired" },
@@ -211,6 +231,7 @@ const summaryPayload = {
       },
       latest_promotion_evaluation: {
         evaluation_status: "blocked",
+        autonomy_tier: "shadow_only",
       },
       status: "manual_only",
       approval_backlog_count: 1,
@@ -258,14 +279,17 @@ describe("PilotConsole", () => {
     expect(screen.getByText("Live vs Shadow")).toBeInTheDocument();
     expect(screen.getByText("Recent Incidents")).toBeInTheDocument();
     expect(screen.getByText("phase12-exec (exec_policy)")).toBeInTheDocument();
+    expect(screen.getByText("Autonomy State")).toBeInTheDocument();
+    expect(screen.getByText("Assisted Live")).toBeInTheDocument();
     expect(screen.getAllByText("Execution Policy Infra v1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("observe").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Gate").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Gate / Autonomy").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Blocked").length).toBeGreaterThan(0);
     expect(screen.getByText("$25.00 / $75.00")).toBeInTheDocument();
     expect(screen.getByText("thin_liquidity")).toBeInTheDocument();
     expect(screen.getByText("constrained")).toBeInTheDocument();
     expect(screen.getByText("capacity_ceiling_exceeded")).toBeInTheDocument();
+    expect(screen.getByText(/Autonomy reason:/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Arm" }));
     await waitFor(() => {

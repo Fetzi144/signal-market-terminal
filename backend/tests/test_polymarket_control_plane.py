@@ -395,6 +395,7 @@ async def test_control_plane_apis_and_health_include_phase12_state(client, engin
         await session.commit()
 
     status_response = await client.get("/api/v1/ingest/polymarket/live/pilot/status")
+    live_status_response = await client.get("/api/v1/ingest/polymarket/live/status")
     console_response = await client.get("/api/v1/ingest/polymarket/live/console-summary")
     approvals_response = await client.get("/api/v1/ingest/polymarket/live/approvals?approval_state=queued")
     orders_response = await client.get("/api/v1/ingest/polymarket/live/orders?approval_state=queued")
@@ -402,6 +403,7 @@ async def test_control_plane_apis_and_health_include_phase12_state(client, engin
     health_response = await client.get("/api/v1/health")
 
     assert status_response.status_code == 200
+    assert live_status_response.status_code == 200
     assert console_response.status_code == 200
     assert approvals_response.status_code == 200
     assert orders_response.status_code == 200
@@ -411,9 +413,13 @@ async def test_control_plane_apis_and_health_include_phase12_state(client, engin
     assert status_response.json()["active_strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert status_response.json()["active_family_budget"]["strategy_family"] == "exec_policy"
     assert status_response.json()["active_family_budget"]["capacity_status"] in {"ok", "narrowed", "constrained", "breached"}
+    assert status_response.json()["active_autonomy_state"]["effective_autonomy_tier"] == "assisted_live"
+    assert status_response.json()["active_autonomy_state"]["submission_mode"] == "manual_approval"
+    assert live_status_response.json()["active_autonomy_state"]["effective_autonomy_tier"] == "assisted_live"
     assert console_response.json()["approvals"]
     assert console_response.json()["pilot"]["active_strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert console_response.json()["active_family_budget"]["strategy_family"] == "exec_policy"
+    assert console_response.json()["active_autonomy_state"]["submission_mode"] == "manual_approval"
     assert console_response.json()["recent_orders"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert approvals_response.json()["rows"][0]["approval_state"] == "queued"
     assert orders_response.json()["rows"][0]["approval_state"] == "queued"
@@ -421,3 +427,4 @@ async def test_control_plane_apis_and_health_include_phase12_state(client, engin
     assert tape_response.json()["selected_condition_id"] == "cond-phase12-api"
     assert health_response.json()["polymarket_phase12"]["approval_queue_count"] >= 1
     assert health_response.json()["polymarket_phase12"]["manual_approval_required"] is True
+    assert health_response.json()["polymarket_phase12"]["autonomy_state"]["effective_autonomy_tier"] == "assisted_live"

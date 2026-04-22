@@ -95,6 +95,7 @@ export default function PilotConsole() {
   const activeStrategyVersion = summary?.pilot?.active_strategy_version || evidence?.strategy_version || null;
   const latestGate = evidence?.latest_promotion_evaluation || summary?.pilot?.latest_promotion_evaluation || latestReadiness?.latest_promotion_evaluation || null;
   const activeFamilyBudget = summary?.active_family_budget || summary?.pilot?.active_family_budget || null;
+  const activeAutonomyState = summary?.active_autonomy_state || summary?.pilot?.active_autonomy_state || null;
 
   return (
     <div style={pageStyle}>
@@ -176,7 +177,9 @@ export default function PilotConsole() {
           <StatCard label="Armed" value={activePilot?.armed ? "Yes" : "No"} />
           <StatCard label="Run State" value={activeRun?.status || "idle"} />
           <StatCard label="Lifecycle Version" value={activeStrategyVersion?.version_label || "-"} />
+          <StatCard label="Autonomy State" value={formatAutonomyState(activeAutonomyState)} />
           <StatCard label="Gate Verdict" value={latestGate?.evaluation_status || "-"} />
+          <StatCard label="Submission Mode" value={titleCase(activeAutonomyState?.submission_mode)} />
           <StatCard label="Manual Approval" value={summary?.pilot?.manual_approval_required ? "On" : "Off"} />
           <StatCard label="Approval Queue" value={summary?.pilot?.approval_queue_count ?? 0} />
           <StatCard label="Expired (24h)" value={evidence?.approval_expired_count_24h ?? 0} />
@@ -200,6 +203,11 @@ export default function PilotConsole() {
             value={latestGate?.evaluation_kind === "capital_budget_gate" ? latestGate?.evaluation_status || "-" : (activeFamilyBudget?.reason_codes || []).join(", ") || "-"}
           />
         </div>
+        {activeAutonomyState ? (
+          <div style={metaStyle}>
+            Autonomy reason: {formatAutonomyReason(activeAutonomyState)} | Blockers: {(activeAutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
+          </div>
+        ) : null}
       </section>
 
       <section style={panelStyle}>
@@ -240,12 +248,12 @@ export default function PilotConsole() {
             <h3 style={sectionTitleStyle}>Guardrail Events</h3>
           </div>
           <SimpleTable
-            columns={["When", "Guardrail", "Version", "Gate", "Action", "Details"]}
+            columns={["When", "Guardrail", "Version", "Gate / Autonomy", "Action", "Details"]}
             rows={guardrails.map((event) => ([
               formatShortDateTime(event.observed_at_local),
               event.guardrail_type,
               formatLifecycleVersion(event),
-              formatLifecycleGate(event),
+              renderGateAutonomy(event),
               event.action_taken,
               event.details_json?.reason || event.details_json?.error || event.details_json?.gap_bps || "-",
             ]))}
@@ -298,12 +306,12 @@ export default function PilotConsole() {
           />
           <div style={{ marginTop: 12 }}>
             <SimpleTable
-              columns={["Generated", "Version", "Status", "Gate", "Backlog", "Breaches"]}
+              columns={["Generated", "Version", "Status", "Gate / Autonomy", "Backlog", "Breaches"]}
               rows={readinessReports.map((report) => ([
                 formatShortDateTime(report.generated_at),
                 report.strategy_version?.version_label || report.strategy_version?.version_key || "-",
                 report.status,
-                report.latest_promotion_evaluation?.evaluation_status || "-",
+                renderGateAutonomy({ latest_promotion_evaluation: report.latest_promotion_evaluation }),
                 report.approval_backlog_count ?? 0,
                 report.shadow_gap_breach_count ?? 0,
               ]))}
@@ -336,12 +344,12 @@ export default function PilotConsole() {
           <h3 style={sectionTitleStyle}>Recent Incidents</h3>
         </div>
         <SimpleTable
-          columns={["When", "Type", "Version", "Gate", "Severity", "Details"]}
+          columns={["When", "Type", "Version", "Gate / Autonomy", "Severity", "Details"]}
           rows={incidents.map((incident) => ([
             formatShortDateTime(incident.observed_at_local),
             incident.incident_type,
             formatLifecycleVersion(incident),
-            formatLifecycleGate(incident),
+            renderGateAutonomy(incident),
             incident.severity,
             incident.details_json?.reason || incident.details_json?.error || incident.asset_id || "operator event",
           ]))}
@@ -438,6 +446,32 @@ function formatLifecycleVersion(row) {
 
 function formatLifecycleGate(row) {
   return row?.latest_promotion_evaluation?.evaluation_status || "-";
+}
+
+function titleCase(value) {
+  if (!value) return "-";
+  return String(value).replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatAutonomyState(state) {
+  if (!state) return "-";
+  return titleCase(state.effective_autonomy_tier);
+}
+
+function formatAutonomyReason(state) {
+  if (!state) return "-";
+  return titleCase(state.state_reason || state.blocked_reasons?.[0] || state.submission_mode);
+}
+
+function renderGateAutonomy(row) {
+  const gate = row?.latest_promotion_evaluation;
+  if (!gate) return "-";
+  return (
+    <div>
+      <div>{titleCase(gate.evaluation_status)}</div>
+      <div style={metaStyle}>{titleCase(gate.autonomy_tier)}</div>
+    </div>
+  );
 }
 
 const pageStyle = {

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.execution.polymarket_autonomy_state import build_active_autonomy_state
 from app.ingestion.polymarket_common import utcnow
 from app.metrics import (
     polymarket_live_kill_switch,
@@ -589,6 +590,7 @@ async def compute_outstanding_reservations(session: AsyncSession) -> Decimal:
 
 async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
     from app.execution.polymarket_control_plane import get_active_pilot_config, get_open_pilot_run
+    from app.execution.polymarket_control_plane_serializers import serialize_pilot_config, serialize_pilot_run
 
     state = await fetch_live_state_row(session)
     outstanding_reservations = await compute_outstanding_reservations(session)
@@ -614,6 +616,11 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
     kill_switch = effective_kill_switch_enabled(state)
     active_pilot = await get_active_pilot_config(session)
     active_pilot_run = await get_open_pilot_run(session, pilot_config_id=active_pilot.id) if active_pilot is not None else None
+    active_family = (
+        active_pilot.strategy_family
+        if active_pilot is not None and active_pilot.strategy_family
+        else settings.polymarket_pilot_default_strategy_family
+    )
     active_family_budget = None
     if active_pilot is not None and active_pilot.strategy_family:
         active_family_budget = serialize_risk_budget_status(
@@ -627,6 +634,43 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
         polymarket_live_last_user_stream_message_timestamp.set(state.last_user_stream_message_at.timestamp())
     if state is not None and state.last_reconcile_success_at is not None:
         polymarket_live_last_reconcile_success_timestamp.set(state.last_reconcile_success_at.timestamp())
+    live_submission_permitted = (
+        settings.polymarket_live_trading_enabled
+        and not settings.polymarket_live_dry_run
+        and not kill_switch
+        and active_pilot is not None
+        and active_pilot.armed
+        and active_pilot.live_enabled
+        and active_pilot_run is not None
+        and active_pilot_run.status != "paused"
+    )
+    active_pilot_payload = serialize_pilot_config(active_pilot) if active_pilot is not None else None
+    active_run_payload = serialize_pilot_run(active_pilot_run) if active_pilot_run is not None else None
+    active_autonomy_state = await build_active_autonomy_state(
+        session,
+        strategy_family=active_family,
+        family_source=(
+            "active_pilot_config"
+            if active_pilot is not None and active_pilot.strategy_family
+            else "settings_default"
+            if active_family
+            else "unresolved"
+        ),
+        risk_budget_status=active_family_budget,
+        supported_strategy_family="exec_policy",
+        pilot_enabled=settings.polymarket_pilot_enabled,
+        live_trading_enabled=settings.polymarket_live_trading_enabled,
+        live_dry_run=settings.polymarket_live_dry_run,
+        kill_switch_enabled=kill_switch,
+        manual_approval_required=(
+            bool(active_pilot.manual_approval_required)
+            if active_pilot is not None
+            else settings.polymarket_live_manual_approval_required
+        ),
+        live_submission_permitted=live_submission_permitted,
+        active_pilot=active_pilot_payload,
+        active_run=active_run_payload,
+    )
     return {
         "enabled": settings.polymarket_live_trading_enabled,
         "dry_run": settings.polymarket_live_dry_run,
@@ -663,14 +707,6 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
         "outstanding_reservations": float(outstanding_reservations),
         "recent_fills_24h": recent_fills_24h,
         "active_family_budget": active_family_budget,
-        "live_submission_permitted": (
-            settings.polymarket_live_trading_enabled
-            and not settings.polymarket_live_dry_run
-            and not kill_switch
-            and active_pilot is not None
-            and active_pilot.armed
-            and active_pilot.live_enabled
-            and active_pilot_run is not None
-            and active_pilot_run.status != "paused"
-        ),
+        "active_autonomy_state": active_autonomy_state,
+        "live_submission_permitted": live_submission_permitted,
     }

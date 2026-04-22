@@ -133,6 +133,15 @@ function budgetCapacityHint(status) {
   return `Regime ${titleCase(status.regime_label)} | ${titleCase(status.capacity_status)}`;
 }
 
+function autonomyStateLabel(autonomyState, fallbackTier) {
+  return titleCase(autonomyState?.effective_autonomy_tier || fallbackTier || "unknown");
+}
+
+function autonomyStateHint(autonomyState) {
+  if (!autonomyState) return null;
+  return `${titleCase(autonomyState.state_reason || autonomyState.submission_mode)} | ${titleCase(autonomyState.gate_kind || "registry_only")}`;
+}
+
 function renderEmptySurface(label) {
   return <span style={metaStyle}>{label}</span>;
 }
@@ -409,9 +418,14 @@ export default function Strategies() {
                 hint={currentVersion?.version_key || "No seeded version"}
               />
               <MetricCard
-                label="Lifecycle State"
+                label="Version State"
                 value={titleCase(currentVersion?.version_status)}
-                hint={titleCase(currentVersion?.autonomy_tier)}
+                hint={currentVersion?.strategy_name || "Registry snapshot"}
+              />
+              <MetricCard
+                label="Autonomy State"
+                value={autonomyStateLabel(currentVersion?.autonomy_state, currentVersion?.autonomy_tier)}
+                hint={autonomyStateHint(currentVersion?.autonomy_state)}
               />
               <MetricCard
                 label="Evidence Links"
@@ -452,9 +466,9 @@ export default function Strategies() {
                     hint={evaluationSourceHint(latestEvaluation)}
                   />
                   <MetricCard
-                    label="Recommended Tier"
-                    value={titleCase(latestEvaluation.autonomy_tier)}
-                    hint={evaluationStateHint(latestEvaluation)}
+                    label="Recommended Autonomy"
+                    value={autonomyStateLabel(currentVersion?.autonomy_state, latestEvaluation.autonomy_tier)}
+                    hint={autonomyStateHint(currentVersion?.autonomy_state) || evaluationStateHint(latestEvaluation)}
                   />
                   <MetricCard
                     label="Policy"
@@ -487,7 +501,7 @@ export default function Strategies() {
                 Latest replay, live shadow, scorecards, and readiness artifacts lined up by strategy version.
               </div>
               <SimpleTable
-                columns={["Version", "Gate", "Replay", "Live Shadow", "Scorecard", "Readiness", "Freshness", "Detail"]}
+                columns={["Version", "Gate / Autonomy", "Replay", "Live Shadow", "Scorecard", "Readiness", "Freshness", "Detail"]}
                 rows={family.versions.map((version) => ([
                   <div key={`${version.version_key}-alignment`}>
                     <div>{version.version_label}</div>
@@ -564,6 +578,11 @@ export default function Strategies() {
                         label="Promotion Events"
                         value={versionDetail.promotion_evaluations?.length ?? 0}
                         hint="Recent version-scoped gate evaluations"
+                      />
+                      <MetricCard
+                        label="Autonomy State"
+                        value={autonomyStateLabel(versionDetail.version?.autonomy_state, versionDetail.version?.autonomy_tier)}
+                        hint={autonomyStateHint(versionDetail.version?.autonomy_state)}
                       />
                       <MetricCard
                         label="Gate History"
@@ -710,14 +729,17 @@ export default function Strategies() {
             ) : null}
 
             <SimpleTable
-              columns={["Version", "State", "Tier", "Frozen", "Budget", "Evidence", "Updated"]}
+              columns={["Version", "Version State", "Autonomy", "Frozen", "Budget", "Evidence", "Updated"]}
               rows={family.versions.map((version) => ([
                 <div key={version.version_key}>
                   <div>{version.version_label}</div>
                   <div style={subtleCellStyle}>{version.version_key}</div>
                 </div>,
                 <Badge key={`${version.version_key}-state`} value={version.version_status} />,
-                <Badge key={`${version.version_key}-tier`} value={version.autonomy_tier} />,
+                <div key={`${version.version_key}-tier`}>
+                  <Badge value={version.autonomy_state?.effective_autonomy_tier || version.autonomy_tier} />
+                  <div style={subtleCellStyle}>{autonomyStateHint(version.autonomy_state) || titleCase(version.autonomy_tier)}</div>
+                </div>,
                 version.is_frozen ? "Yes" : "No",
                 <div key={`${version.version_key}-budget`}>
                   <div>{titleCase(version.risk_budget_status?.capacity_status || "unknown")}</div>

@@ -759,11 +759,15 @@ describe("Strategies", () => {
     expect(screen.getAllByText("Frozen Benchmark v1").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Execution Policy Infra v1").length).toBeGreaterThan(0);
     expect(screen.getByText("Promotion Gate Policy v1")).toBeInTheDocument();
+    expect(screen.getAllByText("Version State").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Autonomy State").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Latest Gate Verdict").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Recommended Autonomy").length).toBeGreaterThan(0);
     expect(screen.getByText("cfg-exec-1234")).toBeInTheDocument();
     expect(screen.getAllByText("Replay Gate").length).toBeGreaterThan(0);
     expect(screen.getByText("3 variants")).toBeInTheDocument();
     expect(screen.getAllByText("Evidence Alignment").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Gate / Autonomy").length).toBeGreaterThan(0);
     expect(screen.getByText("3 recent evals")).toBeInTheDocument();
     expect(screen.getByText("4 linked surfaces")).toBeInTheDocument();
     expect(screen.getAllByText("Manual Only").length).toBeGreaterThan(0);

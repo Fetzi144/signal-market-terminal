@@ -9,6 +9,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.execution.polymarket_autonomy_state import build_active_autonomy_state
 from app.execution.polymarket_control_plane_serializers import (
     serialize_control_plane_incident,
     serialize_pilot_config,
@@ -1237,9 +1238,14 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
     config = await get_active_pilot_config(session)
     run = await get_open_pilot_run(session, pilot_config_id=config.id) if config is not None else None
     incidents_since = utcnow() - timedelta(hours=24)
-    strategy_version = (
-        await get_current_strategy_version(session, config.strategy_family)
+    family_for_state = (
+        config.strategy_family
         if config is not None and config.strategy_family
+        else settings.polymarket_pilot_default_strategy_family
+    )
+    strategy_version = (
+        await get_current_strategy_version(session, family_for_state)
+        if family_for_state
         else None
     )
     latest_evaluation = None
@@ -1260,6 +1266,42 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
                 strategy_version_id=int(strategy_version.id) if strategy_version is not None and strategy_version.id is not None else None,
             )
         )
+    live_submission_permitted = (
+        settings.polymarket_live_trading_enabled
+        and not settings.polymarket_live_dry_run
+        and not effective_kill_switch_enabled(state)
+        and config is not None
+        and config.armed
+        and config.live_enabled
+        and run is not None
+        and run.status != "paused"
+    )
+    active_pilot_payload = serialize_pilot_config(config) if config is not None else None
+    active_run_payload = serialize_pilot_run(run) if run is not None else None
+    active_autonomy_state = await build_active_autonomy_state(
+        session,
+        strategy_family=family_for_state,
+        family_source=(
+            "active_pilot_config"
+            if config is not None and config.strategy_family
+            else "settings_default"
+            if family_for_state
+            else "unresolved"
+        ),
+        strategy_version=serialize_strategy_version_snapshot(strategy_version),
+        strategy_version_id=int(strategy_version.id) if strategy_version is not None and strategy_version.id is not None else None,
+        latest_promotion_evaluation=latest_evaluation,
+        risk_budget_status=active_family_budget,
+        supported_strategy_family=SUPPORTED_PHASE12_FAMILY,
+        pilot_enabled=settings.polymarket_pilot_enabled,
+        live_trading_enabled=settings.polymarket_live_trading_enabled,
+        live_dry_run=settings.polymarket_live_dry_run,
+        kill_switch_enabled=effective_kill_switch_enabled(state),
+        manual_approval_required=_approval_required(config),
+        live_submission_permitted=live_submission_permitted,
+        active_pilot=active_pilot_payload,
+        active_run=active_run_payload,
+    )
     approval_queue_count = int(
         (
             await session.execute(
@@ -1288,11 +1330,12 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
         "pilot_enabled": settings.polymarket_pilot_enabled,
         "supported_strategy_family": SUPPORTED_PHASE12_FAMILY,
         "default_strategy_family": settings.polymarket_pilot_default_strategy_family,
-        "active_pilot": serialize_pilot_config(config) if config is not None else None,
-        "active_run": serialize_pilot_run(run) if run is not None else None,
+        "active_pilot": active_pilot_payload,
+        "active_run": active_run_payload,
         "active_strategy_version": serialize_strategy_version_snapshot(strategy_version),
         "latest_promotion_evaluation": latest_evaluation,
         "active_family_budget": active_family_budget,
+        "active_autonomy_state": active_autonomy_state,
         "manual_approval_required": _approval_required(config),
         "approval_queue_count": approval_queue_count,
         "heartbeat_status": _heartbeat_status(state, needed=bool(config is not None and config.armed and open_live_orders > 0)),
@@ -1364,6 +1407,7 @@ async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, An
         "pilot": pilot_status,
         "active_pilot_family": active_config.strategy_family if active_config is not None else None,
         "active_family_budget": active_family_budget,
+        "active_autonomy_state": pilot_status.get("active_autonomy_state"),
         "approvals": await list_approval_queue(session, approval_state="queued", limit=25),
         "incidents": await list_control_plane_incidents(session, limit=25),
         "guardrail_events": await list_pilot_guardrail_events(

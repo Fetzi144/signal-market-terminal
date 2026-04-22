@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.default_strategy import get_default_strategy_contract
+from app.execution.polymarket_autonomy_state import (
+    get_latest_demotion_event_by_version,
+    summarize_autonomy_state,
+)
 from app.models.paper_trade import PaperTrade
 from app.models.polymarket_live_execution import LiveOrder
 from app.models.polymarket_pilot import (
@@ -1174,6 +1178,13 @@ async def get_strategy_version_detail_payload(
     latest_evaluation = (
         await get_latest_promotion_evaluation_by_version(session, version_ids=[int(version.id)])
     ).get(int(version.id))
+    latest_supporting_evaluation = (
+        await get_latest_promotion_evaluation_by_version(
+            session,
+            version_ids=[int(version.id)],
+            include_supporting=True,
+        )
+    ).get(int(version.id))
     risk_budget_status = None
     if family is not None:
         risk_budget_status = serialize_risk_budget_status(
@@ -1191,6 +1202,27 @@ async def get_strategy_version_detail_payload(
             .limit(1)
         )
     ).scalar_one_or_none()
+    latest_demotion_payload = serialize_demotion_event(latest_demotion)
+    gate_policy_payload = None
+    if latest_supporting_evaluation is not None and latest_supporting_evaluation.get("gate_policy_id") is not None:
+        gate_policy = await session.get(PromotionGatePolicy, int(latest_supporting_evaluation["gate_policy_id"]))
+        if gate_policy is not None:
+            gate_policy_payload = {
+                "policy_key": gate_policy.policy_key,
+                "policy_label": gate_policy.label,
+                "policy_status": gate_policy.status,
+            }
+    autonomy_state = summarize_autonomy_state(
+        strategy_family=family.family if family is not None else None,
+        family_source="current_registry_version" if family is not None else "unresolved",
+        strategy_version=serialize_strategy_version_snapshot(version),
+        strategy_version_source="explicit_version",
+        latest_promotion_evaluation=latest_supporting_evaluation,
+        latest_demotion_event=latest_demotion_payload,
+        gate_policy=gate_policy_payload,
+        risk_budget_status=risk_budget_status,
+        posture=family.posture if family is not None else None,
+    )
     replay_rows = (
         await session.execute(
             select(PolymarketReplayRun)
@@ -1271,8 +1303,9 @@ async def get_strategy_version_detail_payload(
                 else None
             ),
             risk_budget_status=risk_budget_status,
+            autonomy_state=autonomy_state,
         ),
-        "latest_demotion_event": serialize_demotion_event(latest_demotion),
+        "latest_demotion_event": latest_demotion_payload,
         "replay_runs": [_serialize_replay_alignment(row) for row in replay_rows],
         "live_shadow_evaluations": [
             _serialize_live_shadow_detail(row, live_order=live_order)
@@ -1295,6 +1328,7 @@ def _serialize_strategy_version(
     latest_promotion_evaluation: dict[str, Any] | None = None,
     risk_budget_policy: dict[str, Any] | None = None,
     risk_budget_status: dict[str, Any] | None = None,
+    autonomy_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -1309,6 +1343,7 @@ def _serialize_strategy_version(
         "provenance_json": row.provenance_json or {},
         "risk_budget_policy": risk_budget_policy,
         "risk_budget_status": risk_budget_status,
+        "autonomy_state": autonomy_state,
         "latest_promotion_evaluation": latest_promotion_evaluation,
         "evidence_alignment": evidence_alignment,
         "evidence_counts": evidence_counts.get(
@@ -1422,6 +1457,15 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
         session,
         version_ids=[int(row.id) for row in versions if row.id is not None],
     )
+    latest_supporting_evaluation_by_version = await get_latest_promotion_evaluation_by_version(
+        session,
+        version_ids=[int(row.id) for row in versions if row.id is not None],
+        include_supporting=True,
+    )
+    latest_demotion_by_version = await get_latest_demotion_event_by_version(
+        session,
+        version_ids=[int(row.id) for row in versions if row.id is not None],
+    )
     family_name_by_id = {int(row.id): row.family for row in families if row.id is not None}
     budget_status_by_version: dict[int, dict[str, Any]] = {}
     for version in versions:
@@ -1443,6 +1487,15 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
             select(PromotionGatePolicy).order_by(PromotionGatePolicy.updated_at.desc(), PromotionGatePolicy.id.desc())
         )
     ).scalars().all()
+    gate_policy_payload_by_id = {
+        int(row.id): {
+            "policy_key": row.policy_key,
+            "policy_label": row.label,
+            "policy_status": row.status,
+        }
+        for row in policies
+        if row.id is not None
+    }
 
     evaluations = (
         await session.execute(
@@ -1479,6 +1532,31 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
                     else None
                 ),
                 risk_budget_status=budget_status_by_version.get(int(version.id)) if version.id is not None else None,
+                autonomy_state=(
+                    summarize_autonomy_state(
+                        strategy_family=family.family,
+                        family_source="current_registry_version",
+                        strategy_version=serialize_strategy_version_snapshot(version),
+                        strategy_version_source="current_registry_version",
+                        latest_promotion_evaluation=latest_supporting_evaluation_by_version.get(int(version.id)),
+                        latest_demotion_event=latest_demotion_by_version.get(int(version.id)),
+                        gate_policy=(
+                            gate_policy_payload_by_id.get(
+                                int(latest_supporting_evaluation_by_version[int(version.id)]["gate_policy_id"])
+                            )
+                            if (
+                                version.id is not None
+                                and latest_supporting_evaluation_by_version.get(int(version.id)) is not None
+                                and latest_supporting_evaluation_by_version[int(version.id)].get("gate_policy_id") is not None
+                            )
+                            else None
+                        ),
+                        risk_budget_status=budget_status_by_version.get(int(version.id)) if version.id is not None else None,
+                        posture=family.posture,
+                    )
+                    if version.id is not None
+                    else None
+                ),
             )
             for version in versions_by_family.get(family.id, [])
         ]
@@ -1497,6 +1575,7 @@ async def get_strategy_registry_payload(session: AsyncSession) -> dict[str, Any]
                 "family_kind": family.family_kind,
                 "seeded_from": family.seeded_from,
                 "current_version": current_version,
+                "autonomy_state": current_version.get("autonomy_state") if current_version is not None else None,
                 "versions": serialized_versions,
                 "latest_promotion_evaluation": serialize_promotion_evaluation(latest_evaluation_by_family.get(family.id)),
                 "latest_demotion_event": serialize_demotion_event(latest_demotion_by_family.get(family.id)),

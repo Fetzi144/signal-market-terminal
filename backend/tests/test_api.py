@@ -37,6 +37,8 @@ async def test_health_endpoint(client):
     default_family = next(row for row in data["strategy_families"] if row["family"] == "default_strategy")
     assert default_family["risk_budget_status"] is not None
     assert default_family["risk_budget_policy"] is not None
+    assert default_family["autonomy_state"]["effective_autonomy_tier"] == "shadow_only"
+    assert "autonomy_state" in data["polymarket_phase12"]
 
 
 @pytest.mark.asyncio
@@ -164,8 +166,10 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert families["default_strategy"]["current_version"]["evidence_alignment"]["surface_status"] == "registry_only"
     assert families["default_strategy"]["current_version"]["risk_budget_policy"]["capital"]["outstanding_notional_usd"] is not None
     assert families["default_strategy"]["current_version"]["risk_budget_status"]["capacity_status"] == "narrowed"
+    assert families["default_strategy"]["current_version"]["autonomy_state"]["effective_autonomy_tier"] == "shadow_only"
     assert families["exec_policy"]["family_kind"] == "infrastructure"
     assert families["exec_policy"]["current_version"]["autonomy_tier"] == "assisted_live"
+    assert families["exec_policy"]["autonomy_state"]["effective_autonomy_tier"] == "assisted_live"
     assert families["exec_policy"]["current_version"]["risk_budget_status"]["strategy_family"] == "exec_policy"
     assert data["gate_policies"][0]["policy_key"] == "promotion_gate_policy_v1"
 
@@ -176,6 +180,7 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert detail_payload["family"]["family"] == "default_strategy"
     assert detail_payload["version"]["risk_budget_policy"]["capacity"]["max_open_orders"] == 12
     assert detail_payload["version"]["risk_budget_status"]["strategy_family"] == "default_strategy"
+    assert detail_payload["version"]["autonomy_state"]["effective_autonomy_tier"] == "shadow_only"
     assert detail_payload["replay_runs"] == []
     assert detail_payload["live_shadow_evaluations"] == []
     assert detail_payload["gate_history"] == []

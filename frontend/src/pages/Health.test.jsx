@@ -267,6 +267,14 @@ const healthPayload = {
       id: 22,
       evaluation_status: "blocked",
       evaluation_kind: "pilot_readiness_gate",
+      autonomy_tier: "shadow_only",
+    },
+    autonomy_state: {
+      effective_autonomy_tier: "shadow_only",
+      submission_mode: "shadow_only",
+      state_reason: "manual_approval_required",
+      blocked_reasons: ["manual_approval_required"],
+      gate_kind: "pilot_readiness_gate",
     },
     manual_approval_required: true,
     approval_queue_count: 2,
@@ -286,6 +294,7 @@ const healthPayload = {
         latest_promotion_evaluation: {
           evaluation_status: "blocked",
           evaluation_kind: "pilot_readiness_gate",
+          autonomy_tier: "shadow_only",
         },
         severity: "warning",
         details_json: { reason: "manual_approval_required" },
@@ -314,6 +323,7 @@ const healthPayload = {
         latest_promotion_evaluation: {
           evaluation_status: "blocked",
           evaluation_kind: "pilot_readiness_gate",
+          autonomy_tier: "shadow_only",
         },
         action_taken: "block",
       },
@@ -343,6 +353,11 @@ const healthPayload = {
       disabled_reason: null,
       current_version: {
         version_label: "Frozen Benchmark v1",
+        autonomy_state: {
+          effective_autonomy_tier: "shadow_only",
+          state_reason: "benchmark_only",
+          blocked_reasons: ["benchmark_only"],
+        },
       },
       risk_budget_policy: {
         capital: { outstanding_notional_usd: 100.0 },
@@ -356,6 +371,11 @@ const healthPayload = {
         open_order_count: 1,
         effective_max_open_orders: 12,
       },
+      autonomy_state: {
+        effective_autonomy_tier: "shadow_only",
+        state_reason: "benchmark_only",
+        blocked_reasons: ["benchmark_only"],
+      },
     },
     {
       family: "cross_venue_basis",
@@ -368,6 +388,11 @@ const healthPayload = {
       disabled_reason: "Paired executable hedge routing is not implemented yet.",
       current_version: {
         version_label: "Cross-Venue Basis Disabled v1",
+        autonomy_state: {
+          effective_autonomy_tier: "shadow_only",
+          state_reason: "family_disabled",
+          blocked_reasons: ["family_disabled"],
+        },
       },
       risk_budget_policy: {
         capital: { outstanding_notional_usd: 0.0 },
@@ -380,6 +405,11 @@ const healthPayload = {
         reason_codes: ["capacity_ceiling_exceeded"],
         open_order_count: 0,
         effective_max_open_orders: 0,
+      },
+      autonomy_state: {
+        effective_autonomy_tier: "shadow_only",
+        state_reason: "family_disabled",
+        blocked_reasons: ["family_disabled"],
       },
     },
   ],
@@ -888,7 +918,10 @@ describe("Health", () => {
     expect(screen.getByText("Gap Breaches")).toBeInTheDocument();
     expect(screen.getByText("Shadow Evaluation")).toBeInTheDocument();
     expect(screen.getByText("Lifecycle Version")).toBeInTheDocument();
+    expect(screen.getAllByText("Autonomy State").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Shadow Only").length).toBeGreaterThan(0);
     expect(screen.getByText("Gate Verdict")).toBeInTheDocument();
+    expect(screen.getAllByText("Gate / Autonomy").length).toBeGreaterThan(0);
     expect(screen.getByText("Recent Pilot Incidents")).toBeInTheDocument();
     expect(screen.getByText("Recent Pilot Guardrails")).toBeInTheDocument();
     expect(screen.getByText("gap_suspected")).toBeInTheDocument();

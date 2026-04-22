@@ -137,6 +137,7 @@ class StrategyRegistryVersionOut(BaseModel):
     provenance_json: dict[str, Any] | list[Any] | str | None = None
     risk_budget_policy: dict[str, Any] | list[Any] | str | None = None
     risk_budget_status: dict[str, Any] | list[Any] | str | None = None
+    autonomy_state: dict[str, Any] | None = None
     latest_promotion_evaluation: StrategyLifecycleEventOut | None = None
     evidence_alignment: StrategyEvidenceAlignmentOut | None = None
     evidence_counts: dict[str, int]
@@ -157,6 +158,7 @@ class StrategyFamilyRegistryOut(BaseModel):
     family_kind: str
     seeded_from: str
     current_version: StrategyRegistryVersionOut | None = None
+    autonomy_state: dict[str, Any] | None = None
     versions: list[StrategyRegistryVersionOut]
     latest_promotion_evaluation: StrategyLifecycleEventOut | None = None
     latest_demotion_event: StrategyLifecycleEventOut | None = None
