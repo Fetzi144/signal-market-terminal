@@ -858,6 +858,7 @@ async def test_scheduler_retries_pending_execution_when_orderbook_context_arrive
     assert execution_decision is not None
     assert execution_decision.decision_status == "pending_decision"
     assert execution_decision.reason_code == "execution_missing_orderbook_context"
+    assert execution_decision.details["diagnostics"]["retry_attempt_count"] == 1
 
     make_orderbook_snapshot(
         session,
@@ -881,6 +882,82 @@ async def test_scheduler_retries_pending_execution_when_orderbook_context_arrive
     assert metadata["reason_code"] == "opened"
     assert metadata["trade_id"] is not None
     assert execution_decision.decision_status == "opened"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_finalizes_orderbook_pending_after_retry_window_closes(session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    fired_at = now - timedelta(minutes=4)
+    monkeypatch.setattr(settings, "paper_trading_pending_decision_max_age_seconds", 900)
+    monkeypatch.setattr(settings, "shadow_execution_max_staleness_seconds", 60)
+    monkeypatch.setattr(settings, "shadow_execution_max_forward_seconds", 30)
+    monkeypatch.setattr(settings, "paper_trading_orderbook_context_finalization_grace_seconds", 30)
+
+    market = make_market(session, question="Orderbook finalization market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        depth_bid="900",
+        depth_ask="600",
+        captured_at=fired_at - timedelta(minutes=10),
+        bids=[["0.39", "500"], ["0.38", "400"]],
+        asks=[["0.41", "300"], ["0.42", "300"]],
+    )
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=fired_at - timedelta(minutes=1))
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Orderbook finalization market", "outcome_name": "Yes"},
+    )
+    await session.flush()
+    session.add(
+        ExecutionDecision(
+            id=uuid.uuid4(),
+            signal_id=signal.id,
+            strategy_run_id=strategy_run.id,
+            decision_at=fired_at,
+            decision_status="pending_decision",
+            action="pending",
+            reason_code="execution_stale_orderbook_context",
+            missing_orderbook_context=True,
+            stale_orderbook_context=True,
+            details={
+                "reason_label": "Stale orderbook context",
+                "detail": "Waiting for usable event-time orderbook context",
+                "diagnostics": {
+                    "retry_attempt_count": 1,
+                    "retry_reason_code": "execution_stale_orderbook_context",
+                },
+            },
+        )
+    )
+    await session.commit()
+
+    await _run_paper_trading(session, [])
+
+    decision = await session.scalar(select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id))
+    await session.refresh(signal)
+
+    assert decision is not None
+    assert decision.decision_status == "skipped"
+    assert decision.reason_code == "execution_orderbook_context_unavailable"
+    assert decision.details["finalized_orderbook_reason_code"] == "execution_stale_orderbook_context"
+    assert decision.details["diagnostics"]["retry_attempt_count"] == 2
+    assert decision.details["diagnostics"]["orderbook_context_recovery_window_seconds"] == 60
+    metadata = signal.details["default_strategy"]
+    assert metadata["attempt_kind"] == "orderbook_context_finalization"
+    assert metadata["decision"] == "skipped"
+    assert metadata["reason_code"] == "execution_orderbook_context_unavailable"
+    assert metadata["diagnostics"]["finalized_orderbook_reason_code"] == "execution_stale_orderbook_context"
 
 
 @pytest.mark.asyncio

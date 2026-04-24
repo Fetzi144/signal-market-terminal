@@ -51,6 +51,7 @@ REASON_LABELS = {
     "execution_policy_failure": "Execution policy evaluation failed",
     "execution_missing_orderbook_context": "Missing orderbook context",
     "execution_stale_orderbook_context": "Stale orderbook context",
+    "execution_orderbook_context_unavailable": "Orderbook context unavailable after retry",
     "execution_no_fill": "No fill available",
     "execution_partial_fill_below_minimum": "Partial fill below minimum",
     "execution_ev_below_threshold": "Executable EV below threshold",
@@ -235,6 +236,13 @@ def _json_safe(value):
     if isinstance(value, list):
         return [_json_safe(inner) for inner in value]
     return value
+
+
+def _int_or_zero(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _net_expected_pnl_usd(
@@ -487,9 +495,29 @@ async def build_execution_decision(
         polymarket_policy_result=None,
     ) -> ExecutionDecisionBuildResult:
         pending_diagnostics = dict(diagnostics or {})
+        previous_details = dict(execution_decision_row.details or {}) if execution_decision_row is not None else {}
+        previous_diagnostics = (
+            previous_details.get("diagnostics")
+            if isinstance(previous_details.get("diagnostics"), dict)
+            else {}
+        )
+        previous_attempts = _int_or_zero(previous_diagnostics.get("retry_attempt_count"))
+        existing_decision_at = (
+            _ensure_utc(execution_decision_row.decision_at)
+            if execution_decision_row is not None
+            else None
+        )
+        first_pending_at = (
+            previous_diagnostics.get("first_pending_decision_at")
+            or (existing_decision_at.isoformat() if existing_decision_at is not None else None)
+            or decision_at.isoformat()
+        )
         pending_diagnostics.setdefault("retry_pending", True)
         pending_diagnostics.setdefault("retry_reason_code", reason_code)
         pending_diagnostics.setdefault("retry_reason_label", _reason_label(reason_code))
+        pending_diagnostics["retry_attempt_count"] = previous_attempts + 1
+        pending_diagnostics["first_pending_decision_at"] = first_pending_at
+        pending_diagnostics["last_pending_attempt_at"] = datetime.now(timezone.utc).isoformat()
         return await finish(
             decision="pending_decision",
             reason_code=reason_code,

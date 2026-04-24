@@ -96,8 +96,10 @@ def _decision_activity_at(row: DecisionSummary) -> datetime | None:
     candidates = [
         _ensure_utc(row.decision_at),
         _parse_activity_datetime(details.get("expired_at")),
+        _parse_activity_datetime(details.get("finalized_at")),
         _parse_activity_datetime(details.get("evaluated_at")),
         _parse_activity_datetime(diagnostics.get("expired_at")),
+        _parse_activity_datetime(diagnostics.get("finalized_at")),
     ]
     return max((value for value in candidates if value is not None), default=None)
 

@@ -32,6 +32,12 @@ RETRYABLE_PENDING_DECISION_REASON_CODES = (
     "execution_partial_fill_below_minimum",
     "execution_ev_below_threshold",
 )
+ORDERBOOK_CONTEXT_PENDING_REASON_CODES = (
+    "execution_missing_orderbook_context",
+    "execution_stale_orderbook_context",
+)
+ORDERBOOK_CONTEXT_UNAVAILABLE_REASON_CODE = "execution_orderbook_context_unavailable"
+ORDERBOOK_CONTEXT_FINALIZATION_MIN_ATTEMPTS = 2
 
 
 def _ensure_utc(value: datetime | None) -> datetime | None:
@@ -84,12 +90,25 @@ def _parse_datetime(value) -> datetime | None:
         return None
 
 
+def _int_or_zero(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _reason_label(reason_code: str) -> str:
     if reason_code == "opened":
         return "Trade opened"
     if reason_code == "pending_decision":
         return "Pending decision"
     return default_strategy_skip_label(reason_code) or reason_code.replace("_", " ")
+
+
+def _retry_attempt_count(decision: ExecutionDecision) -> int:
+    details = decision.details if isinstance(decision.details, dict) else {}
+    diagnostics = details.get("diagnostics") if isinstance(details.get("diagnostics"), dict) else {}
+    return _int_or_zero(diagnostics.get("retry_attempt_count"))
 
 
 def _decision_action(decision_status: str) -> str:
@@ -425,3 +444,118 @@ async def expire_stale_pending_execution_decisions(
 
     await session.flush()
     return len(rows)
+
+
+async def finalize_unrecoverable_orderbook_context_decisions(
+    session: AsyncSession,
+    strategy_run: StrategyRun,
+    *,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> int:
+    current = _ensure_utc(now) or datetime.now(timezone.utc)
+    recovery_window_seconds = (
+        int(settings.shadow_execution_max_forward_seconds)
+        + int(settings.paper_trading_orderbook_context_finalization_grace_seconds)
+    )
+    cutoff = current - timedelta(seconds=recovery_window_seconds)
+    baseline_start_at = strategy_run.started_at.isoformat() if strategy_run.started_at else None
+    final_reason_label = _reason_label(ORDERBOOK_CONTEXT_UNAVAILABLE_REASON_CODE)
+
+    query = (
+        select(ExecutionDecision, Signal)
+        .join(Signal, Signal.id == ExecutionDecision.signal_id)
+        .where(
+            ExecutionDecision.strategy_run_id == strategy_run.id,
+            ExecutionDecision.decision_status == "pending_decision",
+            ExecutionDecision.reason_code.in_(ORDERBOOK_CONTEXT_PENDING_REASON_CODES),
+            ExecutionDecision.decision_at < cutoff,
+        )
+        .order_by(ExecutionDecision.decision_at.asc(), ExecutionDecision.id.asc())
+    )
+    if limit is not None:
+        query = query.limit(limit)
+
+    rows = (await session.execute(query)).all()
+    finalized_count = 0
+    finalized_at = current.isoformat()
+    for decision, signal in rows:
+        retry_attempt_count = _retry_attempt_count(decision)
+        if retry_attempt_count < ORDERBOOK_CONTEXT_FINALIZATION_MIN_ATTEMPTS:
+            continue
+
+        original_decision_at = _ensure_utc(decision.decision_at) or current
+        pending_age_seconds = max(0, int((current - original_decision_at).total_seconds()))
+        original_reason_code = decision.reason_code
+        original_reason_label = _reason_label(original_reason_code)
+        detail = (
+            f"Orderbook context remained unavailable after {pending_age_seconds} seconds "
+            "and the event-time recovery window is closed."
+        )
+
+        decision_diagnostics = dict((decision.details or {}).get("diagnostics") or {})
+        decision_diagnostics.update(
+            {
+                "orderbook_context_finalized": True,
+                "finalized_orderbook_reason_code": original_reason_code,
+                "finalized_orderbook_reason_label": original_reason_label,
+                "finalized_orderbook_decision_at": original_decision_at.isoformat(),
+                "finalized_at": finalized_at,
+                "pending_age_seconds": pending_age_seconds,
+                "retry_attempt_count": retry_attempt_count,
+                "orderbook_context_finalization_min_attempts": ORDERBOOK_CONTEXT_FINALIZATION_MIN_ATTEMPTS,
+                "orderbook_context_recovery_window_seconds": recovery_window_seconds,
+                "shadow_execution_max_forward_seconds": settings.shadow_execution_max_forward_seconds,
+                "orderbook_context_finalization_grace_seconds": (
+                    settings.paper_trading_orderbook_context_finalization_grace_seconds
+                ),
+            }
+        )
+
+        decision_details = dict(decision.details or {})
+        decision_details.update(
+            _json_safe(
+                {
+                    "reason_label": final_reason_label,
+                    "detail": detail,
+                    "diagnostics": decision_diagnostics,
+                    "finalized_orderbook_reason_code": original_reason_code,
+                    "finalized_orderbook_reason_label": original_reason_label,
+                    "finalized_orderbook_decision_at": original_decision_at,
+                    "finalized_at": current,
+                }
+            )
+        )
+
+        decision.decision_status = "skipped"
+        decision.action = "skip"
+        decision.reason_code = ORDERBOOK_CONTEXT_UNAVAILABLE_REASON_CODE
+        decision.details = decision_details
+
+        signal_details = dict(signal.details or {})
+        strategy_details = dict(signal_details.get("default_strategy") or {})
+        signal_diagnostics = dict(strategy_details.get("diagnostics") or {})
+        signal_diagnostics.update(decision_diagnostics)
+        strategy_details.update(
+            {
+                "strategy_name": settings.default_strategy_name,
+                "strategy_run_id": str(strategy_run.id),
+                "baseline_start_at": baseline_start_at,
+                "evaluated_at": finalized_at,
+                "attempt_kind": "orderbook_context_finalization",
+                "eligible": strategy_details.get("eligible", True),
+                "decision": "skipped",
+                "reason_code": ORDERBOOK_CONTEXT_UNAVAILABLE_REASON_CODE,
+                "reason_label": final_reason_label,
+                "detail": detail,
+                "trade_id": None,
+                "diagnostics": signal_diagnostics,
+            }
+        )
+        signal_details["default_strategy"] = strategy_details
+        signal.details = signal_details
+        finalized_count += 1
+
+    if finalized_count:
+        await session.flush()
+    return finalized_count

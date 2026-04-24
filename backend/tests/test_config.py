@@ -122,6 +122,7 @@ class TestDefaults:
         assert s.kalshi_enabled is True
         assert s.sse_max_connections == 50
         assert s.alert_webhook_secret == ""
+        assert s.paper_trading_orderbook_context_finalization_grace_seconds == 120
         assert s.shadow_execution_max_staleness_seconds == 180
         assert s.shadow_execution_max_forward_seconds == 30
         assert s.shadow_execution_min_fill_pct == 0.20

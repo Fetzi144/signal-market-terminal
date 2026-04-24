@@ -32,6 +32,7 @@ SKIP_REASON_LABELS = {
     "risk_shared_global_block": "Shared/global platform risk blocked the trade",
     "execution_missing_orderbook_context": "Missing orderbook context",
     "execution_stale_orderbook_context": "Stale orderbook context",
+    "execution_orderbook_context_unavailable": "Orderbook context unavailable after retry",
     "execution_no_fill": "No fill available",
     "execution_partial_fill_below_minimum": "Partial fill below minimum",
     "execution_ev_below_threshold": "Executable EV below threshold",
@@ -170,6 +171,7 @@ def get_default_strategy_contract(*, started_at: datetime | None = None) -> dict
         "legacy_benchmark_rank_threshold": settings.legacy_benchmark_rank_threshold,
         "paper_trading_enabled": settings.paper_trading_enabled,
         "paper_trading_pending_decision_max_age_seconds": settings.paper_trading_pending_decision_max_age_seconds,
+        "paper_trading_orderbook_context_finalization_grace_seconds": settings.paper_trading_orderbook_context_finalization_grace_seconds,
     }
 
 

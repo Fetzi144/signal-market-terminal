@@ -246,6 +246,7 @@ class Settings(BaseSettings):
     drawdown_circuit_breaker_pct: float = 0.15  # pause at -15% from peak
     paper_trading_enabled: bool = True
     paper_trading_pending_decision_max_age_seconds: int = 900
+    paper_trading_orderbook_context_finalization_grace_seconds: int = 120
     shadow_execution_max_staleness_seconds: int = 180
     shadow_execution_max_forward_seconds: int = 30
     shadow_execution_min_fill_pct: float = 0.20
@@ -388,6 +389,7 @@ class Settings(BaseSettings):
         "orderbook_sample_size",
         "cleanup_interval_hours",
         "paper_trading_pending_decision_max_age_seconds",
+        "paper_trading_orderbook_context_finalization_grace_seconds",
         "shadow_execution_max_staleness_seconds",
         "shadow_execution_max_forward_seconds",
         "scheduler_lease_seconds",
