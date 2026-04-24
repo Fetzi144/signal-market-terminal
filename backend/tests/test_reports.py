@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from app.models.execution_decision import ExecutionDecision
-from app.reports.strategy_review import generate_default_strategy_review, get_latest_default_strategy_review_artifact_metadata
+from app.reports.strategy_review import (
+    generate_default_strategy_review,
+    get_latest_default_strategy_review_artifact_metadata,
+)
 from app.strategy_runs.service import ensure_active_default_strategy_run
 from tests.conftest import make_market, make_outcome, make_signal
 from tests.test_trading_intelligence_api import _make_paper_trade

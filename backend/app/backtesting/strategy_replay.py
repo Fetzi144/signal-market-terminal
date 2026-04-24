@@ -1,15 +1,15 @@
 """Historical replay helpers for the frozen default strategy and legacy path."""
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.default_strategy import default_strategy_skip_label, evaluate_default_strategy_signal
-from app.models.backtest import BacktestSignal, BacktestRun
+from app.models.backtest import BacktestRun, BacktestSignal
 from app.models.market import Market, Outcome
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal

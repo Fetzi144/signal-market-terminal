@@ -315,7 +315,7 @@ async def test_strategy_health_marks_review_identity_mismatch_as_stale(client, s
     import app.reports.strategy_review as review_module
 
     now = datetime.now(timezone.utc)
-    strategy_run = await open_default_strategy_run(
+    await open_default_strategy_run(
         session,
         launch_boundary_at=now - timedelta(days=2),
         contract_metadata={

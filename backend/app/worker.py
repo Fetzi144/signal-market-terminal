@@ -6,19 +6,19 @@ import signal
 
 from prometheus_client import start_http_server
 
-from app.db import async_session
 from app.config import settings
+from app.db import async_session
 from app.execution.polymarket_live_reconciler import PolymarketLiveReconciler
 from app.execution.polymarket_pilot_supervisor import PolymarketPilotSupervisor
 from app.execution.polymarket_user_stream import PolymarketUserStreamService
 from app.ingestion.polymarket_book_reconstruction import PolymarketBookReconstructionService
 from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
 from app.ingestion.polymarket_microstructure import PolymarketMicrostructureService
+from app.ingestion.polymarket_raw_storage import PolymarketRawStorageService
 from app.ingestion.polymarket_replay_simulator import PolymarketReplaySimulatorService
 from app.ingestion.polymarket_risk_graph import PolymarketRiskGraphService
-from app.ingestion.polymarket_raw_storage import PolymarketRawStorageService
-from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.ingestion.polymarket_stream import PolymarketStreamService
+from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.jobs.scheduler import scheduler as scheduler_runtime
 from app.jobs.scheduler import start_scheduler, stop_scheduler
 

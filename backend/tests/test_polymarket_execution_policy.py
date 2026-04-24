@@ -1,6 +1,6 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-import uuid
 
 import pytest
 from sqlalchemy import func, select
@@ -18,7 +18,6 @@ from app.ingestion.polymarket_execution_policy import (
     _walk_visible_book,
     evaluate_polymarket_execution_policy,
 )
-from app.models.execution_decision import ExecutionDecision
 from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
 from app.models.polymarket_metadata import (
     PolymarketAssetDim,

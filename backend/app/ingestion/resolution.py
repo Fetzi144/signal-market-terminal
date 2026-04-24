@@ -5,7 +5,7 @@ Enhanced in Q2 Phase 1 to capture closing_price, resolution_price, CLV, and prof
 import logging
 from decimal import Decimal
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market import Market, Outcome

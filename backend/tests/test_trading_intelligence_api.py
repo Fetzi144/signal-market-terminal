@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-import app.paper_trading.analysis as analysis_module
 import app.jobs.scheduler as scheduler_module
+import app.paper_trading.analysis as analysis_module
 from app.config import settings
 from app.jobs.scheduler import _fetch_overdue_open_trade_resolutions, _resolve_paper_trades, _run_paper_trading
 from app.metrics import default_strategy_scheduler_no_active_run

@@ -20,8 +20,7 @@ from app.ingestion.polymarket_maker_economics import (
     lookup_reward_history,
     lookup_token_fee_history,
 )
-from app.ingestion.polymarket_metadata import PolymarketMetaSyncService
-from app.ingestion.polymarket_metadata import apply_stream_event_to_registry
+from app.ingestion.polymarket_metadata import PolymarketMetaSyncService, apply_stream_event_to_registry
 from app.ingestion.polymarket_stream import PolymarketStreamService, ensure_watch_registry_bootstrapped
 from app.models.polymarket_metadata import (
     PolymarketAssetDim,

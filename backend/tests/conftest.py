@@ -133,8 +133,8 @@ def make_outcome(session, market_id, **kwargs):
 
 
 def make_price_snapshot(session, outcome_id, price, captured_at=None, **kwargs):
-    from app.models.snapshot import PriceSnapshot
     from app.models.market import Outcome
+    from app.models.snapshot import PriceSnapshot
     if captured_at is None:
         captured_at = datetime.now(timezone.utc)
     sync_session = getattr(session, "sync_session", session)
@@ -159,8 +159,8 @@ def make_price_snapshot(session, outcome_id, price, captured_at=None, **kwargs):
 
 
 def make_orderbook_snapshot(session, outcome_id, spread, depth_bid=None, depth_ask=None, captured_at=None, **kwargs):
-    from app.models.snapshot import OrderbookSnapshot
     from app.models.market import Outcome
+    from app.models.snapshot import OrderbookSnapshot
     if captured_at is None:
         captured_at = datetime.now(timezone.utc)
     sync_session = getattr(session, "sync_session", session)
@@ -189,8 +189,8 @@ def make_orderbook_snapshot(session, outcome_id, spread, depth_bid=None, depth_a
 
 
 def make_signal(session, market_id, outcome_id, **kwargs):
-    from app.models.signal import Signal
     from app.models.market import Outcome
+    from app.models.signal import Signal
     now = datetime.now(timezone.utc)
     fired_at = kwargs.get("fired_at", now)
     dedupe_bucket = kwargs.get(

@@ -29,6 +29,13 @@ from app.ingestion.polymarket_execution_policy import (
     lookup_polymarket_execution_action_candidates,
     lookup_polymarket_execution_decisions,
 )
+from app.ingestion.polymarket_maker_economics import (
+    fetch_polymarket_maker_status,
+    lookup_current_reward_state,
+    lookup_current_token_fee_state,
+    lookup_reward_history,
+    lookup_token_fee_history,
+)
 from app.ingestion.polymarket_metadata import (
     fetch_polymarket_meta_sync_status,
     list_polymarket_meta_sync_runs,
@@ -38,14 +45,6 @@ from app.ingestion.polymarket_metadata import (
     lookup_polymarket_market_registry,
     trigger_manual_polymarket_meta_sync,
 )
-from app.ingestion.polymarket_maker_economics import (
-    fetch_polymarket_maker_status,
-    lookup_current_reward_state,
-    lookup_current_token_fee_state,
-    lookup_reward_history,
-    lookup_token_fee_history,
-)
-from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.ingestion.polymarket_microstructure import (
     fetch_polymarket_feature_status,
     list_polymarket_feature_runs,
@@ -68,7 +67,7 @@ from app.ingestion.polymarket_raw_storage import (
     trigger_manual_polymarket_raw_projector,
     trigger_manual_polymarket_trade_backfill,
 )
-from app.ingestion.structure_engine import fetch_market_structure_status
+from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.ingestion.polymarket_stream import (
     ensure_watch_registry_bootstrapped,
     fetch_polymarket_stream_status,
@@ -78,6 +77,7 @@ from app.ingestion.polymarket_stream import (
     trigger_manual_polymarket_resync,
     upsert_watch_asset,
 )
+from app.ingestion.structure_engine import fetch_market_structure_status
 from app.models.market import Market, Outcome
 from app.models.polymarket_stream import PolymarketWatchAsset
 from app.strategy_families import build_strategy_family_reviews

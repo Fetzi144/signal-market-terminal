@@ -1,9 +1,9 @@
 """Honest measurement comparisons for prove-the-edge reviews."""
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession

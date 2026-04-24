@@ -3,11 +3,11 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from app.connectors.base import RawOrderbook
 from app.config import settings
+from app.connectors.base import RawOrderbook
+from app.ingestion.snapshots import capture_snapshots
 from app.models.ingestion import IngestionRun
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
-from app.ingestion.snapshots import capture_snapshots
 from tests.conftest import make_market, make_outcome, make_polymarket_watch_asset
 
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import asyncio
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -23,7 +23,11 @@ from app.execution.polymarket_live_state import (
 )
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
 from app.ingestion.polymarket_common import parse_polymarket_timestamp, utcnow
-from app.metrics import polymarket_live_fills_observed, polymarket_live_reconcile_failures, polymarket_live_reconcile_runs
+from app.metrics import (
+    polymarket_live_fills_observed,
+    polymarket_live_reconcile_failures,
+    polymarket_live_reconcile_runs,
+)
 from app.models.polymarket_live_execution import (
     LiveFill,
     LiveOrder,

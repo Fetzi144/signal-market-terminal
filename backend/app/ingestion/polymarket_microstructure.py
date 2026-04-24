@@ -30,8 +30,8 @@ from app.models.polymarket_microstructure import (
     PolymarketAlphaLabel,
     PolymarketBookStateTopN,
     PolymarketFeatureRun,
-    PolymarketMicrostructureFeature100ms,
     PolymarketMicrostructureFeature1s,
+    PolymarketMicrostructureFeature100ms,
     PolymarketPassiveFillLabel,
 )
 from app.models.polymarket_raw import (

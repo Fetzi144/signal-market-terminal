@@ -16,6 +16,7 @@ from app.default_strategy import (
     default_strategy_skip_label,
     get_default_strategy_contract,
 )
+from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.metrics import (
     default_strategy_latest_review_age_seconds,
     default_strategy_latest_review_generated_at_timestamp,
@@ -23,7 +24,6 @@ from app.metrics import (
     default_strategy_pending_decision_max_age_seconds,
     default_strategy_review_outdated,
 )
-from app.ingestion.polymarket_replay_simulator import fetch_polymarket_replay_status
 from app.models.execution_decision import ExecutionDecision
 from app.models.market import Market
 from app.models.paper_trade import PaperTrade
@@ -31,7 +31,11 @@ from app.models.signal import Signal
 from app.paper_trading.evidence_freshness import build_evidence_freshness
 from app.paper_trading.portfolio_views import (
     _get_metrics as _get_trade_metrics,
+)
+from app.paper_trading.portfolio_views import (
     _get_pnl_curve as _get_trade_pnl_curve,
+)
+from app.paper_trading.portfolio_views import (
     _get_portfolio_state as _get_trade_portfolio_state,
 )
 from app.paper_trading.review_verdict import build_review_verdict

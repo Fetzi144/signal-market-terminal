@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
-import pytest_asyncio
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
@@ -21,7 +20,6 @@ from app.paper_trading.engine import (
     resolve_trades,
 )
 from app.strategy_runs.service import ensure_active_default_strategy_run
-
 from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_signal
 
 

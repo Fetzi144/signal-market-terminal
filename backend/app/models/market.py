@@ -1,8 +1,8 @@
 import re
-from hashlib import sha1
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from hashlib import sha1
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID

@@ -19,12 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.ingestion.polymarket_common import (
-    EventMetadata,
     REST_RESYNC_CHANNEL,
     RESYNC_PROVENANCE,
     STATUS_VENUE,
     STREAM_CHANNEL,
     STREAM_PROVENANCE,
+    EventMetadata,
     extract_event_metadata,
     unique_preserving_order,
     utcnow,

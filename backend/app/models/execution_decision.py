@@ -1,12 +1,19 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+if TYPE_CHECKING:
+    from app.models.paper_trade import PaperTrade
+    from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
+    from app.models.signal import Signal
+    from app.models.strategy_run import StrategyRun
 
 
 class ExecutionDecision(Base):

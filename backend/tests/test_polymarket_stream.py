@@ -17,7 +17,6 @@ from app.ingestion.polymarket_stream import (
     build_subscription_diff,
     ensure_watch_registry_bootstrapped,
     persist_market_event,
-    upsert_stream_status,
 )
 from app.models.polymarket_metadata import PolymarketAssetDim, PolymarketMarketDim
 from app.models.polymarket_stream import (
@@ -448,7 +447,7 @@ async def test_reconciliation_uses_watch_registry_and_unchanged_set_does_not_chu
         market_one = make_market(session, platform="polymarket", platform_id="mkt-1", active=True)
         market_two = make_market(session, platform="polymarket", platform_id="mkt-2", active=True)
         await session.flush()
-        outcome_one = make_outcome(session, market_one.id, token_id="token-a")
+        make_outcome(session, market_one.id, token_id="token-a")
         outcome_two = make_outcome(session, market_two.id, token_id="token-b")
         await session.flush()
         await ensure_watch_registry_bootstrapped(session)
@@ -597,7 +596,7 @@ async def test_status_and_manual_resync_and_paginated_endpoints(client, engine):
     async with session_factory() as session:
         market = make_market(session, platform="polymarket", platform_id="mkt-api", active=True)
         await session.flush()
-        outcome = make_outcome(session, market.id, token_id="token-api")
+        make_outcome(session, market.id, token_id="token-api")
         await session.flush()
         make_polymarket_stream_status(
             session,

@@ -1,8 +1,6 @@
 """Tests for the probability engine: sensitivity curve, Brier score, calibration, detector integration."""
 from decimal import Decimal
 
-import pytest
-
 from app.signals.probability import (
     PROB_MAX,
     PROB_MIN,
@@ -12,7 +10,6 @@ from app.signals.probability import (
     compute_estimated_probability,
     prior_sensitivity,
 )
-
 
 # ── Prior sensitivity curve ────────────────────────────────────
 

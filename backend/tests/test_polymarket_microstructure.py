@@ -15,7 +15,12 @@ from app.models.polymarket_microstructure import (
     PolymarketMicrostructureFeature1s,
     PolymarketPassiveFillLabel,
 )
-from app.models.polymarket_raw import PolymarketBboEvent, PolymarketBookDelta, PolymarketBookSnapshot, PolymarketTradeTape
+from app.models.polymarket_raw import (
+    PolymarketBboEvent,
+    PolymarketBookDelta,
+    PolymarketBookSnapshot,
+    PolymarketTradeTape,
+)
 from app.models.polymarket_reconstruction import PolymarketBookReconIncident
 from tests.conftest import make_market, make_outcome
 

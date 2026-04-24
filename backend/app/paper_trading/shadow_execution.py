@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-import uuid
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession

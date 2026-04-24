@@ -13,8 +13,8 @@ from app.backtesting.engine import BacktestEngine
 from app.backtesting.modes import DETECTOR_REPLAY_MODE, STRATEGY_COMPARISON_REPLAY_MODE, with_replay_mode
 from app.backtesting.sweep import parameter_sweep
 from app.db import get_db
-from app.models.signal import Signal
 from app.models.backtest import BacktestRun, BacktestSignal
+from app.models.signal import Signal
 from app.models.snapshot import PriceSnapshot
 
 router = APIRouter(prefix="/api/v1/backtests", tags=["backtests"])

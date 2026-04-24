@@ -9,7 +9,6 @@ from app.ingestion.backfill_clv import backfill_clv
 from app.ingestion.resolution import resolve_signals
 from tests.conftest import make_market, make_outcome, make_price_snapshot, make_signal
 
-
 # ── Resolution CLV computation ───────��──────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -50,7 +49,7 @@ async def test_resolution_sets_clv_fields_for_loser(session):
     """Losing signal gets resolution_price=0, negative P&L."""
     market = make_market(session, platform="polymarket", platform_id="clv-loss-1")
     await session.flush()
-    outcome_yes = make_outcome(session, market.id, name="Yes")
+    make_outcome(session, market.id, name="Yes")
     outcome_no = make_outcome(session, market.id, name="No")
     await session.flush()
 
@@ -87,7 +86,7 @@ async def test_resolution_clv_for_down_direction(session):
     market = make_market(session, platform="polymarket", platform_id="clv-down-1")
     await session.flush()
     outcome_yes = make_outcome(session, market.id, name="Yes")
-    outcome_no = make_outcome(session, market.id, name="No")
+    make_outcome(session, market.id, name="No")
     await session.flush()
 
     # Snapshot for Yes outcome at price 0.80
@@ -245,7 +244,7 @@ async def test_backfill_idempotent(session):
     make_price_snapshot(session, outcome.id, price=0.70)
     await session.flush()
 
-    signal = make_signal(
+    make_signal(
         session, market.id, outcome.id,
         price_at_fire=Decimal("0.500000"),
         details={"direction": "up", "market_question": "Test?", "outcome_name": "Yes"},
@@ -265,7 +264,7 @@ async def test_backfill_down_direction_loser(session):
     """Backfill for down direction signal on losing outcome → correct, resolution=0."""
     market = make_market(session, platform="polymarket", platform_id="bf-down-lose")
     await session.flush()
-    outcome_yes = make_outcome(session, market.id, name="Yes")
+    make_outcome(session, market.id, name="Yes")
     outcome_no = make_outcome(session, market.id, name="No")
     await session.flush()
 

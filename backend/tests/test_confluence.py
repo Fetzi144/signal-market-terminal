@@ -2,8 +2,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import pytest
-
 from app.signals.base import SignalCandidate
 from app.signals.confluence import (
     DEFAULT_CORRELATION,

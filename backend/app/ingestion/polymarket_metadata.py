@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import settings
 from app.ingestion.polymarket_common import (
-    STATUS_VENUE,
     extract_asset_ids,
     parse_json_if_string,
     parse_listish,
