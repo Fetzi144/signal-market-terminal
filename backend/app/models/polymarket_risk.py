@@ -213,7 +213,7 @@ class PortfolioOptimizerRecommendation(Base):
     __table_args__ = (
         Index("ix_portfolio_optimizer_recommendations_run_id", "run_id"),
         Index("ix_portfolio_optimizer_recommendations_strategy_observed", "strategy_family", "observed_at_local"),
-        Index("ix_portfolio_optimizer_recommendations_strategy_version_observed", "strategy_version_id", "observed_at_local"),
+        Index("ix_portfolio_optimizer_recs_strategy_version_observed", "strategy_version_id", "observed_at_local"),
         Index(
             "ix_portfolio_optimizer_recommendations_type_reason_observed",
             "recommendation_type",

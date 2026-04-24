@@ -59,7 +59,7 @@ def upgrade() -> None:
         ondelete="SET NULL",
     )
     op.create_index("ix_portfolio_optimizer_recommendations_strategy_observed", "portfolio_optimizer_recommendations", ["strategy_family", "observed_at_local"])
-    op.create_index("ix_portfolio_optimizer_recommendations_strategy_version_observed", "portfolio_optimizer_recommendations", ["strategy_version_id", "observed_at_local"])
+    op.create_index("ix_portfolio_optimizer_recs_strategy_version_observed", "portfolio_optimizer_recommendations", ["strategy_version_id", "observed_at_local"])
 
     op.add_column("inventory_control_snapshots", sa.Column("strategy_family", sa.String(length=32), nullable=True))
     op.add_column("inventory_control_snapshots", sa.Column("strategy_version_id", sa.Integer(), nullable=True))
@@ -96,7 +96,7 @@ def downgrade() -> None:
     op.drop_column("inventory_control_snapshots", "strategy_version_id")
     op.drop_column("inventory_control_snapshots", "strategy_family")
 
-    op.drop_index("ix_portfolio_optimizer_recommendations_strategy_version_observed", table_name="portfolio_optimizer_recommendations")
+    op.drop_index("ix_portfolio_optimizer_recs_strategy_version_observed", table_name="portfolio_optimizer_recommendations")
     op.drop_index("ix_portfolio_optimizer_recommendations_strategy_observed", table_name="portfolio_optimizer_recommendations")
     op.drop_constraint("fk_portfolio_optimizer_recommendations_strategy_version_id", "portfolio_optimizer_recommendations", type_="foreignkey")
     op.drop_column("portfolio_optimizer_recommendations", "budget_metadata_json")
