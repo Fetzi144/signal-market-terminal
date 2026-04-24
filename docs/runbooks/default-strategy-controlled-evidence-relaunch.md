@@ -24,6 +24,9 @@ Supported actions:
 - `bootstrap-run`
 - `pending-watch`
 
+Production compose mounts the host checkout's `docs/` directory into backend and worker containers at `/docs`.
+When generating review artifacts with `python -m app.reports` inside a production container, verify the emitted `/docs/strategy-reviews/...` files are present in the host checkout before rebuilding or replacing the container.
+
 ## Evidence Boundary Metadata
 
 The first valid post-fix run should be bootstrapped with explicit metadata, for example:

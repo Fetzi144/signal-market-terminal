@@ -229,6 +229,9 @@ Review generation should also reuse the shared `comparison_modes` payload from s
 
 The read-only health/dashboard surfaces must never execute that command on the operator's behalf.
 
+In production compose, the host checkout's `docs/` directory is mounted into backend and worker containers at `/docs`.
+The backend image runs from `/app`, so generated review artifacts resolve to `/docs/...` in-container while still persisting to the host checkout across rebuilds.
+
 Generated review artifacts now include two production evidence sections:
 
 - `Live Automation Safety`: records whether live trading and the pilot are fail-closed, plus counts for live orders, fills, reservations, open live lots, active pilot configs, and active pilot runs.
