@@ -240,7 +240,7 @@ The read-only health/dashboard surfaces must never execute that command on the o
 In production compose, the host checkout's `docs/` directory is mounted into backend and worker containers at `/docs`.
 The backend image runs from `/app`, so generated review artifacts resolve to `/docs/...` in-container while still persisting to the host checkout across rebuilds.
 
-Production compose can also run a scheduler-owned review generation job. It generates only when there is an active run and the latest artifact is missing/partial/invalid, mismatched to the active run boundary, or older than active-run activity. It does not regenerate only because pending decisions are stale.
+Production compose can also run a scheduler-owned review generation job. It generates only when there is an active run and the latest artifact is missing/partial/invalid, mismatched to the active run boundary, or older than active-run activity. Pending-decision expiry timestamps count as execution-decision activity, but the job does not regenerate only because pending decisions are stale.
 
 Generated review artifacts now include two production evidence sections:
 
@@ -288,7 +288,7 @@ Semantics:
 - `last_activity_kind` currently resolves to the newest of:
   - `strategy_run_started`
   - `paper_trade`
-  - `execution_decision`
+  - `execution_decision` (`decision_at`, plus pending-expiry timestamps recorded in decision details)
 - `pending_decisions_stale = true` means pending decisions are past the configured retry window and should be treated as evidence degradation, not as silently acceptable backlog.
 - `missing_review` is explicit. The read path must not generate a review just to clear that state.
 

@@ -30,6 +30,7 @@ All notable changes to Signal Market Terminal are documented here.
 - Paper-trade resolution failures are now logged with platform, market, outcome, and settlement direction instead of being silently skipped.
 - Kalshi paper-trade resolution can now settle overdue open trades even when broad Kalshi discovery is disabled, including single-outcome and token-suffixed flat settlement payloads.
 - Backlog-repaired pending decisions that are already past the retry window now expire in the same scheduler pass instead of waiting for the next run.
+- Default-strategy evidence freshness now treats pending-decision expiry timestamps as execution-decision activity so review artifacts refresh after expiry-only changes.
 
 ## [0.4.1] - 2026-04-15
 

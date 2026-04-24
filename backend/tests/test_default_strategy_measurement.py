@@ -309,6 +309,87 @@ async def test_strategy_health_surfaces_stale_evidence_when_review_lags_run_acti
 
 
 @pytest.mark.asyncio
+async def test_strategy_health_marks_expired_pending_mutation_as_review_activity(client, session, monkeypatch, tmp_path):
+    import json
+
+    import app.reports.strategy_review as review_module
+
+    now = datetime.now(timezone.utc)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(days=2))
+    market = make_market(session, question="Expired pending freshness market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(hours=1),
+        dedupe_bucket=(now - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6200"),
+        probability_adjustment=Decimal("0.1200"),
+        price_at_fire=Decimal("0.500000"),
+        expected_value=Decimal("0.120000"),
+        details={"direction": "up", "market_question": "Expired pending freshness market", "outcome_name": "Yes"},
+    )
+    expired_at = now - timedelta(minutes=5)
+    await session.flush()
+    session.add(
+        ExecutionDecision(
+            signal_id=signal.id,
+            strategy_run_id=strategy_run.id,
+            decision_at=now - timedelta(minutes=30),
+            decision_status="skipped",
+            action="skip",
+            reason_code="pending_decision_expired",
+            details={
+                "reason_label": "Pending decision retry window expired",
+                "expired_at": expired_at.isoformat(),
+                "diagnostics": {"expired_at": expired_at.isoformat()},
+            },
+        )
+    )
+    await session.commit()
+
+    review_dir = tmp_path / "docs" / "strategy-reviews"
+    review_dir.mkdir(parents=True)
+    review_generated_at = (now - timedelta(minutes=10)).isoformat()
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.md").write_text(
+        "# Default Strategy Review\n\n"
+        f"**Date:** {now.date().isoformat()}\n\n"
+        "## Operator Verdict\n\n"
+        "- Verdict: `watch`\n",
+        encoding="utf-8",
+    )
+    (review_dir / f"{now.date().isoformat()}-default-strategy-baseline.json").write_text(
+        json.dumps(
+            {
+                "generated_at": review_generated_at,
+                "review_verdict": {"verdict": "watch"},
+                "strategy_run": {
+                    "id": str(strategy_run.id),
+                    "started_at": strategy_run.started_at.isoformat(),
+                    "status": strategy_run.status,
+                    "contract_snapshot": strategy_run.contract_snapshot,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(review_module, "_repo_root", lambda: tmp_path)
+
+    response = await client.get("/api/v1/paper-trading/strategy-health")
+
+    assert response.status_code == 200
+    freshness = response.json()["evidence_freshness"]
+    assert freshness["status"] == "stale"
+    assert freshness["review_outdated"] is True
+    assert freshness["pending_decisions_stale"] is False
+    assert freshness["last_activity_kind"] == "execution_decision"
+    assert freshness["last_activity_at"] == expired_at.isoformat()
+    assert freshness["review_lag_seconds"] == 300
+
+
+@pytest.mark.asyncio
 async def test_strategy_health_marks_review_identity_mismatch_as_stale(client, session, monkeypatch, tmp_path):
     import json
 

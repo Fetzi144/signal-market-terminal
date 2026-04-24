@@ -79,6 +79,29 @@ def _ensure_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc)
 
 
+def _parse_activity_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return _ensure_utc(value)
+    if value is None:
+        return None
+    try:
+        return _ensure_utc(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _decision_activity_at(row: DecisionSummary) -> datetime | None:
+    details = row.details if isinstance(row.details, dict) else {}
+    diagnostics = details.get("diagnostics") if isinstance(details.get("diagnostics"), dict) else {}
+    candidates = [
+        _ensure_utc(row.decision_at),
+        _parse_activity_datetime(details.get("expired_at")),
+        _parse_activity_datetime(details.get("evaluated_at")),
+        _parse_activity_datetime(diagnostics.get("expired_at")),
+    ]
+    return max((value for value in candidates if value is not None), default=None)
+
+
 def _average(values: list[Decimal]) -> Decimal | None:
     if not values:
         return None
@@ -890,7 +913,7 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
         ),
         default=None,
     )
-    latest_decision_at = max((_ensure_utc(row.decision_at) for row in decision_rows if row.decision_at is not None), default=None)
+    latest_decision_at = max((_decision_activity_at(row) for row in decision_rows), default=None)
     portfolio = await _get_trade_portfolio_state(session, strategy_run_id=strategy_run.id)
     metrics = await _get_trade_metrics(session, strategy_run_id=strategy_run.id)
     pnl_curve = await _get_trade_pnl_curve(session, strategy_run_id=strategy_run.id)
