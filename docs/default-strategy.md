@@ -229,6 +229,13 @@ Review generation should also reuse the shared `comparison_modes` payload from s
 
 The read-only health/dashboard surfaces must never execute that command on the operator's behalf.
 
+Generated review artifacts now include two production evidence sections:
+
+- `Live Automation Safety`: records whether live trading and the pilot are fail-closed, plus counts for live orders, fills, reservations, open live lots, active pilot configs, and active pilot runs.
+- `Resolution Reconciliation`: records open trades, missing resolutions, overdue open trades, resolved trades/signals, pending-decision backlog, oldest pending age, and representative overdue trade examples.
+
+The JSON artifact carries the same data under `live_safety` and `resolution_reconciliation`. These sections are operator evidence only; they do not arm the pilot, resolve trades, or change strategy state.
+
 ## Evidence Freshness Surface
 
 `GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `evidence_freshness` object.

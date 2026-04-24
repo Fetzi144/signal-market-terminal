@@ -141,11 +141,17 @@ async def test_review_generator_writes_versioned_artifacts(session, monkeypatch,
     assert "Default Strategy Review" in review_text
     assert "Operator Verdict" in review_text
     assert "Contract Version" in review_text
+    assert "Live Automation Safety" in review_text
+    assert "Resolution Reconciliation" in review_text
     assert "v0.4.1" in review_text
     review_payload = json.loads(review_json_path.read_text(encoding="utf-8"))
     assert review_payload["review_verdict"]["verdict"] == "keep"
+    assert review_payload["live_safety"]["status"] == "fail_closed"
+    assert review_payload["live_safety"]["counts"]["live_orders"] == 0
     assert review_payload["comparison_modes"] == result["comparison"]
     assert review_payload["trade_funnel"]["resolved_trades"] == 1
+    assert review_payload["resolution_reconciliation"]["status"] == "reconciled"
+    assert review_payload["resolution_reconciliation"]["resolved_trades"] == 1
     assert "Paper Trading Analysis v0.5" in analysis_path.read_text(encoding="utf-8")
 
     artifact = get_latest_default_strategy_review_artifact_metadata()

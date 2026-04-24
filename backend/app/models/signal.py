@@ -78,6 +78,7 @@ class Signal(Base):
         Index("ix_signal_market", "market_id", "fired_at"),
         Index("ix_signal_type", "signal_type", "fired_at"),
         Index("ix_signal_rank", "rank_score"),
+        Index("ix_signal_rank_fired", "rank_score", "fired_at"),
         Index("ix_signal_timeframe", "timeframe"),
     )
 

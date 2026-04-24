@@ -146,6 +146,20 @@ Current behavior:
 
 This keeps Phase 13A read-only while finally giving each strategy version a durable, inspectable promotion-gate history rather than only the latest scattered verdicts.
 
+### 11. Production evidence loop hardening
+
+The repo now records the current production-safety questions directly in the default-strategy evidence artifact instead of leaving them as one-off operator notes.
+
+Current behavior:
+
+* `GET /api/v1/paper-trading/strategy-health` exposes a named `resolution_reconciliation` block for open trades, missing resolutions, overdue open trades, pending decisions, and evidence freshness.
+* `python -m app.reports` writes the same reconciliation block into the JSON review artifact and renders it in Markdown.
+* the generated review now includes a `live_safety` block showing whether live trading and the pilot are fail-closed, plus counts for live orders, fills, reservations, open live position lots, active pilot configs, and active pilot runs.
+* paper-trade resolution exceptions now log platform, market, outcome, and settlement direction instead of silently disappearing.
+* `/api/v1/signals` accepts `limit` as an operator-friendly alias for `page_size`, and the signal feed has a composite rank/time index for production-sized reads.
+
+This does not arm the pilot, resolve trades by itself, or change the default strategy contract. It makes the evidence loop easier to audit daily while keeping live execution disabled by default.
+
 ## What This Still Does Not Do
 
 The repo is still not widening autonomy here.
@@ -157,6 +171,7 @@ Specifically, this pass does not:
 * auto-demote families
 * add capital-budget enforcement beyond current systems
 * add family-level autonomy tiers beyond the current seeded registry values
+* generate review artifacts from read-only API requests
 
 That is intentional. Phase 13A is the read-only lifecycle and evidence-integrity slice; the remaining work belongs to later milestones rather than more Phase 13A surface-building.
 
@@ -170,7 +185,7 @@ The first follow-on Milestone 4 fail-closed enforcement slice has now landed:
 
 The next best step after this is:
 
-* tighten demotion recovery semantics: explicit cooling-off expiry, required fresh evidence for re-promotion, and operator-visible re-promotion requirements before any tier can recover
+* deploy the production-evidence-loop migration, generate the next default-strategy review artifact from the server evidence, and use the reconciliation output to decide whether paper-trade resolution needs connector-specific repair before any promotion work continues
 
 ## Validation Completed
 
@@ -181,3 +196,4 @@ Focused validation for this implementation slice covered:
 * backend control-plane and pilot-evidence tests for scorecard, incident, and guardrail gate-history recording plus lifecycle-aware API serialization
 * frontend tests for unified gate-history visibility in `Strategies`, alongside lifecycle-aware incident and guardrail visibility in `Pilot Console` and `Health`
 * backend promotion/control-plane tests for demotion-event dedupe, demoted live-submission blocks, and supervisor-triggered pilot pause behavior
+* backend evidence-loop tests for signal `limit` aliasing, review artifact safety/reconciliation payloads, strategy-health reconciliation output, and paper-resolution exception logging

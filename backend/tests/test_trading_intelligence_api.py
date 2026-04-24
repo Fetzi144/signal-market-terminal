@@ -446,6 +446,29 @@ async def test_scheduler_resolves_paper_trade_from_kalshi_flat_payload(session):
 
 
 @pytest.mark.asyncio
+async def test_scheduler_logs_paper_trade_resolution_failures(session, monkeypatch, caplog):
+    market = make_market(session, platform="polymarket", platform_id="pm-resolution-failure")
+    outcome_yes = make_outcome(session, market.id, name="Yes")
+    make_outcome(session, market.id, name="No")
+    await session.commit()
+
+    async def _raise_resolution_error(*args, **kwargs):  # noqa: ARG001
+        raise RuntimeError("resolution failure")
+
+    monkeypatch.setattr("app.paper_trading.engine.resolve_trades", _raise_resolution_error)
+
+    with caplog.at_level("WARNING"):
+        await _resolve_paper_trades(
+            session,
+            [{"platform_id": "pm-resolution-failure", "winner": "Yes"}],
+            platform="polymarket",
+        )
+
+    assert str(outcome_yes.id) in caplog.text
+    assert "Paper trading failed to resolve trade(s)" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_scheduler_fetches_targeted_overdue_kalshi_resolutions(session):
     now = datetime.now(timezone.utc)
     overdue_market = make_market(
@@ -1602,6 +1625,8 @@ async def test_strategy_health_respects_launch_boundary_without_mutating_run_sta
     assert data["trade_funnel"]["excluded_pre_launch_trades"] == 0
     assert data["skip_reasons"] == []
     assert data["headline"]["resolved_trades"] == 0
+    assert data["resolution_reconciliation"]["status"] == "collecting"
+    assert data["resolution_reconciliation"]["open_trades"] == 0
 
 
 @pytest.mark.asyncio
@@ -1783,3 +1808,10 @@ async def test_strategy_health_endpoint_returns_default_strategy_contract_and_be
     assert data["benchmark"]["resolved_signals"] >= 1
     assert any(row["signal_type"] == "confluence" for row in data["detector_review"])
     assert isinstance(data["recent_mistakes"], list)
+    assert data["resolution_reconciliation"]["status"] == "pending_decisions"
+    assert data["resolution_reconciliation"]["resolved_trades"] == 1
+    assert data["resolution_reconciliation"]["pending_decisions"] == 1
+    assert data["resolution_reconciliation"]["overdue_open_trade_watch"] == {
+        "count": 0,
+        "examples": [],
+    }

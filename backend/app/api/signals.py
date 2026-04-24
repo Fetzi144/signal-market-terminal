@@ -163,8 +163,12 @@ async def list_signals(
     resolved_correctly: bool | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    limit: int | None = Query(None, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
+    if limit is not None:
+        page_size = limit
+
     query = select(Signal, Market.question, Market.platform).join(Market, Signal.market_id == Market.id)
     count_query = select(func.count(Signal.id))
 

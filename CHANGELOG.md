@@ -10,11 +10,13 @@ All notable changes to Signal Market Terminal are documented here.
 - **Detector keep/watch/cut review loop** based on recent CLV, hypothetical P&L, calibration, and trade contribution
 - **Default strategy docs and review artifact** so weekly analysis has a stable contract and repeatable checklist
 - **Phase 13 fail-closed demotion enforcement** records cooling-off demotion events from blocked promotion-eligibility verdicts, blocks live submission for actively demoted versions, and pauses an armed pilot from the supervisor loop.
+- **Production evidence loop reporting** adds live-automation safety and resolution-reconciliation sections to default-strategy review artifacts and strategy-health output.
 
 ### Changed
 - Paper trading now measures the **default confluence strategy** instead of auto-trading every EV-qualified detector signal
 - The `/paper-trading` page is now the primary **strategy health** console for the current phase
 - Local dev defaults now support both `localhost` and `127.0.0.1` frontend origins more reliably
+- `/api/v1/signals` now accepts `limit` as a backward-compatible alias for `page_size`, and the signal feed has a composite rank/time index for production-sized reads.
 
 ### Fixed
 - Backend/frontend dev defaults are aligned across API base and CORS settings
@@ -22,6 +24,7 @@ All notable changes to Signal Market Terminal are documented here.
 - Polymarket watch-registry bootstrap now caps Postgres insert batches so large active universes do not crash `/api/v1/health` with asyncpg bind-limit failures
 - Default-strategy scoped portfolio/history/metrics/curve reads and `strategy-health` now avoid loading the full live signal universe into memory on every request
 - `scripts/smt-monitor.cron` is normalized for LF-only installs so cron can pick it up reliably on Linux hosts
+- Paper-trade resolution failures are now logged with platform, market, outcome, and settlement direction instead of being silently skipped.
 
 ## [0.4.1] - 2026-04-15
 

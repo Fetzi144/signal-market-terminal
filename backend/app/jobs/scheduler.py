@@ -740,6 +740,14 @@ async def _resolve_paper_trades(session, resolved_markets, *, platform: str | No
                 count = await resolve_trades(session, outcome_id, won)
                 total += count
             except Exception:
+                logger.warning(
+                    "Paper trading failed to resolve trade(s) for platform=%s platform_id=%s outcome_id=%s won=%s",
+                    platform,
+                    market_data.get("platform_id"),
+                    outcome_id,
+                    won,
+                    exc_info=True,
+                )
                 continue
 
     if total > 0:

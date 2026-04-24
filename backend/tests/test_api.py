@@ -233,6 +233,36 @@ async def test_signals_list_returns_paginated(client, engine):
 
 
 @pytest.mark.asyncio
+async def test_signals_list_accepts_limit_alias(client, engine):
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with async_sess() as session:
+        market = make_market(session, platform="polymarket")
+        await session.flush()
+        outcome = make_outcome(session, market.id)
+        await session.flush()
+        base_time = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        for i in range(5):
+            make_signal(
+                session,
+                market.id,
+                outcome.id,
+                signal_type="price_move",
+                rank_score=Decimal(f"0.{9 - i}00"),
+                dedupe_bucket=base_time - timedelta(minutes=15 * i),
+            )
+        await session.commit()
+
+    resp = await client.get("/api/v1/signals?limit=3")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 5
+    assert data["page_size"] == 3
+    assert len(data["signals"]) == 3
+
+
+@pytest.mark.asyncio
 async def test_signals_filter_by_type(client, engine):
     """Filter signals by signal_type."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker

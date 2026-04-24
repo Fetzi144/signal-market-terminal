@@ -48,6 +48,7 @@ from app.strategy_runs.service import (
 
 ZERO = Decimal("0")
 PENDING_DECISION_EXAMPLE_LIMIT = 5
+OVERDUE_OPEN_TRADE_EXAMPLE_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -344,6 +345,64 @@ def _publish_evidence_freshness_metrics(evidence_freshness: dict) -> None:
     default_strategy_review_outdated.set(1.0 if evidence_freshness.get("review_outdated") else 0.0)
 
 
+def _empty_overdue_open_trade_watch() -> dict:
+    return {
+        "count": 0,
+        "examples": [],
+    }
+
+
+def _build_resolution_reconciliation(
+    *,
+    headline: dict,
+    trade_funnel: dict,
+    pending_watch: dict,
+    overdue_open_trade_watch: dict,
+    run_integrity: dict,
+    evidence_freshness: dict,
+) -> dict:
+    return {
+        "open_trades": int(headline.get("open_trades") or 0),
+        "missing_resolutions": int(headline.get("missing_resolutions") or 0),
+        "overdue_open_trades": int(headline.get("overdue_open_trades") or 0),
+        "resolved_trades": int(trade_funnel.get("resolved_trades") or 0),
+        "resolved_signals": int(trade_funnel.get("resolved_signals") or 0),
+        "unresolved_traded_signals": int(trade_funnel.get("unresolved_traded_signals") or 0),
+        "pending_decisions": int(pending_watch.get("count") or 0),
+        "pending_decision_max_age_seconds": float(pending_watch.get("max_age_seconds") or 0.0),
+        "overdue_open_trade_watch": overdue_open_trade_watch,
+        "integrity_errors": list(run_integrity.get("integrity_errors") or []),
+        "evidence_freshness_status": evidence_freshness.get("status"),
+        "evidence_freshness_reason": evidence_freshness.get("reason"),
+        "status": _resolution_reconciliation_status(
+            headline=headline,
+            trade_funnel=trade_funnel,
+            pending_watch=pending_watch,
+            run_integrity=run_integrity,
+        ),
+    }
+
+
+def _resolution_reconciliation_status(
+    *,
+    headline: dict,
+    trade_funnel: dict,
+    pending_watch: dict,
+    run_integrity: dict,
+) -> str:
+    if run_integrity.get("integrity_errors"):
+        return "integrity_blocked"
+    if int(pending_watch.get("count") or 0) > 0:
+        return "pending_decisions"
+    if int(headline.get("overdue_open_trades") or 0) > 0:
+        return "overdue_open_trades"
+    if int(trade_funnel.get("unresolved_traded_signals") or 0) > 0:
+        return "awaiting_resolution"
+    if int(trade_funnel.get("resolved_trades") or 0) > 0:
+        return "reconciled"
+    return "collecting"
+
+
 def _serialize_replay_review_status(replay_status: dict | None) -> dict:
     replay = replay_status or {}
     return {
@@ -375,6 +434,64 @@ async def get_overdue_open_trade_count(
     if strategy_run_id is not None:
         query = query.where(PaperTrade.strategy_run_id == strategy_run_id)
     return int((await session.execute(query)).scalar_one() or 0)
+
+
+async def get_overdue_open_trade_watch(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None = None,
+    example_limit: int = OVERDUE_OPEN_TRADE_EXAMPLE_LIMIT,
+) -> dict:
+    now = datetime.now(timezone.utc)
+    base_filters = [
+        PaperTrade.status == "open",
+        or_(
+            Market.active.is_(False),
+            Market.end_date < now,
+        ),
+    ]
+    if strategy_run_id is not None:
+        base_filters.append(PaperTrade.strategy_run_id == strategy_run_id)
+
+    count_result = await session.execute(
+        select(func.count(PaperTrade.id))
+        .join(Market, Market.id == PaperTrade.market_id)
+        .where(*base_filters)
+    )
+    total = int(count_result.scalar_one() or 0)
+    if total == 0:
+        return _empty_overdue_open_trade_watch()
+
+    example_result = await session.execute(
+        select(PaperTrade, Market)
+        .join(Market, Market.id == PaperTrade.market_id)
+        .where(*base_filters)
+        .order_by(Market.end_date.asc().nulls_last(), PaperTrade.opened_at.asc())
+        .limit(example_limit)
+    )
+    examples = []
+    for trade, market in example_result.all():
+        market_end = _ensure_utc(market.end_date)
+        examples.append(
+            {
+                "trade_id": str(trade.id),
+                "signal_id": str(trade.signal_id),
+                "platform": market.platform,
+                "platform_id": market.platform_id,
+                "market_question": market.question,
+                "market_active": bool(market.active),
+                "market_end_date": market_end.isoformat() if market_end else None,
+                "opened_at": _ensure_utc(trade.opened_at).isoformat() if trade.opened_at else None,
+                "age_past_end_seconds": _safe_seconds(now - market_end)
+                if market_end is not None and market_end < now
+                else 0.0,
+            }
+        )
+
+    return {
+        "count": total,
+        "examples": examples,
+    }
 
 
 async def get_default_strategy_run_lookup(session: AsyncSession) -> dict:
@@ -859,6 +976,15 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
     if strategy_run is None:
         observation = {"started_at": None, "baseline_start_at": contract.get("baseline_start_at"), "first_trade_at": None, "days_tracked": None, "status": "no_active_run", "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": settings.default_strategy_min_observation_days}
         headline = {"open_exposure": 0.0, "open_trades": 0, "resolved_trades": 0, "resolved_signals": 0, "missing_resolutions": 0, "overdue_open_trades": 0, "cumulative_pnl": 0.0, "avg_clv": None, "profit_factor": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "drawdown_pct": None, "current_equity": None, "peak_equity": None, "brier_score": None}
+        run_integrity = {"pre_launch_candidate_signals": 0, "excluded_pre_launch_trades": 0, "excluded_legacy_trades": 0, "trades_missing_orderbook_context": 0, "integrity_errors": [], "debug_drawdown": {"reconstructed_max_drawdown": 0.0, "reconstructed_current_equity": None}}
+        resolution_reconciliation = _build_resolution_reconciliation(
+            headline=headline,
+            trade_funnel=scope["trade_funnel"],
+            pending_watch=scope["pending_decision_watch"],
+            overdue_open_trade_watch=_empty_overdue_open_trade_watch(),
+            run_integrity=run_integrity,
+            evidence_freshness=evidence_freshness,
+        )
         review_verdict = build_review_verdict(
             strategy_run=None,
             run_state=scope["run_state"],
@@ -881,7 +1007,8 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
             "headline": headline,
             "execution_realism": {"shadow_cumulative_pnl": 0.0, "shadow_profit_factor": 0.0, "liquidity_constrained_trades": 0, "trades_missing_orderbook_context": 0},
             "risk_blocks": scope["risk_block_summary"],
-            "run_integrity": {"pre_launch_candidate_signals": 0, "excluded_pre_launch_trades": 0, "excluded_legacy_trades": 0, "trades_missing_orderbook_context": 0, "integrity_errors": [], "debug_drawdown": {"reconstructed_max_drawdown": 0.0, "reconstructed_current_equity": None}},
+            "run_integrity": run_integrity,
+            "resolution_reconciliation": resolution_reconciliation,
             "comparison_modes": scope["comparison_modes"],
             "benchmark": scope["comparison_modes"]["signal_level"]["benchmark"],
             "replay": replay,
@@ -942,8 +1069,21 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
         session,
         strategy_run_id=strategy_run.id,
     )
+    overdue_open_trade_watch = await get_overdue_open_trade_watch(
+        session,
+        strategy_run_id=strategy_run.id,
+    )
     observation = {"started_at": started_at.isoformat() if started_at else None, "baseline_start_at": scope["launch_at"].isoformat() if scope["launch_at"] else None, "first_trade_at": scope["first_trade_at"].isoformat() if scope["first_trade_at"] else None, "days_tracked": days_tracked, "status": _observation_status(days_tracked, launched=started_at is not None, traded_signals=scope["trade_funnel"]["traded_signals"]), "minimum_days": settings.default_strategy_min_observation_days, "preferred_days": settings.default_strategy_preferred_observation_days, "days_until_minimum_window": remaining_days}
     headline = {"open_exposure": float(portfolio["open_exposure"]), "open_trades": len(portfolio["open_trades"]), "resolved_trades": metrics["total_trades"], "resolved_signals": scope["trade_funnel"]["resolved_signals"], "missing_resolutions": scope["trade_funnel"]["unresolved_traded_signals"], "overdue_open_trades": overdue_open_trades, "cumulative_pnl": metrics["cumulative_pnl"], "avg_clv": _safe_float(avg_clv.quantize(Decimal("0.000001"))) if avg_clv is not None else None, "profit_factor": metrics["profit_factor"], "win_rate": metrics["win_rate"], "max_drawdown": float(strategy_run.max_drawdown) if strategy_run.max_drawdown is not None else None, "drawdown_pct": float(strategy_run.drawdown_pct) if strategy_run.drawdown_pct is not None else None, "current_equity": float(strategy_run.current_equity) if strategy_run.current_equity is not None else None, "peak_equity": float(strategy_run.peak_equity) if strategy_run.peak_equity is not None else None, "brier_score": _safe_float(default_brier.quantize(Decimal("0.000001"))) if default_brier is not None else None}
+    run_integrity = {"pre_launch_candidate_signals": scope["trade_funnel"]["pre_launch_candidate_signals"], "excluded_pre_launch_trades": scope["trade_funnel"]["excluded_pre_launch_trades"], "excluded_legacy_trades": scope["trade_funnel"]["excluded_legacy_trades"], "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"], "integrity_errors": scope["trade_funnel"]["integrity_errors"], "debug_drawdown": {"reconstructed_max_drawdown": metrics["max_drawdown"], "reconstructed_current_equity": round(float(settings.default_bankroll) + metrics["cumulative_pnl"], 2)}}
+    resolution_reconciliation = _build_resolution_reconciliation(
+        headline=headline,
+        trade_funnel=scope["trade_funnel"],
+        pending_watch=scope["pending_decision_watch"],
+        overdue_open_trade_watch=overdue_open_trade_watch,
+        run_integrity=run_integrity,
+        evidence_freshness=evidence_freshness,
+    )
     review_verdict = build_review_verdict(
         strategy_run=serialized_strategy_run,
         run_state=scope["run_state"],
@@ -966,7 +1106,8 @@ async def _serialize_strategy_health(session: AsyncSession, *, scope: dict) -> d
         "headline": headline,
         "execution_realism": {"shadow_cumulative_pnl": metrics["shadow_cumulative_pnl"], "shadow_profit_factor": metrics["shadow_profit_factor"], "liquidity_constrained_trades": metrics["liquidity_constrained_trades"], "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"]},
         "risk_blocks": scope["risk_block_summary"],
-        "run_integrity": {"pre_launch_candidate_signals": scope["trade_funnel"]["pre_launch_candidate_signals"], "excluded_pre_launch_trades": scope["trade_funnel"]["excluded_pre_launch_trades"], "excluded_legacy_trades": scope["trade_funnel"]["excluded_legacy_trades"], "trades_missing_orderbook_context": metrics["trades_missing_orderbook_context"], "integrity_errors": scope["trade_funnel"]["integrity_errors"], "debug_drawdown": {"reconstructed_max_drawdown": metrics["max_drawdown"], "reconstructed_current_equity": round(float(settings.default_bankroll) + metrics["cumulative_pnl"], 2)}},
+        "run_integrity": run_integrity,
+        "resolution_reconciliation": resolution_reconciliation,
         "comparison_modes": scope["comparison_modes"],
         "benchmark": scope["comparison_modes"]["signal_level"]["benchmark"],
         "replay": replay,

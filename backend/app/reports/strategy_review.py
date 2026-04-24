@@ -5,9 +5,13 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.backtesting.comparison import compare_locked_modes
+from app.config import settings
+from app.models.polymarket_live_execution import CapitalReservation, LiveFill, LiveOrder, PositionLot
+from app.models.polymarket_pilot import PolymarketPilotConfig, PolymarketPilotRun
 from app.paper_trading.analysis import get_strategy_health
 
 _REVIEW_ARTIFACT_NAME_RE = re.compile(
@@ -222,7 +226,61 @@ def _fmt_cents(value) -> str:
     return "-" if value is None else f"{value * 100:.1f}c"
 
 
-def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) -> str:
+async def _count_rows(session: AsyncSession, model, *filters) -> int:
+    query = select(func.count()).select_from(model)
+    if filters:
+        query = query.where(*filters)
+    return int((await session.execute(query)).scalar_one() or 0)
+
+
+async def _build_live_safety_snapshot(session: AsyncSession) -> dict:
+    live_order_count = await _count_rows(session, LiveOrder)
+    live_fill_count = await _count_rows(session, LiveFill)
+    outstanding_reservations = await _count_rows(session, CapitalReservation, CapitalReservation.status == "open")
+    open_position_lots = await _count_rows(session, PositionLot, PositionLot.status == "open")
+    active_pilot_configs = await _count_rows(
+        session,
+        PolymarketPilotConfig,
+        or_(
+            PolymarketPilotConfig.active.is_(True),
+            PolymarketPilotConfig.armed.is_(True),
+            PolymarketPilotConfig.live_enabled.is_(True),
+        ),
+    )
+    active_pilot_runs = await _count_rows(
+        session,
+        PolymarketPilotRun,
+        PolymarketPilotRun.ended_at.is_(None),
+        PolymarketPilotRun.status.in_(["active", "running", "armed"]),
+    )
+    live_submission_permitted = bool(settings.polymarket_live_trading_enabled and not settings.polymarket_live_dry_run)
+    status = "fail_closed"
+    if live_order_count or live_fill_count or outstanding_reservations or open_position_lots:
+        status = "live_activity_present"
+    elif live_submission_permitted or settings.polymarket_pilot_enabled or active_pilot_configs or active_pilot_runs:
+        status = "armed_or_configured"
+
+    return {
+        "status": status,
+        "settings": {
+            "live_trading_enabled": settings.polymarket_live_trading_enabled,
+            "live_dry_run": settings.polymarket_live_dry_run,
+            "manual_approval_required": settings.polymarket_live_manual_approval_required,
+            "pilot_enabled": settings.polymarket_pilot_enabled,
+        },
+        "live_submission_permitted": live_submission_permitted,
+        "counts": {
+            "live_orders": live_order_count,
+            "live_fills": live_fill_count,
+            "outstanding_reservations": outstanding_reservations,
+            "open_position_lots": open_position_lots,
+            "active_pilot_configs": active_pilot_configs,
+            "active_pilot_runs": active_pilot_runs,
+        },
+    }
+
+
+def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime, live_safety: dict | None = None) -> str:
     strategy_run = health.get("strategy_run") or {}
     contract_snapshot = strategy_run.get("contract_snapshot") or {}
     evidence_boundary = contract_snapshot.get("evidence_boundary") or {}
@@ -234,6 +292,11 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
     pending_watch = health.get("pending_decision_watch") or {}
     risk_blocks = health.get("risk_blocks") or {}
     replay = health.get("replay") or {}
+    live_safety = live_safety or {}
+    live_counts = live_safety.get("counts") or {}
+    live_settings = live_safety.get("settings") or {}
+    resolution_reconciliation = health.get("resolution_reconciliation") or {}
+    overdue_watch = resolution_reconciliation.get("overdue_open_trade_watch") or {}
     signal_level = comparison.get("signal_level") or {}
     signal_level_default = signal_level.get("default_strategy") or {}
     signal_level_benchmark = signal_level.get("benchmark") or {}
@@ -272,6 +335,10 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
     )
     review_blocker_lines = "- No active verdict blockers." if not review_verdict.get("blockers") else "\n".join(
         f"- `{row['code']}`: {row['detail']}" for row in review_verdict.get("blockers", [])
+    )
+    overdue_trade_lines = "- No overdue open paper trades." if not overdue_watch.get("examples") else "\n".join(
+        f"- trade `{row['trade_id']}` on `{row['platform']}:{row['platform_id']}` ended {row.get('market_end_date') or '-'}"
+        for row in overdue_watch.get("examples", [])
     )
     empty_state = "" if funnel.get("opened_trade_signals", 0) else (
         "\n## Empty State\n\n"
@@ -322,6 +389,21 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
 - Max drawdown: {_fmt_money(headline.get('max_drawdown'))}
 - Current drawdown pct: {_fmt_pct(headline.get('drawdown_pct'))}
 
+## Live Automation Safety
+
+- Status: `{live_safety.get('status', '-')}`
+- Live submission permitted: `{live_safety.get('live_submission_permitted', False)}`
+- Live trading enabled: `{live_settings.get('live_trading_enabled', False)}`
+- Dry run: `{live_settings.get('live_dry_run', True)}`
+- Manual approval required: `{live_settings.get('manual_approval_required', True)}`
+- Pilot enabled: `{live_settings.get('pilot_enabled', False)}`
+- Live orders: {live_counts.get('live_orders', 0)}
+- Live fills: {live_counts.get('live_fills', 0)}
+- Outstanding reservations: {live_counts.get('outstanding_reservations', 0)}
+- Open live position lots: {live_counts.get('open_position_lots', 0)}
+- Active pilot configs: {live_counts.get('active_pilot_configs', 0)}
+- Active pilot runs: {live_counts.get('active_pilot_runs', 0)}
+
 ## Trade Funnel
 
 - Candidate signals: {funnel.get('candidate_signals', 0)}
@@ -335,6 +417,22 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
 - Qualified not traded: {funnel.get('qualified_not_traded', 0)}
 - Legacy trades excluded: {funnel.get('excluded_legacy_trades', 0)}
 - Funnel conservation holds: `{funnel.get('conservation_holds', False)}`
+
+## Resolution Reconciliation
+
+- Status: `{resolution_reconciliation.get('status', '-')}`
+- Open trades: {resolution_reconciliation.get('open_trades', 0)}
+- Missing resolutions: {resolution_reconciliation.get('missing_resolutions', 0)}
+- Overdue open trades: {resolution_reconciliation.get('overdue_open_trades', 0)}
+- Resolved trades: {resolution_reconciliation.get('resolved_trades', 0)}
+- Resolved signals: {resolution_reconciliation.get('resolved_signals', 0)}
+- Pending decisions: {resolution_reconciliation.get('pending_decisions', 0)}
+- Pending max age (seconds): {resolution_reconciliation.get('pending_decision_max_age_seconds', 0)}
+- Evidence freshness: `{resolution_reconciliation.get('evidence_freshness_status', '-')}`
+
+### Overdue open trade examples
+
+{overdue_trade_lines}
 
 ## Risk Block Attribution
 
@@ -401,14 +499,22 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime) 
 """
 
 
-def _review_artifact_payload(health: dict, comparison: dict, *, as_of: datetime) -> dict:
+def _review_artifact_payload(
+    health: dict,
+    comparison: dict,
+    *,
+    as_of: datetime,
+    live_safety: dict | None = None,
+) -> dict:
     return {
         "generated_at": as_of.isoformat(),
         "strategy_run": health.get("strategy_run"),
+        "live_safety": live_safety,
         "review_verdict": health.get("review_verdict"),
         "observation": health.get("observation"),
         "headline": health.get("headline"),
         "trade_funnel": health.get("trade_funnel"),
+        "resolution_reconciliation": health.get("resolution_reconciliation"),
         "pending_decision_watch": health.get("pending_decision_watch"),
         "run_integrity": health.get("run_integrity"),
         "replay": health.get("replay"),
@@ -466,6 +572,7 @@ def _render_analysis_markdown(health: dict, comparison: dict, *, as_of: datetime
 async def generate_default_strategy_review(session: AsyncSession) -> dict:
     as_of = datetime.now(timezone.utc)
     health = await get_strategy_health(session)
+    live_safety = await _build_live_safety_snapshot(session)
     strategy_run = health.get("strategy_run") or {}
     comparison = health.get("comparison_modes")
     if comparison is None:
@@ -486,9 +593,16 @@ async def generate_default_strategy_review(session: AsyncSession) -> dict:
     review_path.parent.mkdir(parents=True, exist_ok=True)
     analysis_path.parent.mkdir(parents=True, exist_ok=True)
 
-    review_path.write_text(_render_review_markdown(health, comparison, as_of=as_of), encoding="utf-8")
+    review_path.write_text(
+        _render_review_markdown(health, comparison, as_of=as_of, live_safety=live_safety),
+        encoding="utf-8",
+    )
     review_json_path.write_text(
-        json.dumps(_review_artifact_payload(health, comparison, as_of=as_of), indent=2, sort_keys=True),
+        json.dumps(
+            _review_artifact_payload(health, comparison, as_of=as_of, live_safety=live_safety),
+            indent=2,
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
     analysis_path.write_text(_render_analysis_markdown(health, comparison, as_of=as_of), encoding="utf-8")
@@ -498,5 +612,6 @@ async def generate_default_strategy_review(session: AsyncSession) -> dict:
         "analysis_path": str(analysis_path),
         "strategy_run": strategy_run,
         "review_verdict": health.get("review_verdict"),
+        "live_safety": live_safety,
         "comparison": comparison,
     }
