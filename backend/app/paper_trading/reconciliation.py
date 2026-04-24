@@ -30,7 +30,6 @@ RETRYABLE_PENDING_DECISION_REASON_CODES = (
     "execution_stale_orderbook_context",
     "execution_no_fill",
     "execution_partial_fill_below_minimum",
-    "execution_ev_below_threshold",
 )
 ORDERBOOK_CONTEXT_PENDING_REASON_CODES = (
     "execution_missing_orderbook_context",

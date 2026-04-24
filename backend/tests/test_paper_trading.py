@@ -559,8 +559,8 @@ async def test_attempt_open_trade_skips_when_executable_ev_falls_below_threshold
 
     assert result.trade is None
     assert result.execution_decision is not None
-    assert result.decision == "pending_decision"
-    assert result.execution_decision.decision_status == "pending_decision"
+    assert result.decision == "skipped"
+    assert result.execution_decision.decision_status == "skipped"
     assert result.reason_code == "execution_ev_below_threshold"
     assert result.execution_decision.executable_entry_price == Decimal("0.530000")
     assert result.execution_decision.net_ev_per_share == Decimal("0.010000")

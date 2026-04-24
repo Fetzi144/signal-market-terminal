@@ -961,6 +961,75 @@ async def test_scheduler_finalizes_orderbook_pending_after_retry_window_closes(s
 
 
 @pytest.mark.asyncio
+async def test_scheduler_converts_pending_executable_ev_reject_to_deterministic_skip(session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    fired_at = now - timedelta(minutes=20)
+    monkeypatch.setattr(settings, "paper_trading_pending_decision_max_age_seconds", 300)
+    market = make_market(session, question="Executable EV retry market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.1600",
+        depth_bid="900",
+        depth_ask="900",
+        captured_at=fired_at,
+        bids=[["0.37", "500"], ["0.36", "400"]],
+        asks=[["0.53", "500"], ["0.54", "400"]],
+    )
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=fired_at - timedelta(minutes=1))
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        estimated_probability=Decimal("0.5400"),
+        probability_adjustment=Decimal("0.0900"),
+        price_at_fire=Decimal("0.450000"),
+        expected_value=Decimal("0.090000"),
+        details={"direction": "up", "market_question": "Executable EV retry market", "outcome_name": "Yes"},
+    )
+    await session.flush()
+    session.add(
+        ExecutionDecision(
+            id=uuid.uuid4(),
+            signal_id=signal.id,
+            strategy_run_id=strategy_run.id,
+            decision_at=fired_at,
+            decision_status="pending_decision",
+            action="pending",
+            reason_code="execution_ev_below_threshold",
+            executable_entry_price=Decimal("0.53000000"),
+            net_ev_per_share=Decimal("0.01000000"),
+            details={
+                "reason_label": "Executable EV below threshold",
+                "detail": "Historical pending row awaiting retry",
+                "diagnostics": {"retry_attempt_count": 1},
+            },
+        )
+    )
+    await session.commit()
+
+    await _run_paper_trading(session, [])
+
+    decision = await session.scalar(select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id))
+    await session.refresh(signal)
+
+    assert decision is not None
+    assert decision.decision_status == "skipped"
+    assert decision.reason_code == "execution_ev_below_threshold"
+    assert decision.executable_entry_price == Decimal("0.53000000")
+    assert decision.net_ev_per_share == Decimal("0.01000000")
+    assert decision.details["detail"] == "Executable EV 0.010000 below threshold 0.03"
+    metadata = signal.details["default_strategy"]
+    assert metadata["attempt_kind"] == "retry"
+    assert metadata["decision"] == "skipped"
+    assert metadata["reason_code"] == "execution_ev_below_threshold"
+    assert metadata["diagnostics"]["executable_ev_per_share"] == "0.010000"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_records_skip_reason_for_in_window_non_trade(session):
     market = make_market(session, question="Skip reason market")
     outcome = make_outcome(session, market.id, name="Yes")

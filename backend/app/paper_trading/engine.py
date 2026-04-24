@@ -1165,7 +1165,8 @@ async def build_execution_decision(
         entry_price=executable_entry_price,
     )
     if executable_ev["ev_per_share"] < min_ev_threshold:
-        return await finish_retryable_pending(
+        return await finish(
+            decision="skipped",
             reason_code="execution_ev_below_threshold",
             detail=(
                 f"Executable EV {executable_ev['ev_per_share']} below threshold "

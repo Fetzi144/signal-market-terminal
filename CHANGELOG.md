@@ -14,6 +14,7 @@ All notable changes to Signal Market Terminal are documented here.
 - **Runtime submission gate** surfaces whether live order submission is blocked, simulated, operator-required, or permitted without changing existing autonomy tier fields.
 - **Scheduler-owned review artifact generation** can refresh stale or missing default-strategy evidence artifacts in production without mutating read-only API surfaces.
 - **Orderbook-context pending finalization** lets the scheduler turn unrecoverable stale/missing orderbook pending decisions into deterministic skips after a failed retry and a short event-time grace window.
+- **Executable-EV decision semantics** now records executable EV below threshold as a deterministic skip instead of a pending decision.
 
 ### Changed
 - Paper trading now measures the **default confluence strategy** instead of auto-trading every EV-qualified detector signal

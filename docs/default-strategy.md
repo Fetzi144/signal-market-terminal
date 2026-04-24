@@ -71,6 +71,8 @@ Retryable execution-context pending decisions are not immortal. The scheduler re
 
 Orderbook-context pending decisions have an additional event-time finalization path. After the first failed retry, if the signal is older than `shadow_execution_max_forward_seconds + paper_trading_orderbook_context_finalization_grace_seconds` and orderbook context is still unusable, the scheduler converts the row to `skipped` with `reason_code = "execution_orderbook_context_unavailable"`. This keeps late-arriving valid snapshots usable while preventing stale orderbook gaps from sitting pending for the full retry window.
 
+`execution_ev_below_threshold` is deterministic once usable event-time execution context exists. New executable-EV rejects are recorded as `skipped`, not `pending_decision`; historical pending rows with this reason are converted to skipped on their next scheduler retry.
+
 Backlog-repair rows are expired again at the end of the same scheduler pass, so historical qualified signals cannot be reintroduced as already-stale pending decisions until the next pass.
 
 The core invariant is:
