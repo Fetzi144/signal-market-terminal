@@ -162,9 +162,15 @@ That is intentional. Phase 13A is the read-only lifecycle and evidence-integrity
 
 ## Suggested Next Step
 
-The next best step after Phase 13A, Milestone 3 hard budgets, and the first Milestone 4 read-only control-plane slices is:
+The first follow-on Milestone 4 fail-closed enforcement slice has now landed:
 
-* continue Milestone 4 with automatic demotion and pause rules so the new autonomy state and deterministic promotion-eligibility verdicts can fail closed without introducing a rollout state machine yet
+* blocked `promotion_eligibility_gate` rows for non-shadow versions now record cooling-off `demotion_event` rows
+* live submission checks now fail closed for strategy versions with an active demotion event
+* the pilot supervisor now records demotions from blocked eligibility verdicts and pauses the active pilot with a durable control-plane incident
+
+The next best step after this is:
+
+* tighten demotion recovery semantics: explicit cooling-off expiry, required fresh evidence for re-promotion, and operator-visible re-promotion requirements before any tier can recover
 
 ## Validation Completed
 
@@ -174,3 +180,4 @@ Focused validation for this implementation slice covered:
 * backend replay and pilot-evidence tests for version-detail drilldown artifacts
 * backend control-plane and pilot-evidence tests for scorecard, incident, and guardrail gate-history recording plus lifecycle-aware API serialization
 * frontend tests for unified gate-history visibility in `Strategies`, alongside lifecycle-aware incident and guardrail visibility in `Pilot Console` and `Health`
+* backend promotion/control-plane tests for demotion-event dedupe, demoted live-submission blocks, and supervisor-triggered pilot pause behavior

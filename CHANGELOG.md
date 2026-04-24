@@ -9,6 +9,7 @@ All notable changes to Signal Market Terminal are documented here.
 - **Strategy health endpoint** consolidating paper-trading P&L, CLV, Brier score, benchmark comparison, detector verdicts, and recent mistakes
 - **Detector keep/watch/cut review loop** based on recent CLV, hypothetical P&L, calibration, and trade contribution
 - **Default strategy docs and review artifact** so weekly analysis has a stable contract and repeatable checklist
+- **Phase 13 fail-closed demotion enforcement** records cooling-off demotion events from blocked promotion-eligibility verdicts, blocks live submission for actively demoted versions, and pauses an armed pilot from the supervisor loop.
 
 ### Changed
 - Paper trading now measures the **default confluence strategy** instead of auto-trading every EV-qualified detector signal

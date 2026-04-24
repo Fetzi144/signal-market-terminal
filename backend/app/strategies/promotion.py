@@ -52,6 +52,7 @@ ELIGIBILITY_SOURCE_EVALUATION_KINDS = frozenset({
 })
 ALL_PROMOTION_EVALUATION_KINDS = PRIMARY_PROMOTION_EVALUATION_KINDS | SUPPORTING_PROMOTION_EVALUATION_KINDS
 PROMOTION_EVIDENCE_ROLLING_WINDOW = timedelta(hours=24)
+PROMOTION_DEMOTION_COOLING_OFF = timedelta(hours=24)
 AUTONOMY_TIER_ORDER = {
     AUTONOMY_TIER_SHADOW_ONLY: 0,
     AUTONOMY_TIER_ASSISTED_LIVE: 1,
@@ -441,6 +442,94 @@ def _evaluation_status_for_tier(tier: str) -> str:
     if normalized == AUTONOMY_TIER_ASSISTED_LIVE:
         return PROMOTION_EVALUATION_STATUS_OBSERVE
     return PROMOTION_EVALUATION_STATUS_BLOCKED
+
+
+def _demotion_reason_from_evaluation(row: PromotionEvaluation) -> str:
+    summary = row.summary_json if isinstance(row.summary_json, dict) else {}
+    decision = summary.get("decision") if isinstance(summary.get("decision"), dict) else {}
+    state_reason = str(decision.get("state_reason") or "").strip()
+    if state_reason:
+        return state_reason
+    blockers = summary.get("blockers")
+    if isinstance(blockers, list):
+        for blocker in blockers:
+            if isinstance(blocker, dict):
+                code = str(blocker.get("code") or "").strip()
+                if code:
+                    return code
+            elif str(blocker).strip():
+                return str(blocker).strip()
+    blocker_codes = summary.get("blocker_codes")
+    if isinstance(blocker_codes, list):
+        for code in blocker_codes:
+            if str(code).strip():
+                return str(code).strip()
+    return "promotion_gate_blocked"
+
+
+async def record_demotion_event_from_promotion_evaluation(
+    session: AsyncSession,
+    *,
+    evaluation: PromotionEvaluation | None,
+    trigger_kind: str | None = None,
+    trigger_ref: str | None = None,
+    observed_at: datetime | None = None,
+    cooling_off: timedelta = PROMOTION_DEMOTION_COOLING_OFF,
+) -> DemotionEvent | None:
+    if evaluation is None:
+        return None
+    if evaluation.evaluation_kind != PROMOTION_EVALUATION_KIND_PROMOTION_ELIGIBILITY:
+        return None
+    if evaluation.evaluation_status != PROMOTION_EVALUATION_STATUS_BLOCKED:
+        return None
+    if _normalize_tier(evaluation.autonomy_tier) != AUTONOMY_TIER_SHADOW_ONLY:
+        return None
+
+    version = await session.get(StrategyVersion, int(evaluation.strategy_version_id))
+    if version is not None and _normalize_tier(version.autonomy_tier) == AUTONOMY_TIER_SHADOW_ONLY:
+        return None
+
+    effective_observed = _ensure_utc(observed_at) or _ensure_utc(evaluation.evaluation_window_end) or datetime.now(timezone.utc)
+    reason_code = _demotion_reason_from_evaluation(evaluation)
+    recent = (
+        await session.execute(
+            select(DemotionEvent)
+            .where(
+                DemotionEvent.family_id == int(evaluation.family_id),
+                DemotionEvent.strategy_version_id == int(evaluation.strategy_version_id),
+                DemotionEvent.reason_code == reason_code,
+                DemotionEvent.cooling_off_ends_at >= effective_observed,
+            )
+            .order_by(DemotionEvent.observed_at_local.desc(), DemotionEvent.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if recent is not None:
+        return recent
+
+    summary = evaluation.summary_json if isinstance(evaluation.summary_json, dict) else {}
+    row = DemotionEvent(
+        family_id=int(evaluation.family_id),
+        strategy_version_id=int(evaluation.strategy_version_id),
+        prior_autonomy_tier=version.autonomy_tier if version is not None else None,
+        fallback_autonomy_tier=AUTONOMY_TIER_SHADOW_ONLY,
+        reason_code=reason_code,
+        cooling_off_ends_at=effective_observed + cooling_off,
+        details_json={
+            "source": "promotion_eligibility_engine",
+            "evaluation_id": evaluation.id,
+            "trigger_kind": trigger_kind,
+            "trigger_ref": trigger_ref,
+            "evaluation_status": evaluation.evaluation_status,
+            "evaluation_autonomy_tier": evaluation.autonomy_tier,
+            "decision": summary.get("decision") if isinstance(summary.get("decision"), dict) else {},
+            "blocker_codes": summary.get("blocker_codes") if isinstance(summary.get("blocker_codes"), list) else [],
+        },
+        observed_at_local=effective_observed,
+    )
+    session.add(row)
+    await session.flush()
+    return row
 
 
 async def record_promotion_eligibility_evaluation(
@@ -892,6 +981,7 @@ __all__ = [
     "PROMOTION_EVALUATION_KIND_PROMOTION_ELIGIBILITY",
     "PROMOTION_EVALUATION_KIND_REPLAY",
     "PROMOTION_EVALUATION_KIND_SCORECARD",
+    "PROMOTION_DEMOTION_COOLING_OFF",
     "PROMOTION_EVALUATION_STATUS_BLOCKED",
     "PROMOTION_EVALUATION_STATUS_CANDIDATE",
     "PROMOTION_EVALUATION_STATUS_OBSERVE",
@@ -909,6 +999,7 @@ __all__ = [
     "map_scorecard_status_to_promotion_verdict",
     "min_promotion_autonomy_tier",
     "normalize_promotion_evaluation_kinds",
+    "record_demotion_event_from_promotion_evaluation",
     "record_promotion_eligibility_evaluation",
     "rolling_promotion_window_bounds",
     "serialize_demotion_event",

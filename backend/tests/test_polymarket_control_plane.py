@@ -22,6 +22,7 @@ from app.execution.polymarket_control_plane import (
 from app.execution.polymarket_heartbeat import PolymarketHeartbeatService
 from app.execution.polymarket_live_state import set_kill_switch
 from app.execution.polymarket_order_manager import PolymarketOrderManager
+from app.execution.polymarket_pilot_supervisor import PolymarketPilotSupervisor
 from app.ingestion.polymarket_common import utcnow
 from app.models.polymarket_live_execution import LiveOrder
 from app.models.polymarket_pilot import (
@@ -36,6 +37,11 @@ from app.models.polymarket_replay import (
     PolymarketReplayOrder,
     PolymarketReplayRun,
     PolymarketReplayScenario,
+)
+from app.models.strategy_registry import DemotionEvent
+from app.strategies.promotion import (
+    record_demotion_event_from_promotion_evaluation,
+    record_promotion_eligibility_evaluation,
 )
 from tests.test_polymarket_oms import FakeGateway, _seed_execution_fixture
 
@@ -326,6 +332,74 @@ async def test_kill_switch_blocks_even_with_armed_pilot(session, monkeypatch):
 
     assert blocked["status"] == "submit_blocked"
     assert blocked["blocked_reason_code"] == "kill_switch_enabled"
+
+
+@pytest.mark.asyncio
+async def test_demotion_event_blocks_live_submission_even_with_armed_pilot(session, monkeypatch):
+    monkeypatch.setattr(settings, "polymarket_pilot_enabled", True)
+    monkeypatch.setattr(settings, "polymarket_live_trading_enabled", True)
+    monkeypatch.setattr(settings, "polymarket_live_dry_run", False)
+    monkeypatch.setattr(settings, "polymarket_live_manual_approval_required", False)
+    monkeypatch.setattr(settings, "polymarket_execution_policy_require_live_book", True)
+
+    seeded = await _seed_execution_fixture(session, condition_id="cond-phase13-demoted")
+    await _arm_exec_pilot(session, live_enabled=True, manual_approval_required=False)
+    manager = PolymarketOrderManager(gateway=FakeGateway())
+
+    intent = await manager.create_order_intent(session, execution_decision_id=seeded["decision"].id)
+    order = await session.get(LiveOrder, uuid.UUID(intent["id"]))
+    assert order is not None
+    assert order.strategy_version_id is not None
+
+    evaluation = await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(order.strategy_version_id),
+        trigger_kind="test",
+        trigger_ref=str(order.id),
+        observed_at=utcnow(),
+    )
+    demotion = await record_demotion_event_from_promotion_evaluation(
+        session,
+        evaluation=evaluation,
+        trigger_kind="test",
+        trigger_ref=str(order.id),
+        observed_at=utcnow(),
+    )
+    assert demotion is not None
+
+    blocked = await manager.submit_order(session, live_order_id=uuid.UUID(intent["id"]), operator="operator")
+
+    assert blocked["status"] == "submit_blocked"
+    assert blocked["blocked_reason_code"] == "strategy_demoted"
+
+
+@pytest.mark.asyncio
+async def test_supervisor_records_demotion_and_pauses_on_blocked_eligibility(session, engine, monkeypatch):
+    monkeypatch.setattr(settings, "polymarket_pilot_enabled", True)
+    monkeypatch.setattr(settings, "polymarket_live_trading_enabled", True)
+    monkeypatch.setattr(settings, "polymarket_live_dry_run", False)
+    monkeypatch.setattr(settings, "polymarket_live_manual_approval_required", False)
+    monkeypatch.setattr(settings, "polymarket_pilot_scorecard_enabled", False)
+    monkeypatch.setattr(settings, "polymarket_pilot_readiness_report_enabled", False)
+
+    armed = await _arm_exec_pilot(session, live_enabled=True, manual_approval_required=False)
+    run = await get_open_pilot_run(session, pilot_config_id=armed["pilot_config"]["id"])
+    assert run is not None and run.status == "armed"
+
+    supervisor = PolymarketPilotSupervisor(_session_factory(engine))
+    result = await supervisor.tick_once(session)
+
+    await session.refresh(run)
+    demotions = (await session.execute(select(DemotionEvent))).scalars().all()
+    incidents = await list_control_plane_incidents(session, limit=5)
+
+    assert result["demotions_recorded"] == 1
+    assert result["demotion_pauses"] == 1
+    assert run.status == "paused"
+    assert run.reason == "promotion_gate_demotion"
+    assert len(demotions) == 1
+    assert demotions[0].reason_code == "replay_missing"
+    assert incidents[0]["incident_type"] == "promotion_gate_demotion"
 
 
 @pytest.mark.asyncio

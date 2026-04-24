@@ -805,6 +805,23 @@ async def evaluate_live_submission(
         return "pilot_run_missing"
     if run.status == "paused":
         return "pilot_paused"
+    if order.strategy_version_id is not None:
+        autonomy_state = await build_active_autonomy_state(
+            session,
+            strategy_family=order.strategy_family or config.strategy_family,
+            strategy_version_id=int(order.strategy_version_id),
+            supported_strategy_family=SUPPORTED_PHASE12_FAMILY,
+            pilot_enabled=settings.polymarket_pilot_enabled,
+            live_trading_enabled=settings.polymarket_live_trading_enabled,
+            live_dry_run=settings.polymarket_live_dry_run,
+            kill_switch_enabled=effective_kill_switch_enabled(state),
+            manual_approval_required=order.manual_approval_required,
+            live_submission_permitted=True,
+            active_pilot=serialize_pilot_config(config),
+            active_run=serialize_pilot_run(run),
+        )
+        if autonomy_state.get("demotion_active"):
+            return "strategy_demoted"
     if order.pilot_config_id is not None and order.pilot_config_id != config.id:
         return "pilot_scope_mismatch"
     if order.manual_approval_required and order.approval_state != "approved":

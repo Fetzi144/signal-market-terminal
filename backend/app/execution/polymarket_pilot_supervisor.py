@@ -15,7 +15,10 @@ from app.execution.polymarket_control_plane import (
 from app.execution.polymarket_gateway import PolymarketGateway
 from app.execution.polymarket_heartbeat import PolymarketHeartbeatService
 from app.execution.polymarket_pilot_evidence import PolymarketPilotEvidenceService
-from app.strategies.promotion import record_promotion_eligibility_evaluation
+from app.strategies.promotion import (
+    record_demotion_event_from_promotion_evaluation,
+    record_promotion_eligibility_evaluation,
+)
 from app.strategies.registry import get_current_strategy_version
 
 
@@ -42,6 +45,8 @@ class PolymarketPilotSupervisor:
         generated = await self._evidence.maybe_generate_scheduled_artifacts(session)
         active_config = await get_active_pilot_config(session)
         active_run = await get_open_pilot_run(session, pilot_config_id=active_config.id) if active_config is not None else None
+        demotions_recorded = 0
+        demotion_pauses = 0
         if any(event.get("action_taken") == "pause_pilot" for event in guardrails):
             if active_run is not None and active_run.status != "paused":
                 await pause_active_pilot(
@@ -56,13 +61,39 @@ class PolymarketPilotSupervisor:
                 active_config.strategy_family,
                 sync_registry=False,
             )
+            if strategy_version is None:
+                strategy_version = await get_current_strategy_version(
+                    session,
+                    active_config.strategy_family,
+                    sync_registry=True,
+                )
             if strategy_version is not None and strategy_version.id is not None:
-                await record_promotion_eligibility_evaluation(
+                promotion_evaluation = await record_promotion_eligibility_evaluation(
                     session,
                     strategy_version_id=int(strategy_version.id),
                     trigger_kind="pilot_supervisor_tick",
                     trigger_ref=str(active_run.id) if active_run is not None else None,
                 )
+                demotion_event = await record_demotion_event_from_promotion_evaluation(
+                    session,
+                    evaluation=promotion_evaluation,
+                    trigger_kind="pilot_supervisor_tick",
+                    trigger_ref=str(active_run.id) if active_run is not None else None,
+                )
+                if demotion_event is not None:
+                    demotions_recorded = 1
+                    if active_run is not None and active_run.status != "paused":
+                        await pause_active_pilot(
+                            session,
+                            reason="promotion_gate_demotion",
+                            details={
+                                "demotion_event_id": demotion_event.id,
+                                "strategy_version_id": int(strategy_version.id),
+                                "reason_code": demotion_event.reason_code,
+                            },
+                            incident_type="promotion_gate_demotion",
+                        )
+                        demotion_pauses = 1
         return {
             "expired_approvals": expired,
             "shadow_evaluations": evaluations,
@@ -71,6 +102,8 @@ class PolymarketPilotSupervisor:
             "guardrail_count": len(guardrails),
             "scorecards_generated": len(generated.get("scorecards") or []),
             "readiness_reports_generated": len(generated.get("readiness_reports") or []),
+            "demotions_recorded": demotions_recorded,
+            "demotion_pauses": demotion_pauses,
         }
 
     async def run(self, stop_event: asyncio.Event) -> None:

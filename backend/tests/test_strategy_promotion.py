@@ -5,11 +5,12 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from app.models.strategy_registry import AUTONOMY_TIER_SHADOW_ONLY, PromotionEvaluation
+from app.models.strategy_registry import AUTONOMY_TIER_SHADOW_ONLY, DemotionEvent, PromotionEvaluation
 from app.strategies.promotion import (
     PROMOTION_EVALUATION_KIND_PROMOTION_ELIGIBILITY,
     PROMOTION_EVALUATION_KIND_REPLAY,
     PROMOTION_EVALUATION_STATUS_OBSERVE,
+    record_demotion_event_from_promotion_evaluation,
     record_promotion_eligibility_evaluation,
     upsert_promotion_evaluation,
 )
@@ -122,3 +123,47 @@ async def test_promotion_eligibility_gate_anchors_budget_snapshot_to_observed_at
     assert row is not None
     assert row.summary_json["inputs"]["budget"]["status"]["computed_at"] == observed_at.isoformat()
     assert row.evaluation_window_end == observed_at
+
+
+@pytest.mark.asyncio
+async def test_blocked_promotion_eligibility_records_cooling_off_demotion(session):
+    await sync_strategy_registry(session)
+    version = await get_current_strategy_version(session, "exec_policy")
+
+    assert version is not None
+
+    observed_at = datetime(2026, 4, 21, 9, 30, tzinfo=timezone.utc)
+    evaluation = await record_promotion_eligibility_evaluation(
+        session,
+        strategy_version_id=int(version.id),
+        trigger_kind="pilot_supervisor_tick",
+        trigger_ref="pilot-run-1",
+        observed_at=observed_at,
+    )
+    demotion = await record_demotion_event_from_promotion_evaluation(
+        session,
+        evaluation=evaluation,
+        trigger_kind="pilot_supervisor_tick",
+        trigger_ref="pilot-run-1",
+        observed_at=observed_at,
+    )
+    duplicate = await record_demotion_event_from_promotion_evaluation(
+        session,
+        evaluation=evaluation,
+        trigger_kind="pilot_supervisor_tick",
+        trigger_ref="pilot-run-1",
+        observed_at=observed_at + timedelta(minutes=5),
+    )
+
+    assert evaluation is not None
+    assert demotion is not None
+    assert duplicate is not None
+    assert duplicate.id == demotion.id
+    assert demotion.prior_autonomy_tier == "assisted_live"
+    assert demotion.fallback_autonomy_tier == AUTONOMY_TIER_SHADOW_ONLY
+    assert demotion.reason_code == "replay_missing"
+    assert demotion.cooling_off_ends_at == observed_at + timedelta(hours=24)
+    assert demotion.details_json["evaluation_id"] == evaluation.id
+
+    rows = (await session.execute(select(DemotionEvent))).scalars().all()
+    assert len(rows) == 1
