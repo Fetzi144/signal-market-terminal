@@ -141,6 +141,38 @@ async def test_start_scheduler_releases_ownership_on_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_start_scheduler_registers_review_generation_only_when_enabled(monkeypatch):
+    from app.jobs import scheduler as scheduler_module
+
+    fake_scheduler = _FakeScheduler()
+
+    async def acquire(_owner_token):
+        return True
+
+    async def heartbeat(_owner_token):
+        await asyncio.sleep(3600)
+
+    async def release(_owner_token):
+        return True
+
+    monkeypatch.setattr(scheduler_module, "scheduler", fake_scheduler)
+    monkeypatch.setattr(scheduler_module, "_build_scheduler_owner_token", lambda: "owner-fixed")
+    monkeypatch.setattr(scheduler_module, "_acquire_scheduler_ownership", acquire)
+    monkeypatch.setattr(scheduler_module, "_release_scheduler_ownership", release)
+    monkeypatch.setattr(scheduler_module, "_scheduler_lease_heartbeat", heartbeat)
+    monkeypatch.setattr(scheduler_module, "_scheduler_owner_token", None)
+    monkeypatch.setattr(scheduler_module, "_scheduler_lease_task", None)
+    monkeypatch.setattr(scheduler_module.settings, "default_strategy_review_auto_generate_enabled", True)
+
+    assert await scheduler_module.start_scheduler() is True
+
+    job_ids = {job["id"] for job in fake_scheduler.get_jobs()}
+    assert "default_strategy_review_generation" in job_ids
+
+    await scheduler_module.stop_scheduler()
+
+
+@pytest.mark.asyncio
 async def test_scheduler_supervisor_retries_until_lease_is_available(monkeypatch):
     from app import worker as worker_module
 

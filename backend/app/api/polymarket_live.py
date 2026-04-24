@@ -93,6 +93,7 @@ class PolymarketLiveStatusOut(BaseModel):
     recent_fills_24h: int
     active_family_budget: dict[str, Any] | None = None
     active_autonomy_state: dict[str, Any] | None = None
+    live_submission_gate: dict[str, Any] | None = None
     live_submission_permitted: bool
 
 

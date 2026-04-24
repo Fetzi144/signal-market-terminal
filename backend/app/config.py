@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     # Kalshi
     kalshi_api_base: str = "https://api.elections.kalshi.com/trade-api/v2"
     kalshi_enabled: bool = True
+    kalshi_resolution_backfill_enabled: bool = True
 
     # Connector
     connector_timeout_seconds: float = 30.0
@@ -260,6 +261,8 @@ class Settings(BaseSettings):
     default_strategy_preferred_observation_days: int = 30
     strategy_review_lookback_days: int = 30
     strategy_review_recent_mistakes_limit: int = 5
+    default_strategy_review_auto_generate_enabled: bool = False
+    default_strategy_review_auto_generate_interval_seconds: int = 900
     legacy_benchmark_rank_threshold: float = 0.55
 
     # Evaluation
@@ -394,6 +397,7 @@ class Settings(BaseSettings):
         "default_strategy_preferred_observation_days",
         "strategy_review_lookback_days",
         "strategy_review_recent_mistakes_limit",
+        "default_strategy_review_auto_generate_interval_seconds",
         "polymarket_malformed_burst_threshold",
         "polymarket_snapshot_max_watched_assets",
         "polymarket_book_recon_max_watched_assets",

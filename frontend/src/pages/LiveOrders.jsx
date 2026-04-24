@@ -121,9 +121,9 @@ export default function LiveOrders() {
               <button
                 onClick={() => runAction(`submit-${order.id}`, () => submitPolymarketLiveOrder(order.id, { operator: "operator" }))}
                 style={secondaryButtonStyle}
-                disabled={busyAction === `submit-${order.id}`}
+                disabled={busyAction === `submit-${order.id}` || !canSubmitOrder(order)}
               >
-                Submit
+                {submitActionLabel(order)}
               </button>
               <button
                 onClick={() => runAction(`cancel-${order.id}`, () => cancelPolymarketLiveOrder(order.id, { operator: "operator" }))}
@@ -214,6 +214,18 @@ function formatShortDateTime(value) {
 function formatNumber(value) {
   if (value == null || Number.isNaN(Number(value))) return "-";
   return Number(value).toFixed(2);
+}
+
+function canSubmitOrder(order) {
+  return order.status === "submission_pending" && order.approval_state === "approved";
+}
+
+function submitActionLabel(order) {
+  if (canSubmitOrder(order)) return "Submit";
+  if (order.approval_state === "queued" || order.status === "approval_pending") return "Approve First";
+  if (order.status === "submit_blocked") return "Blocked";
+  if (order.status === "submitted" || order.status === "live") return "Submitted";
+  return "Unavailable";
 }
 
 const pageStyle = { display: "flex", flexDirection: "column", gap: 20 };

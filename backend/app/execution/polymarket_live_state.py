@@ -708,5 +708,6 @@ async def fetch_polymarket_live_status(session: AsyncSession) -> dict[str, Any]:
         "recent_fills_24h": recent_fills_24h,
         "active_family_budget": active_family_budget,
         "active_autonomy_state": active_autonomy_state,
+        "live_submission_gate": active_autonomy_state.get("submission_gate"),
         "live_submission_permitted": live_submission_permitted,
     }

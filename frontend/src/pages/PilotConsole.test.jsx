@@ -75,8 +75,20 @@ const summaryPayload = {
       submission_mode: "manual_approval",
       state_reason: "manual_approval_required",
       blocked_reasons: ["manual_approval_required"],
+      submission_gate: {
+        state: "operator_required",
+        reason_codes: ["manual_approval_required"],
+        operator_required: true,
+        live_order_submit_permitted: false,
+      },
       gate_kind: "promotion_eligibility_gate",
     },
+  },
+  live_submission_gate: {
+    state: "operator_required",
+    reason_codes: ["manual_approval_required"],
+    operator_required: true,
+    live_order_submit_permitted: false,
   },
   active_autonomy_state: {
     recommended_autonomy_tier: "assisted_live",
@@ -84,6 +96,12 @@ const summaryPayload = {
     submission_mode: "manual_approval",
     state_reason: "manual_approval_required",
     blocked_reasons: ["manual_approval_required"],
+    submission_gate: {
+      state: "operator_required",
+      reason_codes: ["manual_approval_required"],
+      operator_required: true,
+      live_order_submit_permitted: false,
+    },
     gate_kind: "promotion_eligibility_gate",
   },
   active_family_budget: {
@@ -292,7 +310,9 @@ describe("PilotConsole", () => {
     expect(screen.getByText("Recent Incidents")).toBeInTheDocument();
     expect(screen.getByText("phase12-exec (exec_policy)")).toBeInTheDocument();
     expect(screen.getByText("Autonomy State")).toBeInTheDocument();
+    expect(screen.getByText("Submission Gate")).toBeInTheDocument();
     expect(screen.getByText("Assisted Live")).toBeInTheDocument();
+    expect(screen.getAllByText("Operator Required / Manual Approval Required").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Execution Policy Infra v1").length).toBeGreaterThan(0);
     expect(screen.getByText("Eligible")).toBeInTheDocument();
     expect(screen.queryByText(/^observe$/i)).not.toBeInTheDocument();
@@ -302,7 +322,7 @@ describe("PilotConsole", () => {
     expect(screen.getByText("thin_liquidity")).toBeInTheDocument();
     expect(screen.getByText("constrained")).toBeInTheDocument();
     expect(screen.getByText("capacity_ceiling_exceeded")).toBeInTheDocument();
-    expect(screen.getByText(/Recommended tier: Assisted Live \| Autonomy reason: Manual Approval Required \| Blockers: Manual Approval Required/)).toBeInTheDocument();
+    expect(screen.getByText(/Recommended tier: Assisted Live \| Submission gate: Operator Required \/ Manual Approval Required \| Autonomy reason: Manual Approval Required \| Blockers: Manual Approval Required/)).toBeInTheDocument();
     expect(screen.getByText(/Autonomy reason:/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Arm" }));

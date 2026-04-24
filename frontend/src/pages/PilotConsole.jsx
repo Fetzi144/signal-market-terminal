@@ -96,6 +96,7 @@ export default function PilotConsole() {
   const latestGate = evidence?.latest_promotion_evaluation || summary?.pilot?.latest_promotion_evaluation || latestReadiness?.latest_promotion_evaluation || null;
   const activeFamilyBudget = summary?.active_family_budget || summary?.pilot?.active_family_budget || null;
   const activeAutonomyState = summary?.active_autonomy_state || summary?.pilot?.active_autonomy_state || null;
+  const submissionGate = summary?.live_submission_gate || activeAutonomyState?.submission_gate || null;
 
   return (
     <div style={pageStyle}>
@@ -180,6 +181,7 @@ export default function PilotConsole() {
           <StatCard label="Autonomy State" value={formatAutonomyState(activeAutonomyState)} />
           <StatCard label="Gate Verdict" value={formatEligibilityVerdict(latestGate)} />
           <StatCard label="Submission Mode" value={titleCase(activeAutonomyState?.submission_mode)} />
+          <StatCard label="Submission Gate" value={formatSubmissionGate(submissionGate)} />
           <StatCard label="Manual Approval" value={summary?.pilot?.manual_approval_required ? "On" : "Off"} />
           <StatCard label="Approval Queue" value={summary?.pilot?.approval_queue_count ?? 0} />
           <StatCard label="Expired (24h)" value={evidence?.approval_expired_count_24h ?? 0} />
@@ -205,7 +207,7 @@ export default function PilotConsole() {
         </div>
         {activeAutonomyState ? (
           <div style={metaStyle}>
-            Recommended tier: {titleCase(activeAutonomyState.recommended_autonomy_tier)} | Autonomy reason: {formatAutonomyReason(activeAutonomyState)} | Blockers: {(activeAutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
+            Recommended tier: {titleCase(activeAutonomyState.recommended_autonomy_tier)} | Submission gate: {formatSubmissionGate(submissionGate)} | Autonomy reason: {formatAutonomyReason(activeAutonomyState)} | Blockers: {(activeAutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
           </div>
         ) : null}
       </section>
@@ -461,6 +463,14 @@ function formatAutonomyState(state) {
 function formatAutonomyReason(state) {
   if (!state) return "-";
   return titleCase(state.state_reason || state.blocked_reasons?.[0] || state.submission_mode);
+}
+
+function formatSubmissionGate(gate) {
+  if (!gate) return "-";
+  const state = titleCase(gate.state);
+  if (gate.live_order_submit_permitted) return `${state} / Submit Permitted`;
+  const reason = (gate.reason_codes || [])[0];
+  return reason ? `${state} / ${titleCase(reason)}` : state;
 }
 
 function formatEligibilityVerdict(gate) {

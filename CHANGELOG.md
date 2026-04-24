@@ -11,12 +11,15 @@ All notable changes to Signal Market Terminal are documented here.
 - **Default strategy docs and review artifact** so weekly analysis has a stable contract and repeatable checklist
 - **Phase 13 fail-closed demotion enforcement** records cooling-off demotion events from blocked promotion-eligibility verdicts, blocks live submission for actively demoted versions, and pauses an armed pilot from the supervisor loop.
 - **Production evidence loop reporting** adds live-automation safety and resolution-reconciliation sections to default-strategy review artifacts and strategy-health output.
+- **Runtime submission gate** surfaces whether live order submission is blocked, simulated, operator-required, or permitted without changing existing autonomy tier fields.
+- **Scheduler-owned review artifact generation** can refresh stale or missing default-strategy evidence artifacts in production without mutating read-only API surfaces.
 
 ### Changed
 - Paper trading now measures the **default confluence strategy** instead of auto-trading every EV-qualified detector signal
 - The `/paper-trading` page is now the primary **strategy health** console for the current phase
 - Local dev defaults now support both `localhost` and `127.0.0.1` frontend origins more reliably
 - `/api/v1/signals` now accepts `limit` as a backward-compatible alias for `page_size`, and the signal feed has a composite rank/time index for production-sized reads.
+- Default-strategy replay coverage is now scoped to the frozen default-strategy detector family while preserving global unsupported-detector visibility.
 
 ### Fixed
 - Backend/frontend dev defaults are aligned across API base and CORS settings
@@ -25,6 +28,8 @@ All notable changes to Signal Market Terminal are documented here.
 - Default-strategy scoped portfolio/history/metrics/curve reads and `strategy-health` now avoid loading the full live signal universe into memory on every request
 - `scripts/smt-monitor.cron` is normalized for LF-only installs so cron can pick it up reliably on Linux hosts
 - Paper-trade resolution failures are now logged with platform, market, outcome, and settlement direction instead of being silently skipped.
+- Kalshi paper-trade resolution can now settle overdue open trades even when broad Kalshi discovery is disabled, including single-outcome and token-suffixed flat settlement payloads.
+- Backlog-repaired pending decisions that are already past the retry window now expire in the same scheduler pass instead of waiting for the next run.
 
 ## [0.4.1] - 2026-04-15
 

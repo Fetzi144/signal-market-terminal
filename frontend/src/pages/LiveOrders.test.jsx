@@ -23,8 +23,8 @@ beforeEach(() => {
       {
         id: "order-1",
         client_order_id: "client-1",
-        status: "approval_pending",
-        approval_state: "queued",
+        status: "submission_pending",
+        approval_state: "approved",
         blocked_reason_code: null,
         validation_error: null,
         created_at: "2026-04-15T10:00:00Z",

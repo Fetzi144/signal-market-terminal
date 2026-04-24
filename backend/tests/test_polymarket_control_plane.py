@@ -489,11 +489,16 @@ async def test_control_plane_apis_and_health_include_phase12_state(client, engin
     assert status_response.json()["active_family_budget"]["capacity_status"] in {"ok", "narrowed", "constrained", "breached"}
     assert status_response.json()["active_autonomy_state"]["effective_autonomy_tier"] == "assisted_live"
     assert status_response.json()["active_autonomy_state"]["submission_mode"] == "manual_approval"
+    assert status_response.json()["active_autonomy_state"]["blocked_reasons"] == ["manual_approval_required"]
+    assert status_response.json()["active_autonomy_state"]["submission_gate"]["state"] == "operator_required"
+    assert status_response.json()["live_submission_gate"]["live_order_submit_permitted"] is False
     assert live_status_response.json()["active_autonomy_state"]["effective_autonomy_tier"] == "assisted_live"
+    assert live_status_response.json()["live_submission_gate"]["state"] == "operator_required"
     assert console_response.json()["approvals"]
     assert console_response.json()["pilot"]["active_strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert console_response.json()["active_family_budget"]["strategy_family"] == "exec_policy"
     assert console_response.json()["active_autonomy_state"]["submission_mode"] == "manual_approval"
+    assert console_response.json()["live_submission_gate"]["state"] == "operator_required"
     assert console_response.json()["recent_orders"][0]["strategy_version"]["version_key"] == "exec_policy_infra_v1"
     assert approvals_response.json()["rows"][0]["approval_state"] == "queued"
     assert orders_response.json()["rows"][0]["approval_state"] == "queued"

@@ -265,6 +265,7 @@ export default function Health() {
   const replayStatus = health?.polymarket_phase11 || null;
   const phase12Status = health?.polymarket_phase12 || null;
   const phase12AutonomyState = phase12Status?.autonomy_state || null;
+  const phase12SubmissionGate = phase12Status?.live_submission_gate || phase12AutonomyState?.submission_gate || null;
   const phase12RecentIncidents = phase12Status?.recent_incidents || [];
   const phase12RecentGuardrails = phase12Status?.recent_guardrail_triggers || [];
   const structureStatus = health?.polymarket_phase8a || streamStatus?.structure_engine || null;
@@ -1101,6 +1102,7 @@ export default function Health() {
             <StatCard label="Autonomy State" value={formatAutonomyState(phase12AutonomyState)} />
             <StatCard label="Gate Verdict" value={formatLifecycleGate(phase12Status)} />
             <StatCard label="Submission Mode" value={titleCase(phase12AutonomyState?.submission_mode)} />
+            <StatCard label="Submission Gate" value={formatSubmissionGate(phase12SubmissionGate)} />
             <StatCard label="Approval Queue" value={phase12Status?.approval_queue_count ?? 0} />
             <StatCard label="Heartbeat" value={phase12Status?.heartbeat_status || "-"} />
             <StatCard label="User Stream" value={phase12Status?.user_stream_connected ? "Connected" : "Disconnected"} />
@@ -1116,7 +1118,7 @@ export default function Health() {
           </div>
           {phase12AutonomyState ? (
             <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 12 }}>
-              Recommended tier {titleCase(phase12AutonomyState.recommended_autonomy_tier)} | Autonomy reason {formatAutonomyReason(phase12AutonomyState)} | Blockers {(phase12AutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
+              Recommended tier {titleCase(phase12AutonomyState.recommended_autonomy_tier)} | Submission gate {formatSubmissionGate(phase12SubmissionGate)} | Autonomy reason {formatAutonomyReason(phase12AutonomyState)} | Blockers {(phase12AutonomyState.blocked_reasons || []).map(titleCase).join(", ") || "None"}
             </div>
           ) : null}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
@@ -1580,6 +1582,14 @@ function formatAutonomyState(state) {
 function formatAutonomyReason(state) {
   if (!state) return "-";
   return titleCase(state.state_reason || state.blocked_reasons?.[0] || state.submission_mode);
+}
+
+function formatSubmissionGate(gate) {
+  if (!gate) return "-";
+  const state = titleCase(gate.state);
+  if (gate.live_order_submit_permitted) return `${state} / Submit Permitted`;
+  const reason = (gate.reason_codes || [])[0];
+  return reason ? `${state} / ${titleCase(reason)}` : state;
 }
 
 function formatEligibilityVerdict(gate) {

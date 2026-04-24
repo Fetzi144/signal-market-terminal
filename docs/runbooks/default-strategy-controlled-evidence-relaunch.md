@@ -69,10 +69,10 @@ If any check fails, stop and fix it before treating the run as evidence.
 
 ## Pending Decision Watch
 
-Daily pending-watch check:
+Daily pending-watch check. Use the configured retry window unless an incident review explicitly chooses a longer diagnostic threshold; the default `paper_trading_pending_decision_max_age_seconds` is 900 seconds.
 
 ```bash
-python -m app.ops.default_strategy_evidence pending-watch --stale-after-seconds 21600
+python -m app.ops.default_strategy_evidence pending-watch --stale-after-seconds 900
 ```
 
 Also review `pending_decision_watch` from `GET /api/v1/paper-trading/strategy-health`.

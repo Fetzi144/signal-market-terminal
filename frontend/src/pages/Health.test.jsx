@@ -274,7 +274,19 @@ const healthPayload = {
       submission_mode: "shadow_only",
       state_reason: "manual_approval_required",
       blocked_reasons: ["manual_approval_required"],
+      submission_gate: {
+        state: "blocked",
+        reason_codes: ["manual_approval_required"],
+        operator_required: true,
+        live_order_submit_permitted: false,
+      },
       gate_kind: "pilot_readiness_gate",
+    },
+    live_submission_gate: {
+      state: "blocked",
+      reason_codes: ["manual_approval_required"],
+      operator_required: true,
+      live_order_submit_permitted: false,
     },
     manual_approval_required: true,
     approval_queue_count: 2,
@@ -919,6 +931,8 @@ describe("Health", () => {
     expect(screen.getByText("Shadow Evaluation")).toBeInTheDocument();
     expect(screen.getByText("Lifecycle Version")).toBeInTheDocument();
     expect(screen.getAllByText("Autonomy State").length).toBeGreaterThan(0);
+    expect(screen.getByText("Submission Gate")).toBeInTheDocument();
+    expect(screen.getAllByText("Blocked / Manual Approval Required").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Shadow Only").length).toBeGreaterThan(0);
     expect(screen.getByText("Gate Verdict")).toBeInTheDocument();
     expect(screen.getAllByText("Gate / Autonomy").length).toBeGreaterThan(0);

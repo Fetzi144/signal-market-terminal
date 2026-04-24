@@ -10,7 +10,13 @@ from sqlalchemy import select
 import app.jobs.scheduler as scheduler_module
 import app.paper_trading.analysis as analysis_module
 from app.config import settings
-from app.jobs.scheduler import _fetch_overdue_open_trade_resolutions, _resolve_paper_trades, _run_paper_trading
+from app.jobs.scheduler import (
+    _fetch_overdue_open_trade_resolutions,
+    _get_resolution_platforms,
+    _resolve_paper_trades,
+    _run_paper_trading,
+    _should_generate_default_strategy_review,
+)
 from app.metrics import default_strategy_scheduler_no_active_run
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
@@ -564,6 +570,141 @@ async def test_scheduler_fetches_targeted_overdue_kalshi_resolutions(session):
 
 
 @pytest.mark.asyncio
+async def test_resolution_platforms_include_overdue_kalshi_backfill_when_connector_disabled(session, monkeypatch):
+    monkeypatch.setattr(settings, "kalshi_enabled", False)
+    monkeypatch.setattr(settings, "kalshi_resolution_backfill_enabled", True)
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXDISABLED-BACKFILL",
+        question="Disabled connector backfill market",
+        end_date=now - timedelta(hours=2),
+        active=True,
+    )
+    outcome = make_outcome(session, market.id, name="Yes", platform_outcome_id="KXDISABLED-BACKFILL_yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Disabled connector backfill market", "outcome_name": "Yes"},
+    )
+    _make_paper_trade(session, signal.id, outcome.id, market.id)
+    await session.commit()
+
+    platforms = await _get_resolution_platforms(session)
+
+    assert platforms == ["polymarket", "kalshi"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_resolves_kalshi_no_result_for_single_yes_outcome(session):
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXSINGLE-YES",
+        question="Single yes outcome market",
+    )
+    outcome = make_outcome(session, market.id, name="Yes", platform_outcome_id="KXSINGLE-YES_yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Single yes outcome market", "outcome_name": "Yes"},
+    )
+    trade = _make_paper_trade(session, signal.id, outcome.id, market.id)
+    await session.commit()
+
+    await _resolve_paper_trades(
+        session,
+        [{"platform_id": "KXSINGLE-YES", "winning_outcome": "no"}],
+        platform="kalshi",
+    )
+    await session.refresh(trade)
+
+    assert trade.status == "resolved"
+    assert trade.exit_price == Decimal("0.000000")
+    assert trade.pnl == Decimal("-500.00")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_resolves_kalshi_flat_payload_using_token_id_side(session):
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXTOKEN-SIDE",
+        question="Token side market",
+    )
+    outcome = make_outcome(
+        session,
+        market.id,
+        name="Arizona",
+        platform_outcome_id="opaque-local-outcome",
+        token_id="KXTOKEN-SIDE:yes",
+    )
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        details={"direction": "up", "market_question": "Token side market", "outcome_name": "Arizona"},
+    )
+    trade = _make_paper_trade(session, signal.id, outcome.id, market.id)
+    await session.commit()
+
+    await _resolve_paper_trades(
+        session,
+        [{"platform_id": "KXTOKEN-SIDE", "winning_outcome": "yes"}],
+        platform="kalshi",
+    )
+    await session.refresh(trade)
+
+    assert trade.status == "resolved"
+    assert trade.exit_price == Decimal("1.000000")
+
+
+def test_default_strategy_review_generation_decision_is_not_triggered_by_pending_staleness_only():
+    health = {
+        "run_state": "active_run",
+        "latest_review_artifact": {"generation_status": "complete"},
+        "evidence_freshness": {
+            "status": "stale",
+            "review_outdated": False,
+            "pending_decisions_stale": True,
+            "artifact_identity_status": "match",
+        },
+    }
+
+    assert _should_generate_default_strategy_review(health) is False
+
+
+@pytest.mark.parametrize(
+    "health",
+    [
+        {
+            "run_state": "active_run",
+            "latest_review_artifact": {"generation_status": "missing"},
+            "evidence_freshness": {"review_outdated": False, "artifact_identity_status": "missing"},
+        },
+        {
+            "run_state": "active_run",
+            "latest_review_artifact": {"generation_status": "complete"},
+            "evidence_freshness": {"review_outdated": True, "artifact_identity_status": "match"},
+        },
+        {
+            "run_state": "active_run",
+            "latest_review_artifact": {"generation_status": "complete"},
+            "evidence_freshness": {"review_outdated": False, "artifact_identity_status": "mismatch"},
+        },
+    ],
+)
+def test_default_strategy_review_generation_decision_triggers_only_for_artifact_gaps(health):
+    assert _should_generate_default_strategy_review(health) is True
+
+
+@pytest.mark.asyncio
 async def test_strategy_health_overdue_backlog_clears_after_resolution_pass(client, session):
     now = datetime.now(timezone.utc)
     strategy_run = await open_default_strategy_run(session, launch_boundary_at=now - timedelta(days=1))
@@ -872,6 +1013,41 @@ async def test_scheduler_expires_stale_pending_execution_decisions_before_retry(
     assert retry_metadata["attempt_kind"] == "retry"
     assert retry_metadata["decision"] == "pending_decision"
     assert retry_metadata["reason_code"] == "execution_missing_orderbook_context"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_expires_newly_repaired_stale_pending_decisions_in_same_pass(session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    market = make_market(session, question="Repair expiry market")
+    outcome = make_outcome(session, market.id, name="Yes")
+    await open_default_strategy_run(session, launch_boundary_at=now - timedelta(hours=1))
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(minutes=30),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Repair expiry market", "outcome_name": "Yes"},
+    )
+    await session.commit()
+    monkeypatch.setattr(settings, "paper_trading_pending_decision_max_age_seconds", 300)
+
+    await _run_paper_trading(session, [])
+
+    decision = await session.scalar(select(ExecutionDecision).where(ExecutionDecision.signal_id == signal.id))
+    await session.refresh(signal)
+
+    assert decision is not None
+    assert decision.decision_status == "skipped"
+    assert decision.reason_code == "pending_decision_expired"
+    assert decision.details["expired_pending_reason_code"] == "execution_missing_orderbook_context"
+    metadata = signal.details["default_strategy"]
+    assert metadata["attempt_kind"] == "pending_expiry"
+    assert metadata["reason_code"] == "pending_decision_expired"
 
 
 @pytest.mark.asyncio

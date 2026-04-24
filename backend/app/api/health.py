@@ -313,6 +313,7 @@ class PolymarketPhase12Status(BaseModel):
     strategy_version: dict[str, Any] | None = None
     latest_promotion_evaluation: dict[str, Any] | None = None
     autonomy_state: dict[str, Any] | None = None
+    live_submission_gate: dict[str, Any] | None = None
     manual_approval_required: bool
     approval_queue_count: int
     heartbeat_status: str
@@ -1121,6 +1122,7 @@ async def health(db: AsyncSession = Depends(get_db)):
                 polymarket_phase12_pilot["latest_promotion_evaluation"] or polymarket_phase12_evidence["latest_promotion_evaluation"]
             ),
             autonomy_state=polymarket_phase12_pilot.get("active_autonomy_state"),
+            live_submission_gate=polymarket_phase12_pilot.get("live_submission_gate"),
             manual_approval_required=polymarket_phase12_pilot["manual_approval_required"],
             approval_queue_count=polymarket_phase12_pilot["approval_queue_count"],
             heartbeat_status=polymarket_phase12_pilot["heartbeat_status"],

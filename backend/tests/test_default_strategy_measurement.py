@@ -950,6 +950,9 @@ async def test_strategy_health_surfaces_pending_decision_age_watch(client, sessi
     assert pending_watch["count"] == 1
     assert pending_watch["oldest_decision_at"] is not None
     assert pending_watch["max_age_seconds"] >= 7200
+    assert pending_watch["stale_count"] == 1
+    assert pending_watch["retry_window_seconds"] == float(analysis_module.settings.paper_trading_pending_decision_max_age_seconds)
+    assert pending_watch["reason_counts"] == {"pending_decision": 1}
     assert pending_watch["examples"][0]["signal_id"] == str(signal.id)
 
 
@@ -1015,7 +1018,11 @@ async def test_strategy_health_review_verdict_surfaces_evidence_gate_blockers(cl
     assert response.status_code == 200
     data = response.json()
 
-    assert data["replay"]["coverage_mode"] == "partial_supported_detectors"
+    assert data["replay"]["coverage_scope"] == "default_strategy_review"
+    assert data["replay"]["coverage_mode"] == "supported_detectors_only"
+    assert data["replay"]["global_coverage_mode"] == "partial_supported_detectors"
+    assert data["replay"]["unsupported_detectors"] == []
+    assert data["replay"]["global_unsupported_detectors"] == ["price_move"]
     assert data["trade_funnel"]["conservation_holds"] is False
     assert data["trade_funnel"]["integrity_errors"] == [
         {
@@ -1028,7 +1035,6 @@ async def test_strategy_health_review_verdict_surfaces_evidence_gate_blockers(cl
         "stale_pending_decisions",
         "funnel_conservation_failure",
         "integrity_errors",
-        "replay_coverage_limited",
     ]
     assert data["review_verdict"]["verdict"] == "not_ready"
     assert data["review_verdict"]["reason_code"] == "blocked"

@@ -444,9 +444,9 @@ export default function Strategies() {
                 hint={currentVersion?.strategy_name || "Registry snapshot"}
               />
               <MetricCard
-                label="Autonomy State"
+                label="Registry Tier"
                 value={autonomyStateLabel(currentVersion?.autonomy_state, currentVersion?.autonomy_tier)}
-                hint={autonomyStateHint(currentVersion?.autonomy_state)}
+                hint={autonomyStateHint(currentVersion?.autonomy_state) || "Lifecycle tier only; runtime submission gate lives in Pilot Console"}
               />
               <MetricCard
                 label="Evidence Links"
@@ -487,7 +487,7 @@ export default function Strategies() {
                     hint={evaluationSourceHint(latestEvaluation)}
                   />
                   <MetricCard
-                    label="Recommended Autonomy"
+                    label="Recommended Registry Tier"
                     value={titleCase(currentVersion?.autonomy_state?.recommended_autonomy_tier || latestEvaluation?.summary_json?.decision?.recommended_tier || latestEvaluation.autonomy_tier)}
                     hint={autonomyStateHint(currentVersion?.autonomy_state) || evaluationStateHint(latestEvaluation)}
                   />

@@ -204,12 +204,14 @@ def _gate_blockers(evaluation: dict[str, Any] | None) -> list[str]:
     return []
 
 
-def _dedupe(values: list[str]) -> list[str]:
+def _dedupe(values: list[Any]) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
     for value in values:
+        if value is None:
+            continue
         normalized = str(value).strip()
-        if not normalized or normalized in seen:
+        if not normalized or normalized.lower() == "none" or normalized in seen:
             continue
         seen.add(normalized)
         deduped.append(normalized)
@@ -420,6 +422,22 @@ def summarize_autonomy_state(
         "manual_approval",
     }:
         submission_mode = "demoted_fallback"
+    live_blocked = bool(live_blockers) or live_submission_permitted is False
+    rollout_ready = live_submission_permitted is True and not live_blocked
+    non_operator_blockers = [reason for reason in blocked_reasons if reason != "manual_approval_required"]
+    live_order_submit_permitted = (
+        live_submission_permitted is True
+        and not bool(manual_approval_required)
+        and not non_operator_blockers
+    )
+    if live_order_submit_permitted:
+        submission_gate_state = "permitted"
+    elif manual_approval_required and not non_operator_blockers:
+        submission_gate_state = "operator_required"
+    elif non_operator_blockers == ["dry_run"]:
+        submission_gate_state = "simulated"
+    else:
+        submission_gate_state = "blocked"
     return {
         "strategy_family": strategy_family,
         "family_source": family_source,
@@ -449,6 +467,19 @@ def summarize_autonomy_state(
         "submission_mode": submission_mode,
         "operator_required": bool(manual_approval_required),
         "live_submission_permitted": live_submission_permitted,
+        "live_blocked": live_blocked,
+        "rollout_ready": rollout_ready,
+        "submission_gate": {
+            "state": submission_gate_state,
+            "reason_codes": blocked_reasons,
+            "operator_required": bool(manual_approval_required),
+            "live_order_submit_permitted": live_order_submit_permitted,
+        },
+        "rollout_summary": (
+            "Live submission is permitted for the active autonomy state."
+            if rollout_ready
+            else "Live submission is blocked; configured autonomy tier is informational until blockers clear."
+        ),
         "pilot_run_status": active_run.get("status") if isinstance(active_run, dict) else None,
         "gate_status": latest_promotion_evaluation.get("evaluation_status") if isinstance(latest_promotion_evaluation, dict) else None,
         "gate_kind": latest_promotion_evaluation.get("evaluation_kind") if isinstance(latest_promotion_evaluation, dict) else None,

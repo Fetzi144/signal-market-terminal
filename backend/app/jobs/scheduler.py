@@ -378,6 +378,13 @@ async def _run_paper_trading(session, signals):
             reason_code = strategy_details.get("reason_code") or "unknown"
             skip_counts[reason_code] = skip_counts.get(reason_code, 0) + 1
 
+    post_attempt_expired_pending_decisions = await expire_stale_pending_execution_decisions(
+        session,
+        strategy_run,
+        limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
+    )
+    expired_pending_decisions += post_attempt_expired_pending_decisions
+
     if candidate_count > 0 or state_rehydrated or backfilled_signal_ids or expired_pending_decisions:
         await session.commit()
         if state_rehydrated:
@@ -531,14 +538,14 @@ def _build_alerters():
 async def _run_resolution():
     from datetime import datetime, timezone
 
-    from app.connectors import get_connector, get_enabled_platforms
+    from app.connectors import get_connector
     from app.ingestion.resolution import resolve_signals
     from app.models.ingestion import IngestionRun
 
     logger.info("Job: resolution starting")
     async with async_session() as session:
         total = 0
-        for platform in get_enabled_platforms():
+        for platform in await _get_resolution_platforms(session):
             run = IngestionRun(
                 run_type="resolution",
                 platform=platform,
@@ -604,6 +611,44 @@ async def _run_resolution():
         logger.info("Job: resolution done, %d signals resolved", total)
 
 
+async def _has_overdue_open_trade_markets(session, *, platform: str) -> bool:
+    from app.models.market import Market
+    from app.models.paper_trade import PaperTrade
+
+    now = datetime.now(timezone.utc)
+    result = await session.execute(
+        select(Market.id)
+        .join(PaperTrade, PaperTrade.market_id == Market.id)
+        .where(
+            Market.platform == platform,
+            PaperTrade.status == "open",
+            Market.platform_id.is_not(None),
+            or_(
+                Market.active.is_(False),
+                Market.end_date < now,
+            ),
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def _get_resolution_platforms(session) -> list[str]:
+    from app.connectors import get_enabled_platforms
+
+    platforms = list(get_enabled_platforms())
+    if (
+        "kalshi" not in platforms
+        and settings.kalshi_resolution_backfill_enabled
+        and await _has_overdue_open_trade_markets(session, platform="kalshi")
+    ):
+        platforms.append("kalshi")
+        logger.info(
+            "Kalshi resolution backfill enabled despite KALSHI_ENABLED=false because overdue open paper trades exist"
+        )
+    return platforms
+
+
 async def _resolved_trade_outcomes_for_market_data(session, market_data, *, platform: str | None = None):
     import uuid
 
@@ -646,6 +691,15 @@ async def _resolved_trade_outcomes_for_market_data(session, market_data, *, plat
         return []
 
     winner_text = str(winner).strip().lower()
+    if platform == "kalshi" and winner_text in {"yes", "no"}:
+        inferred_outcomes = [
+            (outcome.id, side == winner_text)
+            for outcome in outcomes
+            if (side := _kalshi_outcome_side(outcome)) is not None
+        ]
+        if inferred_outcomes:
+            return inferred_outcomes
+
     winning_outcome_ids = {
         outcome.id
         for outcome in outcomes
@@ -654,9 +708,28 @@ async def _resolved_trade_outcomes_for_market_data(session, market_data, *, plat
         or (platform == "kalshi" and (outcome.platform_outcome_id or "").strip().lower().endswith(f"_{winner_text}"))
     }
     if not winning_outcome_ids:
+        logger.warning(
+            "Resolved market payload did not map to local outcomes for platform=%s platform_id=%s winner=%s",
+            platform,
+            platform_id,
+            winner,
+        )
         return []
 
     return [(outcome.id, outcome.id in winning_outcome_ids) for outcome in outcomes]
+
+
+def _kalshi_outcome_side(outcome) -> str | None:
+    for raw_value in (outcome.name, outcome.platform_outcome_id, outcome.token_id):
+        text = str(raw_value or "").strip().lower()
+        if not text:
+            continue
+        if text in {"yes", "no"}:
+            return text
+        normalized_parts = text.replace(":", "_").replace("-", "_").split("_")
+        if normalized_parts and normalized_parts[-1] in {"yes", "no"}:
+            return normalized_parts[-1]
+    return None
 
 
 async def _fetch_overdue_open_trade_resolutions(session, connector, *, platform: str) -> list[dict]:
@@ -753,6 +826,50 @@ async def _resolve_paper_trades(session, resolved_markets, *, platform: str | No
     if total > 0:
         await session.commit()
         logger.info("Paper trading: resolved %d trades", total)
+
+
+def _should_generate_default_strategy_review(health: dict) -> bool:
+    if health.get("run_state") != "active_run":
+        return False
+    latest_artifact = health.get("latest_review_artifact") or {}
+    freshness = health.get("evidence_freshness") or {}
+    if latest_artifact.get("generation_status") in {"missing", "partial", "invalid"}:
+        return True
+    if freshness.get("artifact_identity_status") == "mismatch":
+        return True
+    return bool(freshness.get("review_outdated"))
+
+
+async def _run_default_strategy_review_generation():
+    logger.info("Job: default_strategy_review_generation starting")
+    async with async_session() as session:
+        try:
+            from app.paper_trading.analysis import get_strategy_health
+            from app.reports.strategy_review import generate_default_strategy_review
+
+            health = await get_strategy_health(session)
+            if not _should_generate_default_strategy_review(health):
+                freshness = health.get("evidence_freshness") or {}
+                latest_artifact = health.get("latest_review_artifact") or {}
+                logger.info(
+                    "Job: default_strategy_review_generation skipped; status=%s generation_status=%s review_outdated=%s identity=%s",
+                    freshness.get("status"),
+                    latest_artifact.get("generation_status"),
+                    freshness.get("review_outdated"),
+                    freshness.get("artifact_identity_status"),
+                )
+                return
+
+            result = await generate_default_strategy_review(session)
+            verdict = result.get("review_verdict") or {}
+            logger.info(
+                "Job: default_strategy_review_generation wrote %s and %s with verdict=%s",
+                result.get("review_path"),
+                result.get("review_json_path"),
+                verdict.get("verdict"),
+            )
+        except Exception:
+            logger.error("Job: default_strategy_review_generation failed", exc_info=True)
 
 
 async def _run_evaluation():
@@ -893,6 +1010,13 @@ async def start_scheduler() -> bool:
         "interval",
         minutes=5,
     )
+    if settings.default_strategy_review_auto_generate_enabled:
+        _add_owned_job(
+            "default_strategy_review_generation",
+            _run_default_strategy_review_generation,
+            "interval",
+            seconds=settings.default_strategy_review_auto_generate_interval_seconds,
+        )
     if settings.whale_tracking_enabled:
         _add_owned_job(
             "whale_scan",

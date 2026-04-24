@@ -289,12 +289,16 @@ def _pending_decision_watch(
     example_limit: int = PENDING_DECISION_EXAMPLE_LIMIT,
 ) -> dict:
     pending_rows = [row for row in decision_rows if row.decision_status == "pending_decision"]
+    retry_window_seconds = float(settings.paper_trading_pending_decision_max_age_seconds)
     if not pending_rows:
         return {
             "count": 0,
             "oldest_decision_at": None,
             "max_age_seconds": 0.0,
             "avg_age_seconds": 0.0,
+            "stale_count": 0,
+            "retry_window_seconds": retry_window_seconds,
+            "reason_counts": {},
             "examples": [],
         }
 
@@ -306,6 +310,13 @@ def _pending_decision_watch(
         )
         for row in pending_rows
     ]
+    reason_counts: dict[str, int] = {}
+    stale_count = 0
+    for row, age in zip(pending_rows, ages, strict=False):
+        reason_code = row.reason_code or "unknown"
+        reason_counts[reason_code] = reason_counts.get(reason_code, 0) + 1
+        if age.total_seconds() > retry_window_seconds:
+            stale_count += 1
     oldest_pending = pending_rows[0]
     avg_age_seconds = sum(age.total_seconds() for age in ages) / len(ages)
     examples = []
@@ -325,6 +336,9 @@ def _pending_decision_watch(
         "oldest_decision_at": _ensure_utc(oldest_pending.decision_at).isoformat() if oldest_pending.decision_at else None,
         "max_age_seconds": round(max(age.total_seconds() for age in ages), 1),
         "avg_age_seconds": round(avg_age_seconds, 1),
+        "stale_count": stale_count,
+        "retry_window_seconds": retry_window_seconds,
+        "reason_counts": reason_counts,
         "examples": examples,
     }
 
@@ -407,11 +421,56 @@ def _serialize_replay_review_status(replay_status: dict | None) -> dict:
     replay = replay_status or {}
     return {
         "coverage_mode": replay.get("coverage_mode", "no_detector_activity"),
+        "coverage_scope": replay.get("coverage_scope", "global_observed_detectors"),
+        "global_coverage_mode": replay.get("global_coverage_mode"),
+        "global_supported_detectors": list(replay.get("global_supported_detectors") or []),
+        "global_unsupported_detectors": list(replay.get("global_unsupported_detectors") or []),
+        "review_observed_detectors": list(replay.get("review_observed_detectors") or []),
         "configured_supported_detectors": list(replay.get("configured_supported_detectors") or []),
         "supported_detectors": list(replay.get("supported_detectors") or []),
         "unsupported_detectors": list(replay.get("unsupported_detectors") or []),
         "recent_coverage_limited_run_count_24h": int(replay.get("recent_coverage_limited_run_count_24h") or 0),
     }
+
+
+def _detector_coverage_mode(*, observed_detectors: list[str], supported_detector_set: set[str]) -> str:
+    supported = [detector for detector in observed_detectors if detector in supported_detector_set]
+    unsupported = [detector for detector in observed_detectors if detector not in supported_detector_set]
+    if not observed_detectors:
+        return "no_detector_activity"
+    if supported and unsupported:
+        return "partial_supported_detectors"
+    if supported:
+        return "supported_detectors_only"
+    return "unsupported_detectors_only"
+
+
+def _scope_replay_status_for_default_strategy(
+    replay_status: dict,
+    *,
+    observed_detector_types: list[str],
+) -> dict:
+    supported_detector_set = set(replay_status.get("configured_supported_detectors") or [])
+    observed_detectors = sorted({str(detector) for detector in observed_detector_types if detector})
+    supported_detectors = [detector for detector in observed_detectors if detector in supported_detector_set]
+    unsupported_detectors = [detector for detector in observed_detectors if detector not in supported_detector_set]
+    scoped = dict(replay_status)
+    scoped.update(
+        {
+            "coverage_scope": "default_strategy_review",
+            "global_coverage_mode": replay_status.get("coverage_mode", "no_detector_activity"),
+            "global_supported_detectors": list(replay_status.get("supported_detectors") or []),
+            "global_unsupported_detectors": list(replay_status.get("unsupported_detectors") or []),
+            "review_observed_detectors": observed_detectors,
+            "coverage_mode": _detector_coverage_mode(
+                observed_detectors=observed_detectors,
+                supported_detector_set=supported_detector_set,
+            ),
+            "supported_detectors": supported_detectors,
+            "unsupported_detectors": unsupported_detectors,
+        }
+    )
+    return scoped
 
 
 async def get_overdue_open_trade_count(
@@ -675,6 +734,9 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
             "oldest_decision_at": None,
             "max_age_seconds": 0.0,
             "avg_age_seconds": 0.0,
+            "stale_count": 0,
+            "retry_window_seconds": float(settings.paper_trading_pending_decision_max_age_seconds),
+            "reason_counts": {},
             "examples": [],
         }
         _publish_pending_decision_metrics(pending_watch)
@@ -732,6 +794,10 @@ async def _get_default_strategy_scope(session: AsyncSession) -> dict:
 
     launch_at = _ensure_utc(strategy_run.started_at)
     candidate_signal_count = await _count_default_strategy_signals(session, launch_at=launch_at)
+    replay_status = _scope_replay_status_for_default_strategy(
+        replay_status,
+        observed_detector_types=([settings.default_strategy_signal_type] if settings.default_strategy_signal_type and candidate_signal_count > 0 else []),
+    )
     pre_launch_candidate_signals = await _count_default_strategy_signals(
         session,
         launch_at=launch_at,

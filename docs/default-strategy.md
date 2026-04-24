@@ -65,9 +65,11 @@ For every qualified signal after the run boundary, exactly one of the following 
 
 `pending_decision` is now a stored `ExecutionDecision.decision_status`, not an inferred absence of a row. A qualified signal with no run-scoped decision row is an integrity failure.
 
-`pending_decision_watch` exposes the oldest pending decision timestamp, current pending count, and max pending age so stale pending rows are visible instead of silent.
+`pending_decision_watch` exposes the oldest pending decision timestamp, current pending count, max pending age, stale count, retry window, and reason-code counts so stale pending rows are visible instead of silent.
 
 Retryable execution-context pending decisions are not immortal. The scheduler retries them only within the configured `paper_trading_pending_decision_max_age_seconds` window. Once that window expires, the row is converted to `skipped` with `reason_code = "pending_decision_expired"` while preserving the last retryable reason in decision diagnostics.
+
+Backlog-repair rows are expired again at the end of the same scheduler pass, so historical qualified signals cannot be reintroduced as already-stale pending decisions until the next pass.
 
 The core invariant is:
 
@@ -131,9 +133,13 @@ Replay outputs now resolve outcomes from canonical market settlement data rather
 Replay status also exposes explicit coverage metadata:
 
 - `coverage_mode`
+- `coverage_scope`
+- `global_coverage_mode`
 - `configured_supported_detectors`
 - `supported_detectors`
 - `unsupported_detectors`
+- `global_supported_detectors`
+- `global_unsupported_detectors`
 
 Interpretation:
 
@@ -143,6 +149,8 @@ Interpretation:
 - `no_detector_activity`: no qualifying detector activity was present in the inspected window
 
 Partial replay coverage is instrumentation, not proof. It must never be presented as full-system evidence.
+
+Default-strategy review health narrows `coverage_mode` to the frozen default-strategy detector scope. The global detector view remains visible as `global_coverage_mode` and `global_unsupported_detectors`, so unrelated historical detector activity does not falsely block a confluence-only default-strategy verdict.
 
 ## Operator Verdict Surface
 
@@ -232,6 +240,8 @@ The read-only health/dashboard surfaces must never execute that command on the o
 In production compose, the host checkout's `docs/` directory is mounted into backend and worker containers at `/docs`.
 The backend image runs from `/app`, so generated review artifacts resolve to `/docs/...` in-container while still persisting to the host checkout across rebuilds.
 
+Production compose can also run a scheduler-owned review generation job. It generates only when there is an active run and the latest artifact is missing/partial/invalid, mismatched to the active run boundary, or older than active-run activity. It does not regenerate only because pending decisions are stale.
+
 Generated review artifacts now include two production evidence sections:
 
 - `Live Automation Safety`: records whether live trading and the pilot are fail-closed, plus counts for live orders, fills, reservations, open live lots, active pilot configs, and active pilot runs.
@@ -283,6 +293,17 @@ Semantics:
 - `missing_review` is explicit. The read path must not generate a review just to clear that state.
 
 This surface is instrumentation only. It helps operators understand evidence freshness, but it does not mutate the run, create artifacts, or override the blocker-first `review_verdict` contract.
+
+## Live Submission Gate
+
+Autonomy tier and live submission readiness are separate. Runtime autonomy state includes an additive `submission_gate` object with:
+
+- `state`: `blocked`, `operator_required`, `simulated`, or `permitted`
+- `reason_codes`
+- `operator_required`
+- `live_order_submit_permitted`
+
+`assisted_live` means the strategy lifecycle can support assisted live operation. It does not mean orders can currently submit. Operators should treat `submission_gate.state` and `live_order_submit_permitted` as the runtime safety truth.
 
 ## Evidence vs Instrumentation
 

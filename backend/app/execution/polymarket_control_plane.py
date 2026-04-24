@@ -1375,6 +1375,7 @@ async def fetch_pilot_status(session: AsyncSession) -> dict[str, Any]:
         "latest_promotion_evaluation": latest_evaluation,
         "active_family_budget": active_family_budget,
         "active_autonomy_state": active_autonomy_state,
+        "live_submission_gate": active_autonomy_state.get("submission_gate"),
         "manual_approval_required": _approval_required(config),
         "approval_queue_count": approval_queue_count,
         "heartbeat_status": _heartbeat_status(state, needed=bool(config is not None and config.armed and open_live_orders > 0)),
@@ -1447,6 +1448,7 @@ async def fetch_execution_console_summary(session: AsyncSession) -> dict[str, An
         "active_pilot_family": active_config.strategy_family if active_config is not None else None,
         "active_family_budget": active_family_budget,
         "active_autonomy_state": pilot_status.get("active_autonomy_state"),
+        "live_submission_gate": pilot_status.get("live_submission_gate"),
         "approvals": await list_approval_queue(session, approval_state="queued", limit=25),
         "incidents": await list_control_plane_incidents(session, limit=25),
         "guardrail_events": await list_pilot_guardrail_events(
