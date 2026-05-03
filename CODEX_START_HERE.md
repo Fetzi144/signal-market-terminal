@@ -11,10 +11,11 @@ Signal Market Terminal is no longer "entering Phase 0". The repo already contain
 ## Read in this order
 
 1. `README.md`
-2. `docs/Current roadmaps/codex-active-roadmap.md`
-3. `docs/default-strategy.md`
-4. the relevant closeout docs in `docs/codex/` for the subsystem you are changing
-5. `docs/Current roadmaps/polymarket-execution-roadmap.md` only when you need the historical buildout sequence
+2. `docs/runbooks/hetzner-production-ops.md` for production operations on `smt-prod-1`
+3. `docs/Current roadmaps/codex-active-roadmap.md`
+4. `docs/default-strategy.md`
+5. the relevant closeout docs in `docs/codex/` for the subsystem you are changing
+6. `docs/Current roadmaps/polymarket-execution-roadmap.md` only when you need the historical buildout sequence
 
 Use `docs/codex/` as the shortest accurate progress snapshot:
 
@@ -36,6 +37,7 @@ For current work, the tracked near-term scope source is `docs/Current roadmaps/c
 ## Current repo posture
 
 - The canonical deployment target is the Hetzner host `smt-prod-1` at `/opt/signal-market-terminal`.
+- The canonical production runbook is `docs/runbooks/hetzner-production-ops.md`.
 - Local Docker workflows are legacy and should not be the default path unless the task explicitly needs them.
 - The default strategy is frozen and exists to measure edge honestly, not to widen scope.
 - `strategy_run` bootstrap is explicit. Read-only strategy-health surfaces must not create a run.

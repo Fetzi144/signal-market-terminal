@@ -39,6 +39,13 @@ frontend/.env.local
 *.log
 .tmp/
 
+# Generated report artifacts
+docs/profit-tools/
+docs/profitability-snapshots/
+docs/research-lab/profit_hunt_*
+docs/research-lab/*/*.json
+docs/research-lab/*/*.md
+
 # Local scratch databases
 backend/tmp_*.db
 backend/runtime-dev.db

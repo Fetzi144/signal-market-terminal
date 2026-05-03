@@ -11,6 +11,40 @@ function resolveApiBase() {
 
 const API_BASE = resolveApiBase();
 
+export function getApiBase() {
+  return API_BASE;
+}
+
+export function getProductionUrl() {
+  return (import.meta.env.VITE_PRODUCTION_URL || "").replace(/\/$/, "");
+}
+
+export function isLocalApiBase() {
+  try {
+    const url = new URL(API_BASE, window.location.origin);
+    return ["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname);
+  } catch {
+    return API_BASE.startsWith("/");
+  }
+}
+
+function localApiFallbackBases() {
+  if (!["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname)) return [];
+  const fallbackBases = ["http://127.0.0.1:8000/api/v1", "http://localhost:8000/api/v1"];
+  try {
+    const configured = new URL(API_BASE, window.location.origin);
+    if (!["localhost", "127.0.0.1", "0.0.0.0"].includes(configured.hostname)) return [];
+    return fallbackBases.filter((base) => base !== configured.href.replace(/\/$/, ""));
+  } catch {
+    return API_BASE === "/api/v1" ? fallbackBases : [];
+  }
+}
+
+function fallbackUrlFor(url, fallbackBase) {
+  if (!url.startsWith(API_BASE)) return null;
+  return `${fallbackBase}${url.slice(API_BASE.length)}`;
+}
+
 async function requestJson(url, options = {}) {
   const init = {
     ...options,
@@ -19,7 +53,26 @@ async function requestJson(url, options = {}) {
       ...(options.headers || {}),
     },
   };
-  const res = await fetch(url, init);
+  let res;
+  try {
+    res = await fetch(url, init);
+  } catch (err) {
+    let lastError = err;
+    for (const fallbackBase of localApiFallbackBases()) {
+      const fallbackUrl = fallbackUrlFor(url, fallbackBase);
+      if (!fallbackUrl) continue;
+      try {
+        res = await fetch(fallbackUrl, init);
+        break;
+      } catch (fallbackErr) {
+        lastError = fallbackErr;
+      }
+    }
+    if (!res) {
+      const message = lastError?.message || "Network request failed";
+      throw new Error(`${message} (${url})`);
+    }
+  }
   if (!res.ok) {
     let message = `API ${res.status}: ${res.statusText}`;
     try {
@@ -28,7 +81,7 @@ async function requestJson(url, options = {}) {
     } catch {
       // Ignore non-JSON error bodies and fall back to the HTTP status text.
     }
-    throw new Error(message);
+    throw new Error(`${message} (${url})`);
   }
   if (res.status === 204) return null;
   return res.json();
@@ -879,6 +932,37 @@ export function getPaperTradingPnlCurve({ scope } = {}) {
   if (scope) params.set("scope", scope);
   const query = params.toString();
   return fetchJson(`${API_BASE}/paper-trading/pnl-curve${query ? `?${query}` : ""}`);
+}
+
+// Research Lab API
+export function createResearchBatch(body = {}) {
+  return requestJson(`${API_BASE}/research/batches`, {
+    method: "POST",
+    body: JSON.stringify({
+      preset: "profit_hunt_v1",
+      window_days: 30,
+      max_markets: 500,
+      families: ["default_strategy", "kalshi_down_yes_fade", "kalshi_low_yes_fade", "alpha_factory"],
+      start_immediately: true,
+      ...body,
+    }),
+  });
+}
+
+export function getResearchBatches({ limit = 50 } = {}) {
+  return fetchJson(`${API_BASE}/research/batches?${new URLSearchParams({ limit })}`);
+}
+
+export function getLatestResearchBatch() {
+  return fetchJson(`${API_BASE}/research/batches/latest`);
+}
+
+export function getResearchBatch(id) {
+  return fetchJson(`${API_BASE}/research/batches/${id}`);
+}
+
+export function cancelResearchBatch(id) {
+  return requestJson(`${API_BASE}/research/batches/${id}/cancel`, { method: "POST" });
 }
 
 // Portfolio API

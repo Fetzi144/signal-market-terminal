@@ -11,13 +11,10 @@ import BacktestResult from "./pages/BacktestResult";
 import Alerts from "./pages/Alerts";
 import Performance from "./pages/Performance";
 import PaperTrading from "./pages/PaperTrading";
+import ResearchLab from "./pages/ResearchLab";
 import Strategies from "./pages/Strategies";
 import Health from "./pages/Health";
 import Portfolio from "./pages/Portfolio";
-import Structures from "./pages/Structures";
-import PilotConsole from "./pages/PilotConsole";
-import LiveOrders from "./pages/LiveOrders";
-import MarketTape from "./pages/MarketTape";
 import PushNotificationToggle from "./components/PushNotificationToggle";
 
 function ThemeToggle() {
@@ -51,16 +48,13 @@ const NAV_LINKS = [
   { to: "/", label: "Feed" },
   { to: "/performance", label: "Performance" },
   { to: "/paper-trading", label: "Strategy Health" },
+  { to: "/research-lab", label: "Research Lab" },
   { to: "/strategies", label: "Strategies" },
   { to: "/portfolio", label: "Portfolio" },
   { to: "/markets", label: "Markets" },
   { to: "/analytics", label: "Analytics" },
   { to: "/backtests", label: "Backtest" },
   { to: "/alerts", label: "Alerts" },
-  { to: "/structures", label: "Structures" },
-  { to: "/pilot-console", label: "Pilot Console" },
-  { to: "/live-orders", label: "Live Orders" },
-  { to: "/market-tape", label: "Market Tape" },
   { to: "/health", label: "Health" },
 ];
 
@@ -151,16 +145,13 @@ export default function App() {
         <Route path="/markets/:id" element={<MarketDetail />} />
         <Route path="/performance" element={<Performance />} />
         <Route path="/paper-trading" element={<PaperTrading />} />
+        <Route path="/research-lab" element={<ResearchLab />} />
         <Route path="/strategies" element={<Strategies />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/backtests" element={<Backtest />} />
         <Route path="/backtests/:id" element={<BacktestResult />} />
         <Route path="/alerts" element={<Alerts />} />
-        <Route path="/structures" element={<Structures />} />
-        <Route path="/pilot-console" element={<PilotConsole />} />
-        <Route path="/live-orders" element={<LiveOrders />} />
-        <Route path="/market-tape" element={<MarketTape />} />
         <Route path="/health" element={<Health />} />
       </Routes>
     </div>

@@ -30,6 +30,7 @@ This repo is not an autonomous betting bot. Today it is an operator-facing resea
 Primary docs:
 
 - [docs/default-strategy.md](docs/default-strategy.md)
+- [docs/runbooks/hetzner-production-ops.md](docs/runbooks/hetzner-production-ops.md)
 - [docs/runbooks/default-strategy-remediation.md](docs/runbooks/default-strategy-remediation.md)
 - [docs/runbooks/default-strategy-controlled-evidence-relaunch.md](docs/runbooks/default-strategy-controlled-evidence-relaunch.md)
 
@@ -186,6 +187,7 @@ The default-strategy evidence window is currently anchored by `DEFAULT_STRATEGY_
 ### Canonical environment
 
 The main permanent deployment lives on the Hetzner host `smt-prod-1`, with the checkout at `/opt/signal-market-terminal`.
+Use [docs/runbooks/hetzner-production-ops.md](docs/runbooks/hetzner-production-ops.md) for deploys, restarts, health checks, metrics, logs, backups, capture continuity, and the daily operator checklist.
 
 For the production-style stack:
 

@@ -4,7 +4,6 @@ import { getMarkets, exportMarketsCsv } from "../api";
 
 const PLATFORM_OPTIONS = [
   { value: "", label: "All Platforms" },
-  { value: "polymarket", label: "Polymarket" },
   { value: "kalshi", label: "Kalshi" },
 ];
 
@@ -15,7 +14,7 @@ const SORT_OPTIONS = [
   { value: "question", label: "Alphabetical" },
 ];
 
-const PLATFORM_COLORS = { polymarket: "#6366f1", kalshi: "#f59e0b" };
+const PLATFORM_COLORS = { kalshi: "#f59e0b" };
 const PAGE_SIZE = 50;
 
 function PlatformBadge({ platform }) {
@@ -33,7 +32,7 @@ function PlatformBadge({ platform }) {
         borderRadius: 4,
       }}
     >
-      {platform === "polymarket" ? "PM" : "KA"}
+      {platform === "kalshi" ? "KA" : platform?.slice(0, 2)?.toUpperCase() || "--"}
     </span>
   );
 }

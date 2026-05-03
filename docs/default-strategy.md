@@ -253,6 +253,38 @@ Generated review artifacts now include two production evidence sections:
 
 The JSON artifact carries the same data under `live_safety` and `resolution_reconciliation`. These sections are operator evidence only; they do not arm the pilot, resolve trades, or change strategy state.
 
+## Daily Paper Profitability Snapshot
+
+The cheap daily EV scoreboard is:
+
+- run from `backend/`: `python -m app.reports profitability-snapshot`
+- output directory: `docs/profitability-snapshots/`
+- JSON artifact: `YYYY-MM-DD-default_strategy-paper-profitability.json`
+- Markdown artifact: `YYYY-MM-DD-default_strategy-paper-profitability.md`
+
+This command writes the current `profitability_snapshot` without generating a full review artifact. It is the first thing to check during the 30-day paper window because it carries the gate fields directly:
+
+- realized P&L
+- mark-to-market P&L
+- open exposure
+- resolved trade count
+- average CLV
+- replay coverage mode
+- skip funnel
+- risk blocks
+- evidence blockers
+- profitability verdict
+
+The maximum-EV operator loop is intentionally narrow:
+
+1. Run the read-only API smoke check: `python -m app.reports smoke --base-url http://localhost:8000`.
+2. Generate the daily profitability snapshot.
+3. Review `profitability_blockers` before discussing thresholds, exposure, or new capital.
+4. Prefer short-horizon, liquid, fresh-orderbook markets for new paper evidence.
+5. Treat structure/maker/exec-policy lanes as paper-only research until their own snapshots show positive execution-adjusted evidence.
+
+The smoke command reads only `/`, `/api/v1/health`, `/api/v1/paper-trading/strategy-health`, `/api/v1/paper-trading/profitability-snapshot`, and `/api/v1/strategies/profitability`. It must not bootstrap a run, create a review, submit orders, or relax pilot/live safety.
+
 ## Evidence Freshness Surface
 
 `GET /api/v1/paper-trading/strategy-health` and `GET /api/v1/paper-trading/default-strategy/dashboard` also expose a read-only `evidence_freshness` object.

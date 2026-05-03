@@ -10,7 +10,6 @@ const SIGNAL_TYPES = [
 ];
 
 const BADGE_LEGEND = [
-  { label: "PM", color: "#6366f1", meaning: "Polymarket" },
   { label: "KA", color: "#f59e0b", meaning: "Kalshi" },
 ];
 
@@ -49,8 +48,7 @@ function Step1() {
         What is Signal Market Terminal?
       </h3>
       <p style={{ color: "var(--text-dim)", fontSize: 14, lineHeight: 1.6, marginBottom: 16 }}>
-        SMT scans <strong style={{ color: "var(--text)" }}>Polymarket</strong> and{" "}
-        <strong style={{ color: "var(--text)" }}>Kalshi</strong> prediction markets in real time,
+        SMT scans <strong style={{ color: "var(--text)" }}>Kalshi</strong> prediction markets in real time,
         detecting trading signals like price moves, volume spikes, and liquidity shifts.
       </p>
 
