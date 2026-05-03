@@ -1512,7 +1512,11 @@ class PolymarketRawStorageService:
                 next_oi_poll_at = now + settings.polymarket_oi_poll_interval_seconds
 
 
-async def fetch_polymarket_raw_storage_status(session: AsyncSession) -> dict[str, Any]:
+async def fetch_polymarket_raw_storage_status(
+    session: AsyncSession,
+    *,
+    include_recent_rows: bool = True,
+) -> dict[str, Any]:
     latest_relevant_raw_event_id = int(
         (
             await session.execute(
@@ -1589,73 +1593,81 @@ async def fetch_polymarket_raw_storage_status(session: AsyncSession) -> dict[str
     if last_oi_poll_at is not None:
         polymarket_oi_poll_last_success_timestamp.set(last_oi_poll_at.timestamp())
 
-    recent_runs = (
-        await session.execute(
-            select(PolymarketRawCaptureRun)
-            .order_by(PolymarketRawCaptureRun.started_at.desc())
-            .limit(10)
-        )
-    ).scalars().all()
-
     since = now - timedelta(hours=24)
+    recent_runs = []
     recent_rows = {
-        "book_snapshots": int(
-            (
-                await session.execute(
-                    select(func.count(PolymarketBookSnapshot.id)).where(PolymarketBookSnapshot.observed_at_local >= since)
-                )
-            ).scalar_one()
-            or 0
-        ),
-        "book_deltas": int(
-            (
-                await session.execute(
-                    select(func.count(PolymarketBookDelta.id)).where(
-                        func.coalesce(
-                            PolymarketBookDelta.event_ts_exchange,
-                            PolymarketBookDelta.recv_ts_local,
-                            PolymarketBookDelta.ingest_ts_db,
-                        )
-                        >= since
-                    )
-                )
-            ).scalar_one()
-            or 0
-        ),
-        "bbo_events": int(
-            (
-                await session.execute(
-                    select(func.count(PolymarketBboEvent.id)).where(
-                        func.coalesce(
-                            PolymarketBboEvent.event_ts_exchange,
-                            PolymarketBboEvent.recv_ts_local,
-                            PolymarketBboEvent.ingest_ts_db,
-                        )
-                        >= since
-                    )
-                )
-            ).scalar_one()
-            or 0
-        ),
-        "trade_tape": int(
-            (
-                await session.execute(
-                    select(func.count(PolymarketTradeTape.id)).where(PolymarketTradeTape.observed_at_local >= since)
-                )
-            ).scalar_one()
-            or 0
-        ),
-        "open_interest_history": int(
-            (
-                await session.execute(
-                    select(func.count(PolymarketOpenInterestHistory.id)).where(
-                        PolymarketOpenInterestHistory.observed_at_local >= since
-                    )
-                )
-            ).scalar_one()
-            or 0
-        ),
+        "book_snapshots": 0,
+        "book_deltas": 0,
+        "bbo_events": 0,
+        "trade_tape": 0,
+        "open_interest_history": 0,
     }
+    if include_recent_rows:
+        recent_runs = (
+            await session.execute(
+                select(PolymarketRawCaptureRun)
+                .order_by(PolymarketRawCaptureRun.started_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+        recent_rows = {
+            "book_snapshots": int(
+                (
+                    await session.execute(
+                        select(func.count(PolymarketBookSnapshot.id)).where(PolymarketBookSnapshot.observed_at_local >= since)
+                    )
+                ).scalar_one()
+                or 0
+            ),
+            "book_deltas": int(
+                (
+                    await session.execute(
+                        select(func.count(PolymarketBookDelta.id)).where(
+                            func.coalesce(
+                                PolymarketBookDelta.event_ts_exchange,
+                                PolymarketBookDelta.recv_ts_local,
+                                PolymarketBookDelta.ingest_ts_db,
+                            )
+                            >= since
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            ),
+            "bbo_events": int(
+                (
+                    await session.execute(
+                        select(func.count(PolymarketBboEvent.id)).where(
+                            func.coalesce(
+                                PolymarketBboEvent.event_ts_exchange,
+                                PolymarketBboEvent.recv_ts_local,
+                                PolymarketBboEvent.ingest_ts_db,
+                            )
+                            >= since
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            ),
+            "trade_tape": int(
+                (
+                    await session.execute(
+                        select(func.count(PolymarketTradeTape.id)).where(PolymarketTradeTape.observed_at_local >= since)
+                    )
+                ).scalar_one()
+                or 0
+            ),
+            "open_interest_history": int(
+                (
+                    await session.execute(
+                        select(func.count(PolymarketOpenInterestHistory.id)).where(
+                            PolymarketOpenInterestHistory.observed_at_local >= since
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            ),
+        }
 
     return {
         "enabled": settings.polymarket_raw_storage_enabled,

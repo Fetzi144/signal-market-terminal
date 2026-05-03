@@ -18,7 +18,7 @@ def get_enabled_platforms() -> list[str]:
     """Return list of enabled platform names based on config."""
     from app.config import settings
 
-    platforms = ["polymarket"]
+    platforms: list[str] = []
     if settings.kalshi_enabled:
         platforms.append("kalshi")
     return platforms

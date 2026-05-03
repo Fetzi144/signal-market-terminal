@@ -26,6 +26,7 @@ from app.ingestion.polymarket_replay_simulator import (
 )
 from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.models.market_structure import MarketStructureOpportunity
+from app.models.polymarket_execution_policy import PolymarketExecutionActionCandidate
 from app.models.polymarket_maker import (
     PolymarketMakerEconomicsSnapshot,
     PolymarketQuoteRecommendation,
@@ -803,6 +804,64 @@ async def test_structure_replay_run_persists_variant_metrics(engine, monkeypatch
     variant_names = {row["variant_name"] for row in metrics}
     assert "midpoint_baseline" in variant_names
     assert "structure_policy" in variant_names
+
+
+@pytest.mark.asyncio
+async def test_policy_replay_collects_standalone_advisory_candidates(engine, monkeypatch):
+    _set_phase11_defaults(monkeypatch)
+    session_factory = _session_factory(engine)
+    decision_at = datetime(2026, 4, 14, 12, 20, 0, tzinfo=timezone.utc)
+
+    async with session_factory() as session:
+        seeded = await _seed_polymarket_execution_fixture(
+            session,
+            condition_id="cond-phase11-standalone",
+            asset_id="token-phase11-standalone",
+            decision_at=decision_at,
+            estimated_probability="0.65",
+            price_at_fire="0.40",
+            expected_value="0.25",
+            best_bid="0.40",
+            best_ask="0.41",
+            bids=[("0.40", "500"), ("0.39", "500")],
+            asks=[("0.41", "300"), ("0.42", "300")],
+            label_rows=0,
+        )
+        candidate = PolymarketExecutionActionCandidate(
+            signal_id=seeded["signal"].id,
+            execution_decision_id=None,
+            market_dim_id=seeded["market_dim"].id,
+            asset_dim_id=seeded["asset_dim"].id,
+            condition_id="cond-phase11-standalone",
+            asset_id="token-phase11-standalone",
+            outcome_id=seeded["outcome"].id,
+            side="buy_yes",
+            action_type="cross_now",
+            order_type_hint="FAK",
+            target_size=Decimal("100.0000"),
+            est_fill_probability=Decimal("1.000000"),
+            est_avg_entry_price=Decimal("0.41000000"),
+            est_net_ev_total=Decimal("10.00000000"),
+            valid=True,
+            policy_version="phase6_baseline_v1",
+            decided_at=decision_at,
+        )
+        session.add(candidate)
+        await session.commit()
+
+        replay_service = PolymarketReplaySimulatorService(session_factory)
+        blueprints = await replay_service._collect_policy_blueprints(
+            session,
+            window_start=decision_at - timedelta(minutes=1),
+            window_end=decision_at + timedelta(minutes=1),
+            asset_ids=["token-phase11-standalone"],
+            condition_ids=[],
+        )
+        await replay_service.close()
+
+    assert len(blueprints) == 1
+    assert blueprints[0].source_execution_candidate_id == candidate.id
+    assert blueprints[0].scenario_key == f"policy-candidate:{candidate.id}"
 
 
 @pytest.mark.asyncio

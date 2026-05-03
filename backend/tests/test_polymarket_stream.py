@@ -17,6 +17,7 @@ from app.ingestion.polymarket_stream import (
     build_subscription_diff,
     ensure_watch_registry_bootstrapped,
     persist_market_event,
+    upsert_watch_asset,
 )
 from app.models.polymarket_metadata import PolymarketAssetDim, PolymarketMarketDim
 from app.models.polymarket_stream import (
@@ -470,6 +471,28 @@ async def test_reconciliation_uses_watch_registry_and_unchanged_set_does_not_chu
     subscribed = await service.reconcile_subscriptions(websocket, subscribed)
     assert subscribed == {"token-a"}
     assert websocket.sent == []
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_caps_watch_registry_by_priority(engine, monkeypatch):
+    session_factory = _session_factory(engine)
+    async with session_factory() as session:
+        market_one = make_market(session, platform="polymarket", platform_id="mkt-cap-1", active=True)
+        market_two = make_market(session, platform="polymarket", platform_id="mkt-cap-2", active=True)
+        await session.flush()
+        outcome_low = make_outcome(session, market_one.id, token_id="token-low")
+        outcome_high = make_outcome(session, market_two.id, token_id="token-high")
+        await session.flush()
+        await upsert_watch_asset(session, outcome_id=outcome_low.id, asset_id="token-low", priority=1)
+        await upsert_watch_asset(session, outcome_id=outcome_high.id, asset_id="token-high", priority=100)
+        await session.commit()
+
+    monkeypatch.setattr(settings, "polymarket_snapshot_max_watched_assets", 1)
+    websocket = FakeWebSocket()
+    service = PolymarketStreamService(session_factory, resync_service=RecordingResyncStub())
+    subscribed = await service.reconcile_subscriptions(websocket, set())
+
+    assert subscribed == {"token-high"}
 
 
 @pytest.mark.asyncio

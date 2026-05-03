@@ -16,6 +16,7 @@ from app.models.paper_trade import PaperTrade
 from app.paper_trading.analysis import (
     get_default_strategy_dashboard,
     get_default_strategy_run_lookup,
+    get_profitability_snapshot,
     get_strategy_health,
     get_strategy_history,
     get_strategy_metrics,
@@ -23,6 +24,7 @@ from app.paper_trading.analysis import (
     get_strategy_portfolio_state,
 )
 from app.paper_trading.engine import get_metrics, get_pnl_curve, get_portfolio_state
+from app.reports.profit_tools import build_profit_tools_snapshot
 from app.strategy_runs.service import ActiveStrategyRunExistsError, open_default_strategy_run, serialize_strategy_run
 
 router = APIRouter(prefix="/api/v1/paper-trading", tags=["paper-trading"])
@@ -321,6 +323,28 @@ async def get_trading_metrics(
 async def get_strategy_health_endpoint(request: Request, db: AsyncSession = Depends(get_db)):
     """Consolidated health view for the default strategy."""
     return await get_strategy_health(db)
+
+
+@router.get("/profitability-snapshot")
+@paper_limiter.limit("10/second")
+async def get_profitability_snapshot_endpoint(
+    request: Request,
+    family: str = Query("default_strategy"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read-only paper profitability gate snapshot for a strategy family."""
+    return await get_profitability_snapshot(db, family=family)
+
+
+@router.get("/profit-tools")
+@paper_limiter.limit("10/second")
+async def get_profit_tools_endpoint(
+    request: Request,
+    family: str = Query("default_strategy"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Read-only paper profit-finding workbench and lane readiness snapshot."""
+    return await build_profit_tools_snapshot(db, family=family)
 
 
 @router.get("/pnl-curve", response_model=list[PnlPointOut])

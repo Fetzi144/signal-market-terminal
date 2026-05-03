@@ -17,16 +17,12 @@ from app.api import (
     analytics,
     backtest,
     health,
-    ingest,
     markets,
     paper_trading,
     performance,
-    polymarket_live,
-    polymarket_replay,
-    polymarket_risk,
-    polymarket_structure,
     portfolio,
     push,
+    research,
     signals,
     sse,
     strategies,
@@ -114,10 +110,6 @@ app.add_middleware(
 app.include_router(signals.router)
 app.include_router(markets.router)
 app.include_router(health.router)
-app.include_router(ingest.router)
-app.include_router(polymarket_structure.router)
-app.include_router(polymarket_risk.router)
-app.include_router(polymarket_replay.router)
 app.include_router(alerts.router)
 app.include_router(sse.router)
 app.include_router(analytics.router)
@@ -126,8 +118,8 @@ app.include_router(performance.router)
 app.include_router(portfolio.router)
 app.include_router(push.router)
 app.include_router(paper_trading.router)
-app.include_router(polymarket_live.router)
 app.include_router(strategies.router)
+app.include_router(research.router)
 
 # Prometheus auto-instrumentation — exposes /metrics
 Instrumentator().instrument(app).expose(app)

@@ -1,0 +1,631 @@
+from __future__ import annotations
+
+import logging
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Iterable, Sequence
+
+from sqlalchemy import and_, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.connectors import get_connector
+from app.ingestion.snapshots import _depth_within_pct
+from app.models.execution_decision import ExecutionDecision
+from app.models.market import Market, Outcome
+from app.models.signal import Signal
+from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
+from app.models.strategy_run import StrategyRun
+from app.paper_trading.engine import attempt_open_trade, ensure_pending_execution_decision
+from app.paper_trading.reconciliation import (
+    expire_stale_pending_execution_decisions,
+    finalize_unrecoverable_orderbook_context_decisions,
+    hydrate_strategy_run_state,
+)
+from app.paper_trading.strategy_run_state import initialize_strategy_run_state
+from app.strategies.registry import get_current_strategy_version, sync_strategy_registry
+from app.strategy_runs.service import ACTIVE_RUN_STATUS, get_active_strategy_run
+
+logger = logging.getLogger(__name__)
+
+STRATEGY_FAMILY = "kalshi_down_yes_fade"
+STRATEGY_NAME = "kalshi_down_yes_fade_v2"
+STRATEGY_VERSION_KEY = "kalshi_down_yes_fade_v2"
+SIGNAL_DETAILS_KEY = "kalshi_down_yes_fade"
+
+MIN_YES_PRICE = Decimal("0.20")
+MAX_YES_PRICE = Decimal("0.50")
+ZERO = Decimal("0")
+ONE = Decimal("1")
+
+
+@dataclass(frozen=True)
+class KalshiDownYesFadeEvaluation:
+    in_scope: bool
+    eligible: bool
+    reason_code: str
+    reason_label: str
+    detail: str | None = None
+    diagnostics: dict | None = None
+
+
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _decimal(value) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+
+
+def _normalize_text(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def _details(signal: Signal) -> dict:
+    return signal.details if isinstance(signal.details, dict) else {}
+
+
+def _reason_label(reason_code: str) -> str:
+    labels = {
+        "kalshi_down_yes_fade_candidate": "Kalshi down-YES fade candidate",
+        "kalshi_down_yes_fade_missing_direction": "Missing price-move direction",
+        "kalshi_down_yes_fade_missing_outcome": "Missing outcome",
+        "kalshi_down_yes_fade_missing_price": "Missing YES price",
+        "kalshi_down_yes_fade_missing_probability": "Missing estimated probability",
+        "kalshi_down_yes_fade_missing_expected_value": "Missing expected value",
+        "kalshi_down_yes_fade_expected_value_not_negative": "Expected value is not negative",
+        "kalshi_down_yes_fade_probability_not_below_price": "Probability is not below YES price",
+        "kalshi_down_yes_fade_current_price_unavailable": "Current YES price unavailable",
+        "kalshi_down_yes_fade_current_price_outside_bucket": "Current YES price outside down fade bucket",
+        "kalshi_down_yes_fade_current_probability_not_below_price": "Current YES price no longer exceeds probability",
+    }
+    return labels.get(reason_code, reason_code.replace("_", " "))
+
+
+def evaluate_kalshi_down_yes_fade_signal(
+    signal: Signal,
+    *,
+    market_platform: str | None = None,
+) -> KalshiDownYesFadeEvaluation:
+    """Evaluate the frozen v2 Kalshi down-YES fade rule without mutating state."""
+
+    details = _details(signal)
+    signal_type = _normalize_text(signal.signal_type)
+    platform = _normalize_text(signal.source_platform or market_platform or details.get("platform"))
+    direction = _normalize_text(details.get("direction"))
+    yes_price = _decimal(signal.price_at_fire)
+    expected_value = _decimal(signal.expected_value)
+    estimated_probability = _decimal(signal.estimated_probability)
+
+    diagnostics = {
+        "strategy_family": STRATEGY_FAMILY,
+        "strategy_version": STRATEGY_VERSION_KEY,
+        "signal_type": signal_type,
+        "platform": platform or None,
+        "direction": direction or None,
+        "yes_price": str(yes_price) if yes_price is not None else None,
+        "expected_value": str(expected_value) if expected_value is not None else None,
+        "estimated_probability": str(estimated_probability) if estimated_probability is not None else None,
+        "min_yes_price": str(MIN_YES_PRICE),
+        "max_yes_price": str(MAX_YES_PRICE),
+        "intended_direction": "buy_no",
+    }
+
+    if signal_type != "price_move" or platform != "kalshi":
+        return KalshiDownYesFadeEvaluation(
+            in_scope=False,
+            eligible=False,
+            reason_code="not_kalshi_down_yes_fade_universe",
+            reason_label="Not in Kalshi down-YES fade universe",
+            diagnostics=diagnostics,
+        )
+    if not direction:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=True,
+            eligible=False,
+            reason_code="kalshi_down_yes_fade_missing_direction",
+            reason_label=_reason_label("kalshi_down_yes_fade_missing_direction"),
+            diagnostics=diagnostics,
+        )
+    if direction != "down":
+        return KalshiDownYesFadeEvaluation(
+            in_scope=False,
+            eligible=False,
+            reason_code="not_kalshi_down_yes_fade_direction",
+            reason_label="Not a downward price move",
+            diagnostics=diagnostics,
+        )
+    if signal.outcome_id is None:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=True,
+            eligible=False,
+            reason_code="kalshi_down_yes_fade_missing_outcome",
+            reason_label=_reason_label("kalshi_down_yes_fade_missing_outcome"),
+            diagnostics=diagnostics,
+        )
+    if yes_price is None:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=True,
+            eligible=False,
+            reason_code="kalshi_down_yes_fade_missing_price",
+            reason_label=_reason_label("kalshi_down_yes_fade_missing_price"),
+            diagnostics=diagnostics,
+        )
+    if yes_price < MIN_YES_PRICE or yes_price >= MAX_YES_PRICE:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=False,
+            eligible=False,
+            reason_code="not_kalshi_down_yes_fade_price_bucket",
+            reason_label="YES price outside down fade bucket",
+            diagnostics=diagnostics,
+        )
+    if expected_value is None:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=True,
+            eligible=False,
+            reason_code="kalshi_down_yes_fade_missing_expected_value",
+            reason_label=_reason_label("kalshi_down_yes_fade_missing_expected_value"),
+            diagnostics=diagnostics,
+        )
+    if expected_value >= ZERO:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=False,
+            eligible=False,
+            reason_code="kalshi_down_yes_fade_expected_value_not_negative",
+            reason_label=_reason_label("kalshi_down_yes_fade_expected_value_not_negative"),
+            diagnostics=diagnostics,
+        )
+    if estimated_probability is None:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=True,
+            eligible=False,
+            reason_code="kalshi_down_yes_fade_missing_probability",
+            reason_label=_reason_label("kalshi_down_yes_fade_missing_probability"),
+            diagnostics=diagnostics,
+        )
+    if estimated_probability >= yes_price:
+        return KalshiDownYesFadeEvaluation(
+            in_scope=True,
+            eligible=False,
+            reason_code="kalshi_down_yes_fade_probability_not_below_price",
+            reason_label=_reason_label("kalshi_down_yes_fade_probability_not_below_price"),
+            diagnostics=diagnostics,
+        )
+
+    no_entry_price = (ONE - yes_price).quantize(Decimal("0.000001"))
+    diagnostics["no_entry_price"] = str(no_entry_price)
+    diagnostics["edge_per_share"] = str((yes_price - estimated_probability).quantize(Decimal("0.000001")))
+    return KalshiDownYesFadeEvaluation(
+        in_scope=True,
+        eligible=True,
+        reason_code="kalshi_down_yes_fade_candidate",
+        reason_label=_reason_label("kalshi_down_yes_fade_candidate"),
+        diagnostics=diagnostics,
+    )
+
+
+async def ensure_active_kalshi_down_yes_fade_run(
+    session: AsyncSession,
+    *,
+    started_at: datetime | None = None,
+) -> tuple[StrategyRun, bool]:
+    active = await get_active_strategy_run(session, STRATEGY_NAME)
+    if active is not None:
+        return active, False
+
+    await sync_strategy_registry(session)
+    version = await get_current_strategy_version(session, STRATEGY_FAMILY)
+    resolved_started_at = _ensure_utc(started_at) or datetime.now(timezone.utc)
+    strategy_run = StrategyRun(
+        id=uuid.uuid4(),
+        strategy_name=STRATEGY_NAME,
+        strategy_family=STRATEGY_FAMILY,
+        strategy_version_id=version.id if version is not None else None,
+        status=ACTIVE_RUN_STATUS,
+        started_at=resolved_started_at,
+        contract_snapshot={
+            "name": STRATEGY_NAME,
+            "strategy_family": STRATEGY_FAMILY,
+            "strategy_version_key": version.version_key if version is not None else STRATEGY_VERSION_KEY,
+            "strategy_version_label": version.version_label if version is not None else "Kalshi Down-YES Fade v2",
+            "strategy_version_status": version.version_status if version is not None else "candidate",
+            "paper_only": True,
+            "live_orders_enabled": False,
+            "pilot_arming_enabled": False,
+            "thresholds_frozen": True,
+            "rule": {
+                "platform": "kalshi",
+                "signal_type": "price_move",
+                "direction": "down",
+                "min_yes_price": str(MIN_YES_PRICE),
+                "max_yes_price_exclusive": str(MAX_YES_PRICE),
+                "expected_value": "<0",
+                "trade_direction": "buy_no",
+                "targeted_orderbook_capture": True,
+            },
+        },
+    )
+    initialize_strategy_run_state(strategy_run)
+    session.add(strategy_run)
+    await session.flush()
+    return strategy_run, True
+
+
+async def _market_platforms_for_signals(
+    session: AsyncSession,
+    signals: Sequence[Signal],
+) -> dict[uuid.UUID, str]:
+    market_ids = sorted({signal.market_id for signal in signals if signal.market_id is not None}, key=str)
+    if not market_ids:
+        return {}
+    rows = (await session.execute(select(Market.id, Market.platform).where(Market.id.in_(market_ids)))).all()
+    return {row.id: row.platform for row in rows}
+
+
+async def _outcome_token_for_signal(session: AsyncSession, signal: Signal) -> str | None:
+    if signal.source_token_id:
+        return str(signal.source_token_id)
+    if signal.outcome_id is None:
+        return None
+    token = (
+        await session.execute(select(Outcome.token_id).where(Outcome.id == signal.outcome_id).limit(1))
+    ).scalar_one_or_none()
+    return str(token) if token else None
+
+
+def _signal_is_recent_enough_for_forward_orderbook(signal: Signal, now: datetime) -> bool:
+    fired_at = _ensure_utc(signal.fired_at)
+    if fired_at is None:
+        return True
+    if fired_at > now:
+        return True
+    max_age = max(
+        1,
+        int(settings.shadow_execution_max_forward_seconds),
+        int(settings.paper_trading_pending_decision_max_age_seconds),
+    )
+    return (now - fired_at).total_seconds() <= max_age
+
+
+async def _capture_targeted_orderbook_snapshot(
+    session: AsyncSession,
+    signal: Signal,
+    *,
+    captured_at: datetime,
+) -> dict:
+    if signal.outcome_id is None:
+        return {"captured": False, "reason": "missing_outcome"}
+    if not _signal_is_recent_enough_for_forward_orderbook(signal, captured_at):
+        return {"captured": False, "reason": "signal_too_old_for_forward_orderbook"}
+
+    token_id = await _outcome_token_for_signal(session, signal)
+    if not token_id:
+        return {"captured": False, "reason": "missing_token_id"}
+
+    connector = get_connector("kalshi")
+    try:
+        orderbook = await connector.fetch_orderbook(token_id)
+        midpoint = None
+        try:
+            midpoints = await connector.fetch_midpoints([token_id])
+            midpoint = midpoints.get(token_id)
+        except Exception as exc:
+            logger.warning("Kalshi down-YES fade midpoint capture failed for %s: %s", token_id, exc)
+
+        session.add(
+            OrderbookSnapshot(
+                outcome_id=signal.outcome_id,
+                bids=orderbook.bids,
+                asks=orderbook.asks,
+                spread=orderbook.spread,
+                depth_bid_10pct=_depth_within_pct(orderbook.bids, side="bid", pct=0.10),
+                depth_ask_10pct=_depth_within_pct(orderbook.asks, side="ask", pct=0.10),
+                captured_at=captured_at,
+            )
+        )
+        if midpoint is not None:
+            market = await session.get(Market, signal.market_id)
+            session.add(
+                PriceSnapshot(
+                    outcome_id=signal.outcome_id,
+                    price=midpoint,
+                    volume_24h=market.last_volume_24h if market is not None else None,
+                    liquidity=market.last_liquidity if market is not None else None,
+                    captured_at=captured_at,
+                )
+            )
+        await session.flush()
+        return {
+            "captured": True,
+            "token_id": token_id,
+            "captured_at": captured_at.isoformat(),
+            "midpoint_captured": midpoint is not None,
+            "midpoint": str(midpoint) if midpoint is not None else None,
+        }
+    except Exception as exc:
+        logger.warning("Kalshi down-YES fade targeted orderbook capture failed for %s", token_id, exc_info=True)
+        return {"captured": False, "reason": "targeted_orderbook_capture_failed", "error": str(exc)}
+    finally:
+        await connector.close()
+
+
+async def load_unprocessed_kalshi_down_yes_fade_signals(
+    session: AsyncSession,
+    strategy_run: StrategyRun,
+    *,
+    exclude_signal_ids: Iterable[uuid.UUID] | None = None,
+    limit: int = 100,
+) -> list[Signal]:
+    if limit <= 0:
+        return []
+    exclude_ids = [signal_id for signal_id in (exclude_signal_ids or [])]
+    broad_limit = max(limit, min(limit * 10, 10_000))
+    query = (
+        select(Signal)
+        .outerjoin(Market, Market.id == Signal.market_id)
+        .outerjoin(
+            ExecutionDecision,
+            and_(
+                ExecutionDecision.signal_id == Signal.id,
+                ExecutionDecision.strategy_run_id == strategy_run.id,
+            ),
+        )
+        .where(
+            ExecutionDecision.id.is_(None),
+            Signal.fired_at >= strategy_run.started_at,
+            Signal.signal_type == "price_move",
+            Signal.outcome_id.is_not(None),
+            Signal.price_at_fire >= MIN_YES_PRICE,
+            Signal.price_at_fire < MAX_YES_PRICE,
+            Signal.expected_value < ZERO,
+            or_(Signal.source_platform == "kalshi", Market.platform == "kalshi"),
+        )
+        .order_by(Signal.fired_at.asc(), Signal.id.asc())
+        .limit(broad_limit)
+    )
+    if exclude_ids:
+        query = query.where(Signal.id.not_in(exclude_ids))
+    signals = (await session.execute(query)).scalars().all()
+    platforms = await _market_platforms_for_signals(session, signals)
+    filtered = [
+        signal
+        for signal in signals
+        if evaluate_kalshi_down_yes_fade_signal(
+            signal,
+            market_platform=platforms.get(signal.market_id),
+        ).eligible
+    ]
+    return filtered[:limit]
+
+
+async def run_kalshi_down_yes_fade_paper_lane(
+    session: AsyncSession,
+    signals: Sequence[Signal],
+    *,
+    pending_retry_limit: int = 100,
+    backlog_limit: int = 100,
+    pending_expiry_limit: int = 100,
+    targeted_orderbook_limit: int = 25,
+) -> dict:
+    strategy_run, run_created = await ensure_active_kalshi_down_yes_fade_run(session)
+    state_rehydrated = await hydrate_strategy_run_state(session, strategy_run)
+    expired_pending = await expire_stale_pending_execution_decisions(
+        session,
+        strategy_run,
+        limit=pending_expiry_limit,
+    )
+    finalized_orderbook_context = await finalize_unrecoverable_orderbook_context_decisions(
+        session,
+        strategy_run,
+        limit=pending_expiry_limit,
+    )
+
+    pending_retry_signals = []
+    if pending_retry_limit > 0:
+        pending_retry_signals = (
+            await session.execute(
+                select(Signal)
+                .join(ExecutionDecision, ExecutionDecision.signal_id == Signal.id)
+                .where(
+                    ExecutionDecision.strategy_run_id == strategy_run.id,
+                    ExecutionDecision.decision_status == "pending_decision",
+                )
+                .order_by(ExecutionDecision.decision_at.asc(), ExecutionDecision.id.asc())
+                .limit(pending_retry_limit)
+            )
+        ).scalars().all()
+
+    fresh_signal_ids = {signal.id for signal in signals}
+    backlog_signals = await load_unprocessed_kalshi_down_yes_fade_signals(
+        session,
+        strategy_run,
+        exclude_signal_ids=fresh_signal_ids,
+        limit=backlog_limit,
+    )
+    work_items = (
+        [(signal, "fresh_signal") for signal in signals]
+        + [(signal, "retry") for signal in pending_retry_signals if signal.id not in fresh_signal_ids]
+        + [
+            (signal, "backlog_repair")
+            for signal in backlog_signals
+            if signal.id not in fresh_signal_ids
+        ]
+    )
+    platforms = await _market_platforms_for_signals(session, [signal for signal, _kind in work_items])
+
+    candidate_count = 0
+    opened_count = 0
+    retry_candidates = 0
+    backlog_candidates = 0
+    targeted_orderbook_captures = 0
+    targeted_orderbook_skips: dict[str, int] = {}
+    skip_counts: dict[str, int] = {}
+    changed = run_created or state_rehydrated or expired_pending or finalized_orderbook_context
+
+    for signal, attempt_kind in work_items:
+        evaluation = evaluate_kalshi_down_yes_fade_signal(
+            signal,
+            market_platform=platforms.get(signal.market_id),
+        )
+        if not evaluation.in_scope:
+            continue
+
+        candidate_count += 1
+        if attempt_kind == "retry":
+            retry_candidates += 1
+        elif attempt_kind == "backlog_repair":
+            backlog_candidates += 1
+
+        targeted_capture_result = None
+        execution_market_price = signal.price_at_fire
+        execution_observed_at = signal.fired_at
+        current_precheck_reason_code = None
+        current_precheck_reason_label = None
+        if (
+            evaluation.eligible
+            and attempt_kind in {"fresh_signal", "retry"}
+            and targeted_orderbook_captures < targeted_orderbook_limit
+        ):
+            captured_at = datetime.now(timezone.utc)
+            targeted_capture_result = await _capture_targeted_orderbook_snapshot(
+                session,
+                signal,
+                captured_at=captured_at,
+            )
+            changed = True
+            if targeted_capture_result.get("captured"):
+                targeted_orderbook_captures += 1
+                current_midpoint = _decimal(targeted_capture_result.get("midpoint"))
+                execution_observed_at = captured_at
+                if current_midpoint is None:
+                    current_precheck_reason_code = "kalshi_down_yes_fade_current_price_unavailable"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                elif current_midpoint < MIN_YES_PRICE or current_midpoint >= MAX_YES_PRICE:
+                    current_precheck_reason_code = "kalshi_down_yes_fade_current_price_outside_bucket"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                elif signal.estimated_probability is None or _decimal(signal.estimated_probability) is None:
+                    current_precheck_reason_code = "kalshi_down_yes_fade_missing_probability"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                elif (_decimal(signal.estimated_probability) or ZERO) >= current_midpoint:
+                    current_precheck_reason_code = "kalshi_down_yes_fade_current_probability_not_below_price"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                else:
+                    execution_market_price = current_midpoint
+            else:
+                reason = str(targeted_capture_result.get("reason") or "targeted_orderbook_not_captured")
+                targeted_orderbook_skips[reason] = targeted_orderbook_skips.get(reason, 0) + 1
+
+        details = dict(signal.details or {})
+        market_question = str(details.get("market_question") or "")
+        attempted_at = datetime.now(timezone.utc).isoformat()
+        if evaluation.eligible and attempt_kind != "retry":
+            await ensure_pending_execution_decision(
+                session=session,
+                signal_id=signal.id,
+                outcome_id=signal.outcome_id,
+                market_id=signal.market_id,
+                estimated_probability=signal.estimated_probability,
+                market_price=execution_market_price,
+                market_question=market_question,
+                fired_at=execution_observed_at,
+                strategy_run_id=strategy_run.id,
+            )
+        result = await attempt_open_trade(
+            session=session,
+            signal_id=signal.id,
+            outcome_id=signal.outcome_id,
+            market_id=signal.market_id,
+            estimated_probability=signal.estimated_probability,
+            market_price=execution_market_price,
+            market_question=market_question,
+            fired_at=execution_observed_at,
+            strategy_run_id=strategy_run.id,
+            precheck_reason_code=(
+                current_precheck_reason_code
+                if current_precheck_reason_code is not None
+                else (None if evaluation.eligible else evaluation.reason_code)
+            ),
+            precheck_reason_label=current_precheck_reason_label or evaluation.reason_label,
+        )
+        changed = True
+
+        lane_details = dict(details.get(SIGNAL_DETAILS_KEY) or {})
+        lane_details.update(
+            {
+                "strategy_name": STRATEGY_NAME,
+                "strategy_family": STRATEGY_FAMILY,
+                "strategy_version": STRATEGY_VERSION_KEY,
+                "strategy_run_id": str(strategy_run.id),
+                "evaluated_at": attempted_at,
+                "attempt_kind": attempt_kind,
+                "eligible": evaluation.eligible,
+                "intended_direction": "buy_no",
+                "targeted_orderbook_capture": targeted_capture_result,
+                "execution_market_price": str(execution_market_price) if execution_market_price is not None else None,
+                "execution_observed_at": (
+                    _ensure_utc(execution_observed_at).isoformat() if execution_observed_at is not None else None
+                ),
+                "current_execution_precheck_reason_code": current_precheck_reason_code,
+                "decision": result.decision,
+                "reason_code": result.reason_code,
+                "reason_label": result.reason_label,
+                "detail": result.detail,
+                "trade_id": str(result.trade.id) if result.trade is not None else None,
+                "evaluation": evaluation.diagnostics or {},
+            }
+        )
+        if result.diagnostics:
+            lane_details["diagnostics"] = result.diagnostics
+        details[SIGNAL_DETAILS_KEY] = lane_details
+        signal.details = details
+
+        if result.trade is not None:
+            opened_count += 1
+        else:
+            skip_counts[result.reason_code or "unknown"] = skip_counts.get(result.reason_code or "unknown", 0) + 1
+
+    if changed:
+        await session.commit()
+
+    if candidate_count or run_created or expired_pending or finalized_orderbook_context:
+        logger.info(
+            "Kalshi down-YES fade paper lane: opened %d trade(s) from %d candidate signal(s)",
+            opened_count,
+            candidate_count,
+        )
+        if targeted_orderbook_captures or targeted_orderbook_skips:
+            logger.info(
+                "Kalshi down-YES fade targeted orderbooks: captured=%d skips=%s",
+                targeted_orderbook_captures,
+                targeted_orderbook_skips,
+            )
+        if skip_counts:
+            logger.info("Kalshi down-YES fade skips by reason: %s", skip_counts)
+
+    return {
+        "strategy_run_id": str(strategy_run.id),
+        "run_created": run_created,
+        "state_rehydrated": state_rehydrated,
+        "candidate_count": candidate_count,
+        "opened_count": opened_count,
+        "retry_candidates": retry_candidates,
+        "backlog_candidates": backlog_candidates,
+        "expired_pending_decisions": expired_pending,
+        "finalized_orderbook_context_decisions": finalized_orderbook_context,
+        "targeted_orderbook_captures": targeted_orderbook_captures,
+        "targeted_orderbook_skips": targeted_orderbook_skips,
+        "skip_counts": skip_counts,
+    }

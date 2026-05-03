@@ -584,7 +584,7 @@ async def test_execution_policy_api_and_health_surfaces(client, engine, monkeypa
     monkeypatch.setattr(settings, "polymarket_execution_policy_enabled", True)
 
     session_factory = _session_factory(engine)
-    fired_at = datetime(2026, 4, 14, 13, 0, 0, tzinfo=timezone.utc)
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
 
     async with session_factory() as session:
         seeded = await _seed_polymarket_execution_fixture(
@@ -657,4 +657,3 @@ async def test_execution_policy_api_and_health_surfaces(client, engine, monkeypa
     assert phase6["enabled"] is True
     assert phase6["recent_action_mix"]["cross_now"] >= 1
     assert phase6["recent_decisions_24h"] >= 1
-

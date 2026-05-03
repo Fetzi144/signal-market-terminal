@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     min_volume_24h: float = 500.0
     market_pagination_cap: int = 100000
     orderbook_sample_size: int = 50
+    snapshot_price_heartbeat_seconds: int = 900
+    snapshot_price_change_epsilon: float = 0.000001
+    snapshot_volume_liquidity_change_ratio: float = 0.25
+    kalshi_snapshot_full_universe_enabled: bool = False
+    kalshi_snapshot_max_active_outcomes: int = 5000
+    kalshi_snapshot_max_market_horizon_days: int = 45
     polymarket_stream_enabled: bool = False
     polymarket_resync_on_startup: bool = True
     polymarket_stream_reconnect_base_seconds: float = 1.0
@@ -247,6 +253,10 @@ class Settings(BaseSettings):
     paper_trading_enabled: bool = True
     paper_trading_pending_decision_max_age_seconds: int = 900
     paper_trading_orderbook_context_finalization_grace_seconds: int = 120
+    paper_trading_profitability_filter_enabled: bool = False
+    paper_trading_max_resolution_horizon_days: int = 30
+    paper_trading_min_market_liquidity_usd: float = 500.0
+    paper_trading_require_market_end_date: bool = True
     shadow_execution_max_staleness_seconds: int = 180
     shadow_execution_max_forward_seconds: int = 30
     shadow_execution_min_fill_pct: float = 0.20
@@ -278,9 +288,9 @@ class Settings(BaseSettings):
     alert_signal_types: str | None = None  # Comma-separated, None = all types
 
     # Retention
-    retention_price_snapshots_days: int = 30
-    retention_orderbook_snapshots_days: int = 14
-    retention_signals_days: int = 90
+    retention_price_snapshots_days: int = 3
+    retention_orderbook_snapshots_days: int = 7
+    retention_signals_days: int = 45
 
     # Scheduler
     cleanup_interval_hours: int = 6
@@ -335,6 +345,7 @@ class Settings(BaseSettings):
         "deadline_near_price_threshold_pct",
         "min_volume_24h", "connector_timeout_seconds",
         "shadow_execution_min_fill_pct",
+        "paper_trading_min_market_liquidity_usd",
         "polymarket_structure_max_notional_per_plan",
         "polymarket_structure_min_depth_per_leg",
         "polymarket_stream_reconnect_base_seconds",
@@ -387,9 +398,13 @@ class Settings(BaseSettings):
         "alert_batch_limit",
         "market_pagination_cap",
         "orderbook_sample_size",
+        "snapshot_price_heartbeat_seconds",
+        "kalshi_snapshot_max_active_outcomes",
+        "kalshi_snapshot_max_market_horizon_days",
         "cleanup_interval_hours",
         "paper_trading_pending_decision_max_age_seconds",
         "paper_trading_orderbook_context_finalization_grace_seconds",
+        "paper_trading_max_resolution_horizon_days",
         "shadow_execution_max_staleness_seconds",
         "shadow_execution_max_forward_seconds",
         "scheduler_lease_seconds",
@@ -445,6 +460,8 @@ class Settings(BaseSettings):
         "polymarket_pilot_max_daily_loss_usd",
         "polymarket_pilot_shadow_gap_breach_bps",
         "polymarket_pilot_semi_auto_max_avg_shadow_gap_bps",
+        "snapshot_price_change_epsilon",
+        "snapshot_volume_liquidity_change_ratio",
     )
     @classmethod
     def polymarket_execution_policy_thresholds_must_be_non_negative(cls, v: float) -> float:

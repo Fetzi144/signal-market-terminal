@@ -1,11 +1,12 @@
 """Health and observability endpoint."""
+import json
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -424,6 +425,50 @@ def _expires_in_seconds(*, now: datetime, value: datetime | None) -> int | None:
     return max(0, int((value_utc - now).total_seconds()))
 
 
+async def _estimated_postgres_table_count(db: AsyncSession, table_name: str) -> int | None:
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return None
+    value = (
+        await db.execute(
+            text(
+                """
+                SELECT GREATEST(COALESCE(c.reltuples, 0), 0)::bigint
+                FROM pg_class c
+                WHERE c.oid = to_regclass(:table_name)
+                """
+            ),
+            {"table_name": table_name},
+        )
+    ).scalar()
+    return int(value) if value is not None else None
+
+
+async def _estimated_postgres_query_count(
+    db: AsyncSession,
+    sql: str,
+    params: dict[str, Any] | None = None,
+) -> int | None:
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        return None
+    raw_plan = (
+        await db.execute(
+            text(f"EXPLAIN (FORMAT JSON) {sql}"),
+            params or {},
+        )
+    ).scalar()
+    if raw_plan is None:
+        return None
+    if isinstance(raw_plan, str):
+        raw_plan = json.loads(raw_plan)
+    plan_root = raw_plan[0] if isinstance(raw_plan, list) and raw_plan else raw_plan
+    plan = plan_root.get("Plan") if isinstance(plan_root, dict) else None
+    if not isinstance(plan, dict) or plan.get("Plan Rows") is None:
+        return None
+    return max(0, int(plan["Plan Rows"]))
+
+
 def _build_runtime_invariants(
     *,
     now: datetime,
@@ -550,19 +595,30 @@ def _build_scheduler_lease_status(
 async def health_summary(db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
 
-    active_markets = (
-        await db.execute(select(func.count(Market.id)).where(Market.active.is_(True)))
-    ).scalar() or 0
+    active_markets = await _estimated_postgres_query_count(
+        db,
+        "SELECT 1 FROM markets WHERE active IS TRUE",
+    )
+    if active_markets is None:
+        active_markets = (
+            await db.execute(select(func.count(Market.id)).where(Market.active.is_(True)))
+        ).scalar() or 0
 
     threshold = Decimal(str(settings.alert_rank_threshold))
-    recent_alerts = (
-        await db.execute(
-            select(func.count(Signal.id)).where(
-                Signal.rank_score >= threshold,
-                Signal.fired_at >= now - timedelta(hours=24),
+    recent_alerts = await _estimated_postgres_query_count(
+        db,
+        "SELECT 1 FROM signals WHERE rank_score >= :threshold AND fired_at >= :since",
+        {"threshold": threshold, "since": now - timedelta(hours=24)},
+    )
+    if recent_alerts is None:
+        recent_alerts = (
+            await db.execute(
+                select(func.count(Signal.id)).where(
+                    Signal.rank_score >= threshold,
+                    Signal.fired_at >= now - timedelta(hours=24),
+                )
             )
-        )
-    ).scalar() or 0
+        ).scalar() or 0
 
     ingestion_statuses: list[IngestionStatus] = []
     ingestion_failures = False
@@ -602,13 +658,24 @@ async def health_summary(db: AsyncSession = Depends(get_db)):
         scheduler_lease=scheduler_lease,
     )
     lease_heartbeat_threshold = max(1, settings.scheduler_lease_renew_interval_seconds * 2)
-    lease_failing = (
-        not scheduler_lease_status.owner_token
-        or scheduler_lease_status.expires_in_seconds is None
-        or scheduler_lease_status.expires_in_seconds <= 0
-        or scheduler_lease_status.heartbeat_freshness_seconds is None
-        or scheduler_lease_status.heartbeat_freshness_seconds > lease_heartbeat_threshold
+    lease_observed = any(
+        value is not None
+        for value in (
+            scheduler_lease_status.owner_token,
+            scheduler_lease_status.heartbeat_freshness_seconds,
+            scheduler_lease_status.expires_in_seconds,
+        )
     )
+    if not settings.scheduler_enabled and not lease_observed:
+        lease_failing = False
+    else:
+        lease_failing = (
+            not scheduler_lease_status.owner_token
+            or scheduler_lease_status.expires_in_seconds is None
+            or scheduler_lease_status.expires_in_seconds <= 0
+            or scheduler_lease_status.heartbeat_freshness_seconds is None
+            or scheduler_lease_status.heartbeat_freshness_seconds > lease_heartbeat_threshold
+        )
 
     overall_status = "ok"
     if active_markets == 0 or ingestion_failures or ingestion_stale or lease_failing:
@@ -628,23 +695,41 @@ async def health_summary(db: AsyncSession = Depends(get_db)):
 async def health(db: AsyncSession = Depends(get_db)):
     now = datetime.now(timezone.utc)
 
-    active_markets = (await db.execute(
-        select(func.count(Market.id)).where(Market.active.is_(True))
-    )).scalar() or 0
+    active_markets = await _estimated_postgres_query_count(
+        db,
+        "SELECT 1 FROM markets WHERE active IS TRUE",
+    )
+    if active_markets is None:
+        active_markets = (await db.execute(
+            select(func.count(Market.id)).where(Market.active.is_(True))
+        )).scalar() or 0
 
-    total_signals = (await db.execute(select(func.count(Signal.id)))).scalar() or 0
-    unresolved = (await db.execute(
-        select(func.count(Signal.id)).where(Signal.resolved.is_(False))
-    )).scalar() or 0
+    total_signals = await _estimated_postgres_table_count(db, "signals")
+    if total_signals is None:
+        total_signals = (await db.execute(select(func.count(Signal.id)))).scalar() or 0
+    unresolved = await _estimated_postgres_query_count(
+        db,
+        "SELECT 1 FROM signals WHERE resolved IS FALSE",
+    )
+    if unresolved is None:
+        unresolved = (await db.execute(
+            select(func.count(Signal.id)).where(Signal.resolved.is_(False))
+        )).scalar() or 0
 
     # Count high-rank signals in last 24h (alerts)
     threshold = Decimal(str(settings.alert_rank_threshold))
-    recent_alerts = (await db.execute(
-        select(func.count(Signal.id)).where(
-            Signal.rank_score >= threshold,
-            Signal.fired_at >= now - timedelta(hours=24),
-        )
-    )).scalar() or 0
+    recent_alerts = await _estimated_postgres_query_count(
+        db,
+        "SELECT 1 FROM signals WHERE rank_score >= :threshold AND fired_at >= :since",
+        {"threshold": threshold, "since": now - timedelta(hours=24)},
+    )
+    if recent_alerts is None:
+        recent_alerts = (await db.execute(
+            select(func.count(Signal.id)).where(
+                Signal.rank_score >= threshold,
+                Signal.fired_at >= now - timedelta(hours=24),
+            )
+        )).scalar() or 0
 
     # Latest ingestion runs by type
     ingestion_statuses = []
@@ -664,8 +749,12 @@ async def health(db: AsyncSession = Depends(get_db)):
         ))
 
     polymarket_phase2 = await fetch_polymarket_meta_sync_status(db)
-    polymarket_phase1 = await fetch_polymarket_stream_status(db)
-    polymarket_phase3 = await fetch_polymarket_raw_storage_status(db)
+    polymarket_phase1 = await fetch_polymarket_stream_status(
+        db,
+        refresh_watch_registry=False,
+        include_details=False,
+    )
+    polymarket_phase3 = await fetch_polymarket_raw_storage_status(db, include_recent_rows=False)
     polymarket_phase4 = await fetch_polymarket_book_recon_status(db)
     polymarket_phase5 = await fetch_polymarket_feature_status(db)
     polymarket_phase6 = await fetch_polymarket_execution_policy_status(db)

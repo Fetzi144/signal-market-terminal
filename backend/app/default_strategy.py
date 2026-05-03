@@ -37,6 +37,11 @@ SKIP_REASON_LABELS = {
     "execution_partial_fill_below_minimum": "Partial fill below minimum",
     "execution_ev_below_threshold": "Executable EV below threshold",
     "execution_size_zero_after_fill_cap": "Executable size is zero after fill cap",
+    "profitability_market_inactive": "Market is inactive",
+    "profitability_market_end_date_missing": "Market resolution date missing",
+    "profitability_market_long_dated": "Market resolution is too far away",
+    "profitability_market_liquidity_too_low": "Market liquidity below profitability filter",
+    "profitability_market_metadata_missing": "Market metadata missing",
 }
 
 
@@ -172,6 +177,10 @@ def get_default_strategy_contract(*, started_at: datetime | None = None) -> dict
         "paper_trading_enabled": settings.paper_trading_enabled,
         "paper_trading_pending_decision_max_age_seconds": settings.paper_trading_pending_decision_max_age_seconds,
         "paper_trading_orderbook_context_finalization_grace_seconds": settings.paper_trading_orderbook_context_finalization_grace_seconds,
+        "paper_trading_profitability_filter_enabled": settings.paper_trading_profitability_filter_enabled,
+        "paper_trading_max_resolution_horizon_days": settings.paper_trading_max_resolution_horizon_days,
+        "paper_trading_min_market_liquidity_usd": settings.paper_trading_min_market_liquidity_usd,
+        "paper_trading_require_market_end_date": settings.paper_trading_require_market_end_date,
     }
 
 

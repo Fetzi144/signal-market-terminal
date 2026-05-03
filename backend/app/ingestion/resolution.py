@@ -15,6 +15,23 @@ from app.models.snapshot import PriceSnapshot
 logger = logging.getLogger(__name__)
 
 
+def _normalize_side(value) -> str:
+    return str(value or "").strip().lower()
+
+
+def _kalshi_outcome_side(outcome: Outcome) -> str | None:
+    for raw_value in (outcome.name, outcome.platform_outcome_id, outcome.token_id):
+        text = _normalize_side(raw_value)
+        if not text:
+            continue
+        if text in {"yes", "no"}:
+            return text
+        parts = text.replace(":", "_").replace("-", "_").split("_")
+        if parts and parts[-1] in {"yes", "no"}:
+            return parts[-1]
+    return None
+
+
 async def resolve_signals(session: AsyncSession, platform: str, resolved_markets: list[dict]) -> int:
     """Match resolved markets to signals and set resolved_correctly + CLV fields.
 
@@ -180,14 +197,14 @@ async def _get_winning_outcome_ids(
 
     elif platform == "kalshi":
         # Kalshi result is "yes" or "no"
-        winning_outcome = rm.get("winning_outcome", "").lower()
+        winning_outcome = _normalize_side(rm.get("winning_outcome"))
         if winning_outcome:
             outcomes_result = await session.execute(
                 select(Outcome).where(Outcome.market_id == market.id)
             )
             outcomes = outcomes_result.scalars().all()
             for outcome in outcomes:
-                if outcome.name.lower() == winning_outcome:
+                if _kalshi_outcome_side(outcome) == winning_outcome:
                     winning_ids.add(outcome.id)
 
     return winning_ids

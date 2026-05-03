@@ -14,10 +14,42 @@ from app.models.polymarket_raw import (
     PolymarketRawCaptureRun,
     PolymarketTradeTape,
 )
+from app.models.polymarket_stream import (
+    PolymarketIngestIncident,
+    PolymarketMarketEvent,
+    PolymarketResyncRun,
+)
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 
 logger = logging.getLogger(__name__)
+_RAW_EVENT_DELETE_BATCH_SIZE = 5_000
+
+
+async def _delete_in_batches(
+    session: AsyncSession,
+    model,
+    pk_col,
+    *filters,
+    batch_size: int = _RAW_EVENT_DELETE_BATCH_SIZE,
+) -> int:
+    """Delete large retention sets in small transactions."""
+    total = 0
+    while True:
+        ids = (
+            await session.execute(
+                select(pk_col)
+                .where(*filters)
+                .order_by(pk_col.asc())
+                .limit(max(1, int(batch_size)))
+            )
+        ).scalars().all()
+        if not ids:
+            break
+        result = await session.execute(delete(model).where(pk_col.in_(ids)))
+        await session.commit()
+        total += int(result.rowcount or 0)
+    return total
 
 
 async def cleanup_old_data(session: AsyncSession) -> dict[str, int]:
@@ -94,6 +126,25 @@ async def cleanup_old_data(session: AsyncSession) -> dict[str, int]:
         )
     )
     counts["polymarket_raw_capture_runs"] = result.rowcount
+
+    result = await session.execute(
+        delete(PolymarketIngestIncident).where(PolymarketIngestIncident.created_at < raw_cutoff)
+    )
+    counts["polymarket_ingest_incidents"] = result.rowcount
+
+    result = await session.execute(
+        delete(PolymarketResyncRun).where(PolymarketResyncRun.started_at < raw_cutoff)
+    )
+    counts["polymarket_resync_runs"] = result.rowcount
+
+    # Raw market events are one of the scanner's largest tables. Delete them
+    # last so ON DELETE CASCADE/SET NULL can clean dependent evidence safely.
+    counts["polymarket_market_events"] = await _delete_in_batches(
+        session,
+        PolymarketMarketEvent,
+        PolymarketMarketEvent.id,
+        PolymarketMarketEvent.received_at_local < raw_cutoff,
+    )
 
     await session.commit()
 

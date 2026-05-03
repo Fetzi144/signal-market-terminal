@@ -635,11 +635,17 @@ async def list_polymarket_resync_runs(
     return [_serialize_resync_run(row) for row in result.scalars().all()], total
 
 
-async def fetch_polymarket_stream_status(session: AsyncSession) -> dict[str, Any]:
-    await ensure_watch_registry_bootstrapped(session, commit=True)
+async def fetch_polymarket_stream_status(
+    session: AsyncSession,
+    *,
+    refresh_watch_registry: bool = True,
+    include_details: bool = True,
+) -> dict[str, Any]:
+    if refresh_watch_registry:
+        await ensure_watch_registry_bootstrapped(session, commit=True)
     status = await session.get(PolymarketStreamStatus, STATUS_VENUE)
     watched_count = await _count_watched_assets(session)
-    metadata_sync = await fetch_polymarket_meta_sync_status(session)
+    metadata_sync = await fetch_polymarket_meta_sync_status(session) if include_details else {}
 
     last_event_result = await session.execute(
         select(func.max(PolymarketMarketEvent.received_at_local)).where(
@@ -656,24 +662,30 @@ async def fetch_polymarket_stream_status(session: AsyncSession) -> dict[str, Any
     )
     last_successful_resync_at = last_successful_resync_result.scalar_one_or_none()
 
-    recent_incidents_result = await session.execute(
-        select(PolymarketIngestIncident)
-        .order_by(PolymarketIngestIncident.created_at.desc())
-        .limit(10)
-    )
-    recent_incidents = [_serialize_incident(row) for row in recent_incidents_result.scalars().all()]
-
-    recent_runs_result = await session.execute(
-        select(PolymarketResyncRun)
-        .order_by(PolymarketResyncRun.started_at.desc())
-        .limit(10)
-    )
-    recent_resync_runs = [_serialize_resync_run(row) for row in recent_runs_result.scalars().all()]
-
     now = utcnow()
-    events_1m = await _count_events_since(session, now - timedelta(minutes=1))
-    events_5m = await _count_events_since(session, now - timedelta(minutes=5))
-    events_15m = await _count_events_since(session, now - timedelta(minutes=15))
+    recent_incidents: list[dict[str, Any]] = []
+    recent_resync_runs: list[dict[str, Any]] = []
+    events_1m = 0
+    events_5m = 0
+    events_15m = 0
+    if include_details:
+        recent_incidents_result = await session.execute(
+            select(PolymarketIngestIncident)
+            .order_by(PolymarketIngestIncident.created_at.desc())
+            .limit(10)
+        )
+        recent_incidents = [_serialize_incident(row) for row in recent_incidents_result.scalars().all()]
+
+        recent_runs_result = await session.execute(
+            select(PolymarketResyncRun)
+            .order_by(PolymarketResyncRun.started_at.desc())
+            .limit(10)
+        )
+        recent_resync_runs = [_serialize_resync_run(row) for row in recent_runs_result.scalars().all()]
+
+        events_1m = await _count_events_since(session, now - timedelta(minutes=1))
+        events_5m = await _count_events_since(session, now - timedelta(minutes=5))
+        events_15m = await _count_events_since(session, now - timedelta(minutes=15))
     heartbeat_reference = last_event_received_at or (status.last_message_received_at if status else None)
     if heartbeat_reference is not None and heartbeat_reference.tzinfo is None:
         heartbeat_reference = heartbeat_reference.replace(tzinfo=timezone.utc)
@@ -972,7 +984,11 @@ class PolymarketStreamService:
 
     async def _list_watched_asset_ids(self) -> list[str]:
         async with self._session_factory() as session:
-            return await list_watched_polymarket_assets(session)
+            return await list_watched_polymarket_assets(
+                session,
+                limit=max(1, int(settings.polymarket_snapshot_max_watched_assets)),
+                prioritize=True,
+            )
 
     async def _set_connected(self, connection_id: uuid.UUID, subscription_count: int) -> None:
         async with self._session_factory() as session:

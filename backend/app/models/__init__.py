@@ -95,6 +95,7 @@ from app.models.polymarket_stream import (
 )
 from app.models.portfolio import Position, Trade
 from app.models.push_subscription import PushSubscription
+from app.models.research_lab import ResearchBatch, ResearchLaneResult
 from app.models.scheduler_lease import SchedulerLease
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
@@ -196,6 +197,8 @@ __all__ = [
     "PortfolioOptimizerRecommendation",
     "InventoryControlSnapshot",
     "PushSubscription",
+    "ResearchBatch",
+    "ResearchLaneResult",
     "SchedulerLease",
     "WalletProfile",
     "WalletActivity",

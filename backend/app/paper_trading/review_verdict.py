@@ -98,12 +98,13 @@ def build_review_verdict(
             )
 
         integrity_errors = list(trade_funnel.get("integrity_errors") or [])
-        if integrity_errors:
+        integrity_error_count = int(trade_funnel.get("integrity_error_count") or len(integrity_errors))
+        if integrity_error_count:
             blockers.append(
                 _review_blocker(
                     "integrity_errors",
                     "Integrity errors",
-                    f"{len(integrity_errors)} explicit integrity error(s) remain in the qualified default-strategy ledger.",
+                    f"{integrity_error_count} explicit integrity error(s) remain in the qualified default-strategy ledger.",
                 )
             )
 
@@ -183,7 +184,7 @@ def build_review_verdict(
             "pending_decision_count": pending_watch.get("count"),
             "pending_decision_max_age_seconds": pending_watch.get("max_age_seconds"),
             "funnel_conservation_holds": trade_funnel.get("conservation_holds"),
-            "integrity_error_count": len(trade_funnel.get("integrity_errors") or []),
+            "integrity_error_count": int(trade_funnel.get("integrity_error_count") or len(trade_funnel.get("integrity_errors") or [])),
             "replay_coverage_mode": replay.get("coverage_mode"),
         },
     }

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Numeric, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -79,6 +79,34 @@ class Signal(Base):
         Index("ix_signal_type", "signal_type", "fired_at"),
         Index("ix_signal_rank", "rank_score"),
         Index("ix_signal_rank_fired", "rank_score", "fired_at"),
+        Index(
+            "ix_signal_confluence_fired",
+            "fired_at",
+            sqlite_where=text("signal_type = 'confluence'"),
+            postgresql_where=text("signal_type = 'confluence'"),
+        ),
+        Index(
+            "ix_signal_resolved_fired_type_rank",
+            "fired_at",
+            "signal_type",
+            "rank_score",
+            sqlite_where=text("resolved_correctly IS NOT NULL"),
+            postgresql_where=text("resolved_correctly IS NOT NULL"),
+        ),
+        Index(
+            "ix_signal_qualified_type_fired_ev",
+            "signal_type",
+            "fired_at",
+            "expected_value",
+            sqlite_where=text(
+                "outcome_id IS NOT NULL AND estimated_probability IS NOT NULL "
+                "AND price_at_fire IS NOT NULL AND expected_value IS NOT NULL"
+            ),
+            postgresql_where=text(
+                "outcome_id IS NOT NULL AND estimated_probability IS NOT NULL "
+                "AND price_at_fire IS NOT NULL AND expected_value IS NOT NULL"
+            ),
+        ),
         Index("ix_signal_timeframe", "timeframe"),
     )
 

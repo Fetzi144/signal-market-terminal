@@ -21,6 +21,7 @@ from app.ingestion.polymarket_execution_policy import (
 )
 from app.ingestion.polymarket_risk_graph import assess_paper_trade_risk
 from app.models.execution_decision import ExecutionDecision
+from app.models.market import Market
 from app.models.paper_trade import PaperTrade
 from app.models.strategy_run import StrategyRun
 from app.paper_trading import portfolio_views as portfolio_views_module
@@ -56,6 +57,11 @@ REASON_LABELS = {
     "execution_partial_fill_below_minimum": "Partial fill below minimum",
     "execution_ev_below_threshold": "Executable EV below threshold",
     "execution_size_zero_after_fill_cap": "Executable size is zero after fill cap",
+    "profitability_market_inactive": "Market is inactive",
+    "profitability_market_end_date_missing": "Market resolution date missing",
+    "profitability_market_long_dated": "Market resolution is too far away",
+    "profitability_market_liquidity_too_low": "Market liquidity below profitability filter",
+    "profitability_market_metadata_missing": "Market metadata missing",
     "risk_state_uninitialized": "Run risk state not initialized",
     "risk_local_total_exposure": "Local paper-book total exposure limit reached",
     "risk_local_cluster_exposure": "Local paper-book cluster exposure limit reached",
@@ -268,6 +274,96 @@ def _decision_action(decision: str, action: str | None = None) -> str:
     if decision == "pending_decision":
         return "pending"
     return "skip"
+
+
+def _market_liquidity_proxy(market: Market) -> Decimal:
+    values = [
+        Decimal(str(value))
+        for value in (market.last_liquidity, market.last_volume_24h)
+        if value is not None
+    ]
+    return max(values) if values else ZERO
+
+
+async def _paper_profitability_market_precheck(
+    session: AsyncSession,
+    *,
+    market_id: uuid.UUID,
+    observed_at: datetime,
+) -> dict | None:
+    if not settings.paper_trading_profitability_filter_enabled:
+        return None
+
+    market = await session.get(Market, market_id)
+    if market is None:
+        return {
+            "reason_code": "profitability_market_metadata_missing",
+            "detail": f"Market metadata missing for {market_id}",
+            "diagnostics": {
+                "market_id": str(market_id),
+                "profitability_filter_enabled": True,
+            },
+        }
+
+    diagnostics = {
+        "market_id": str(market.id),
+        "platform": market.platform,
+        "platform_id": market.platform_id,
+        "active": bool(market.active),
+        "market_end_date": _ensure_utc(market.end_date).isoformat() if market.end_date else None,
+        "max_resolution_horizon_days": settings.paper_trading_max_resolution_horizon_days,
+        "min_market_liquidity_usd": settings.paper_trading_min_market_liquidity_usd,
+        "last_liquidity": str(market.last_liquidity) if market.last_liquidity is not None else None,
+        "last_volume_24h": str(market.last_volume_24h) if market.last_volume_24h is not None else None,
+    }
+    if not bool(market.active):
+        return {
+            "reason_code": "profitability_market_inactive",
+            "detail": "Market is inactive; paper evidence would not be a clean executable candidate.",
+            "diagnostics": diagnostics,
+        }
+
+    end_date = _ensure_utc(market.end_date)
+    if end_date is None:
+        if settings.paper_trading_require_market_end_date:
+            return {
+                "reason_code": "profitability_market_end_date_missing",
+                "detail": "Market has no end date, so it cannot contribute timely profitability evidence.",
+                "diagnostics": diagnostics,
+            }
+        return None
+
+    days_to_end = round((end_date - observed_at).total_seconds() / 86400, 4)
+    diagnostics["days_to_end"] = days_to_end
+    if days_to_end <= 0:
+        return {
+            "reason_code": "profitability_market_inactive",
+            "detail": "Market has already reached or passed its end date.",
+            "diagnostics": diagnostics,
+        }
+    if days_to_end > float(settings.paper_trading_max_resolution_horizon_days):
+        return {
+            "reason_code": "profitability_market_long_dated",
+            "detail": (
+                f"Market resolves in {days_to_end:.2f} days, beyond the "
+                f"{settings.paper_trading_max_resolution_horizon_days}-day paper-profitability horizon."
+            ),
+            "diagnostics": diagnostics,
+        }
+
+    liquidity_proxy = _market_liquidity_proxy(market)
+    diagnostics["liquidity_proxy_usd"] = str(liquidity_proxy)
+    min_liquidity = Decimal(str(settings.paper_trading_min_market_liquidity_usd))
+    if liquidity_proxy < min_liquidity:
+        return {
+            "reason_code": "profitability_market_liquidity_too_low",
+            "detail": (
+                f"Market liquidity/24h volume proxy ${liquidity_proxy} is below the "
+                f"${min_liquidity} paper-profitability floor."
+            ),
+            "diagnostics": diagnostics,
+        }
+    return None
 
 
 async def build_execution_decision(
@@ -673,6 +769,19 @@ async def build_execution_decision(
             decision="skipped",
             reason_code=derived_precheck_reason_code,
             reason_label=derived_precheck_reason_label,
+        )
+
+    profitability_precheck = await _paper_profitability_market_precheck(
+        session,
+        market_id=market_id,
+        observed_at=datetime.now(timezone.utc),
+    )
+    if profitability_precheck is not None:
+        return await finish(
+            decision="skipped",
+            reason_code=profitability_precheck["reason_code"],
+            detail=profitability_precheck["detail"],
+            diagnostics=profitability_precheck["diagnostics"],
         )
 
     bankroll = Decimal(str(settings.default_bankroll))

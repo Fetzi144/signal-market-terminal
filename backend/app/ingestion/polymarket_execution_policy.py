@@ -410,8 +410,9 @@ async def evaluate_polymarket_execution_policy(
     decision_at: datetime,
     baseline_target_size: Decimal,
     bankroll: Decimal,
+    force_enabled: bool = False,
 ) -> PolymarketExecutionPolicyResult:
-    if not settings.polymarket_execution_policy_enabled:
+    if not settings.polymarket_execution_policy_enabled and not force_enabled:
         return PolymarketExecutionPolicyResult(
             applicable=False,
             policy_version=POLICY_VERSION,

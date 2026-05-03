@@ -13,7 +13,7 @@ from app.models.paper_trade import PaperTrade
 from app.models.strategy_run import StrategyRun
 from app.paper_trading.engine import attempt_open_trade, ensure_pending_execution_decision, resolve_trades
 from app.strategy_runs.service import open_default_strategy_run
-from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_signal
+from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_price_snapshot, make_signal
 from tests.test_trading_intelligence_api import _make_paper_trade
 
 
@@ -34,6 +34,8 @@ async def test_default_strategy_read_endpoints_do_not_create_rows_without_active
         await client.get("/api/v1/paper-trading/history?scope=default_strategy"),
         await client.get("/api/v1/paper-trading/metrics?scope=default_strategy"),
         await client.get("/api/v1/paper-trading/strategy-health"),
+        await client.get("/api/v1/paper-trading/profitability-snapshot"),
+        await client.get("/api/v1/paper-trading/profit-tools"),
         await client.get("/api/v1/paper-trading/pnl-curve?scope=default_strategy"),
         await client.get("/api/v1/paper-trading/default-strategy/run"),
         await client.get("/api/v1/paper-trading/default-strategy/dashboard"),
@@ -49,11 +51,15 @@ async def test_default_strategy_read_endpoints_do_not_create_rows_without_active
     }
 
     health = responses[3].json()
-    lookup = responses[5].json()
-    dashboard = responses[6].json()
+    profitability = responses[4].json()
+    profit_tools = responses[5].json()
+    lookup = responses[7].json()
+    dashboard = responses[8].json()
     assert health["observation"]["status"] == "no_active_run"
     assert health["strategy_run"] is None
     assert health["headline"]["overdue_open_trades"] == 0
+    assert profitability["verdict"] == "insufficient_sample"
+    assert profit_tools["profit_finder_workbench"]["status"] == "no_active_run"
     assert lookup["state"] == "no_active_run"
     assert lookup["strategy_run"] is None
     assert lookup["bootstrap_required"] is True
@@ -724,6 +730,63 @@ async def test_strategy_health_funnel_reconciles_qualified_opened_skipped_and_pe
 
 
 @pytest.mark.asyncio
+async def test_strategy_health_aggregates_large_skipped_decision_funnel(client, session):
+    now = datetime.now(timezone.utc)
+    started_at = now - timedelta(days=31)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=started_at)
+    market = make_market(session, question="Aggregate skipped market")
+    outcome = make_outcome(session, market.id, name="Yes")
+
+    for idx in range(150):
+        fired_at = started_at + timedelta(minutes=idx + 1)
+        signal = make_signal(
+            session,
+            market.id,
+            outcome.id,
+            signal_type="confluence",
+            fired_at=fired_at,
+            dedupe_bucket=fired_at.replace(second=0, microsecond=0),
+            estimated_probability=Decimal("0.6300"),
+            probability_adjustment=Decimal("0.1300"),
+            price_at_fire=Decimal("0.500000"),
+            expected_value=Decimal("0.130000"),
+            details={"direction": "up", "market_question": "Aggregate skipped market", "outcome_name": "Yes"},
+        )
+        session.add(
+            ExecutionDecision(
+                signal_id=signal.id,
+                strategy_run_id=strategy_run.id,
+                decision_at=fired_at,
+                decision_status="skipped",
+                action="skip",
+                reason_code="execution_ev_below_threshold",
+                details={"reason_label": "Executable EV below threshold"},
+            )
+        )
+    await session.commit()
+
+    response = await client.get("/api/v1/paper-trading/strategy-health")
+    assert response.status_code == 200
+    data = response.json()
+    funnel = data["trade_funnel"]
+
+    assert funnel["qualified_signals"] == 150
+    assert funnel["skipped_signals"] == 150
+    assert funnel["opened_trade_signals"] == 0
+    assert funnel["pending_decision_signals"] == 0
+    assert funnel["integrity_error_count"] == 0
+    assert funnel["conservation_holds"] is True
+    assert data["skip_reasons"] == [
+        {
+            "reason_code": "execution_ev_below_threshold",
+            "reason_label": "Executable EV below threshold",
+            "count": 150,
+        }
+    ]
+    assert data["profitability_snapshot"]["skip_funnel"]["skipped_signals"] == 150
+
+
+@pytest.mark.asyncio
 async def test_strategy_health_flags_missing_execution_decision_as_integrity_error(client, session):
     now = datetime.now(timezone.utc)
     started_at = now - timedelta(days=1)
@@ -760,6 +823,118 @@ async def test_strategy_health_flags_missing_execution_decision_as_integrity_err
         }
     ]
     assert data["run_integrity"]["integrity_errors"] == funnel["integrity_errors"]
+
+
+@pytest.mark.asyncio
+async def test_profitability_snapshot_marks_open_trades_to_latest_price(client, session):
+    now = datetime.now(timezone.utc)
+    started_at = now - timedelta(days=31)
+    strategy_run = await open_default_strategy_run(session, launch_boundary_at=started_at)
+    market = make_market(session, question="Mark to market lane", end_date=now + timedelta(days=3))
+    outcome = make_outcome(session, market.id, name="Yes")
+
+    open_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(hours=4),
+        dedupe_bucket=(now - timedelta(hours=4)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        details={"direction": "up", "market_question": "Mark to market lane", "outcome_name": "Yes"},
+    )
+    resolved_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=now - timedelta(days=2),
+        dedupe_bucket=(now - timedelta(days=2)).replace(minute=0, second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        probability_adjustment=Decimal("0.2500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+        resolved=True,
+        resolved_correctly=True,
+        clv=Decimal("0.030000"),
+        profit_loss=Decimal("0.100000"),
+        details={"direction": "up", "market_question": "Mark to market lane", "outcome_name": "Yes"},
+    )
+    session.add_all(
+        [
+            ExecutionDecision(
+                signal_id=open_signal.id,
+                strategy_run_id=strategy_run.id,
+                decision_at=open_signal.fired_at,
+                decision_status="opened",
+                action="cross",
+                direction="buy_yes",
+                executable_entry_price=Decimal("0.400000"),
+                reason_code="opened",
+                details={"source": "test"},
+            ),
+            ExecutionDecision(
+                signal_id=resolved_signal.id,
+                strategy_run_id=strategy_run.id,
+                decision_at=resolved_signal.fired_at,
+                decision_status="opened",
+                action="cross",
+                direction="buy_yes",
+                executable_entry_price=Decimal("0.400000"),
+                reason_code="opened",
+                details={"source": "test"},
+            ),
+        ]
+    )
+    _make_paper_trade(
+        session,
+        open_signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        status="open",
+        entry_price=Decimal("0.400000"),
+        shares=Decimal("100.0000"),
+        size_usd=Decimal("40.00"),
+        opened_at=now - timedelta(hours=4),
+    )
+    _make_paper_trade(
+        session,
+        resolved_signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        status="resolved",
+        pnl=Decimal("25.00"),
+        exit_price=Decimal("1.000000"),
+        resolved_at=now - timedelta(hours=1),
+        opened_at=now - timedelta(days=2),
+    )
+    make_price_snapshot(session, outcome.id, "0.550000", captured_at=now - timedelta(minutes=10))
+    await session.commit()
+
+    response = await client.get("/api/v1/paper-trading/profitability-snapshot")
+    assert response.status_code == 200
+    snapshot = response.json()
+
+    assert snapshot["family"] == "default_strategy"
+    assert snapshot["realized_pnl"] == 25.0
+    assert snapshot["open_mark_to_market_pnl"] == 15.0
+    assert snapshot["mark_to_market_pnl"] == 40.0
+    assert snapshot["open_exposure"] == 40.0
+    assert snapshot["open_trades"] == 1
+    assert snapshot["resolved_trades"] == 1
+    assert snapshot["mark_to_market"]["open_positions_marked"] == 1
+    exposure_buckets = snapshot["open_exposure_buckets"]["buckets"]
+    assert exposure_buckets["short_horizon"]["trade_count"] == 1
+    assert exposure_buckets["short_horizon"]["open_exposure"] == 40.0
+    assert exposure_buckets["short_horizon"]["open_mark_to_market_pnl"] == 15.0
+    assert snapshot["open_exposure_buckets"]["capital_drag"]["open_exposure"] == 0.0
+    assert snapshot["paper_only"] is True
+    assert snapshot["live_submission_permitted"] is False
 
 
 @pytest.mark.asyncio

@@ -5,16 +5,16 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.default_strategy import evaluate_default_strategy_signal
 from app.models.paper_trade import PaperTrade
 from app.models.signal import Signal
 from app.signals.probability import brier_score
 
 ZERO = Decimal("0")
+MAX_DRAWDOWN_SIGNAL_ROWS = 50_000
 
 
 def _ensure_utc(value: datetime | None) -> datetime | None:
@@ -46,6 +46,8 @@ def _compute_max_drawdown(values: list[Decimal]) -> Decimal:
 def _serialize_decimal(value: Decimal | None, *, quantum: Decimal | None = None) -> float | None:
     if value is None:
         return None
+    if not isinstance(value, Decimal):
+        value = Decimal(str(value))
     normalized = value.quantize(quantum) if quantum is not None else value
     return float(normalized)
 
@@ -70,6 +72,57 @@ def _signal_level_summary(*, label: str, signals: list[Signal], cohort_label: st
         "total_profit_loss_per_share": _serialize_decimal(sum(profit_losses, ZERO), quantum=Decimal("0.000001")),
         "max_drawdown_per_share": _serialize_decimal(_compute_max_drawdown(profit_losses), quantum=Decimal("0.000001")),
         "brier_score": _serialize_decimal(brier_score(predictions), quantum=Decimal("0.000001")) if predictions else None,
+    }
+
+
+async def _signal_level_summary_for_filters(
+    session: AsyncSession,
+    *,
+    label: str,
+    filters: list,
+    cohort_label: str,
+) -> dict:
+    resolved_value = case((Signal.resolved_correctly.is_(True), Decimal("1")), else_=Decimal("0"))
+    brier_expr = (Signal.estimated_probability - resolved_value) * (Signal.estimated_probability - resolved_value)
+    row = (
+        await session.execute(
+            select(
+                func.count(Signal.id),
+                func.sum(case((Signal.resolved_correctly.is_(True), 1), else_=0)),
+                func.avg(Signal.clv),
+                func.sum(func.coalesce(Signal.profit_loss, ZERO)),
+                func.avg(brier_expr),
+            ).where(*filters)
+        )
+    ).one()
+    resolved_count = int(row[0] or 0)
+    wins = int(row[1] or 0)
+    total_profit_loss = row[3] or ZERO
+
+    max_drawdown: Decimal | None = None
+    max_drawdown_available = resolved_count <= MAX_DRAWDOWN_SIGNAL_ROWS
+    if max_drawdown_available and resolved_count:
+        pnl_rows = (
+            await session.execute(
+                select(func.coalesce(Signal.profit_loss, ZERO))
+                .where(*filters)
+                .order_by(Signal.fired_at.asc(), Signal.id.asc())
+            )
+        ).scalars().all()
+        max_drawdown = _compute_max_drawdown([Decimal(str(value or ZERO)) for value in pnl_rows])
+
+    return {
+        "available": True,
+        "mode": label,
+        "unit": "per_share",
+        "cohort": cohort_label,
+        "resolved_signals": resolved_count,
+        "win_rate": round(wins / resolved_count, 4) if resolved_count else 0.0,
+        "avg_clv": _serialize_decimal(row[2], quantum=Decimal("0.000001")) if row[2] is not None else None,
+        "total_profit_loss_per_share": _serialize_decimal(total_profit_loss, quantum=Decimal("0.000001")),
+        "max_drawdown_per_share": _serialize_decimal(max_drawdown, quantum=Decimal("0.000001")),
+        "max_drawdown_available": max_drawdown_available,
+        "brier_score": _serialize_decimal(row[4], quantum=Decimal("0.000001")) if row[4] is not None else None,
     }
 
 
@@ -129,32 +182,25 @@ async def compare_strategy_measurement_modes(
     start_date = _ensure_utc(start_date) or datetime.now(timezone.utc)
     end_date = _ensure_utc(end_date) or datetime.now(timezone.utc)
 
-    legacy_query = select(Signal).where(
+    legacy_filters = [
         Signal.fired_at >= start_date,
         Signal.fired_at <= end_date,
         Signal.rank_score >= Decimal(str(settings.legacy_benchmark_rank_threshold)),
         Signal.resolved_correctly.is_not(None),
-    )
+    ]
     if settings.default_strategy_signal_type:
-        legacy_query = legacy_query.where(
-            Signal.signal_type != settings.default_strategy_signal_type,
-        )
+        legacy_filters.append(Signal.signal_type != settings.default_strategy_signal_type)
 
-    legacy_result = await session.execute(legacy_query)
-    legacy_signals = legacy_result.scalars().all()
-
-    default_signal_result = await session.execute(
-        select(Signal).where(
-            Signal.fired_at >= start_date,
-            Signal.fired_at <= end_date,
-            Signal.signal_type == settings.default_strategy_signal_type,
-            Signal.resolved_correctly.is_not(None),
-        )
-    )
-    default_signals = [
-        signal
-        for signal in default_signal_result.scalars().all()
-        if evaluate_default_strategy_signal(signal, started_at=start_date).eligible
+    default_filters = [
+        Signal.fired_at >= start_date,
+        Signal.fired_at <= end_date,
+        Signal.signal_type == settings.default_strategy_signal_type,
+        Signal.resolved_correctly.is_not(None),
+        Signal.outcome_id.is_not(None),
+        Signal.estimated_probability.is_not(None),
+        Signal.price_at_fire.is_not(None),
+        Signal.expected_value.is_not(None),
+        func.abs(Signal.expected_value) >= Decimal(str(settings.min_ev_threshold)),
     ]
 
     default_trade_rows: list[tuple[PaperTrade, Signal]] = []
@@ -172,14 +218,16 @@ async def compare_strategy_measurement_modes(
         )
         default_trade_rows = trade_result.all()
 
-    signal_level_default = _signal_level_summary(
+    signal_level_default = await _signal_level_summary_for_filters(
+        session,
         label="default_strategy",
-        signals=default_signals,
+        filters=default_filters,
         cohort_label="eligible_default_strategy_signals",
     )
-    signal_level_benchmark = _signal_level_summary(
+    signal_level_benchmark = await _signal_level_summary_for_filters(
+        session,
         label="legacy_benchmark",
-        signals=legacy_signals,
+        filters=legacy_filters,
         cohort_label="rank_threshold_signals",
     )
     signal_level_delta = {

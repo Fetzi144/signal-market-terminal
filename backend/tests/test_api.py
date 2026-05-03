@@ -42,6 +42,43 @@ async def test_health_endpoint(client):
 
 
 @pytest.mark.asyncio
+async def test_health_summary_ignores_missing_lease_when_scheduler_disabled(client, session, monkeypatch):
+    from app.api import health as health_api
+
+    monkeypatch.setattr(health_api.settings, "scheduler_enabled", False)
+    now = datetime.now(timezone.utc)
+    make_market(session, platform="kalshi", active=True)
+    session.add(
+        IngestionRun(
+            run_type="market_discovery",
+            platform="kalshi",
+            status="success",
+            started_at=now - timedelta(seconds=30),
+            finished_at=now - timedelta(seconds=25),
+            markets_processed=1,
+        )
+    )
+    session.add(
+        IngestionRun(
+            run_type="snapshot",
+            platform="kalshi",
+            status="success",
+            started_at=now - timedelta(seconds=30),
+            finished_at=now - timedelta(seconds=25),
+            markets_processed=1,
+        )
+    )
+    await session.commit()
+
+    resp = await client.get("/api/v1/health/summary")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["scheduler_lease"]["owner_token"] is None
+
+
+@pytest.mark.asyncio
 async def test_health_endpoint_surfaces_scheduler_and_runtime_status(client, session, monkeypatch):
     from app.api import health as health_api
 
@@ -184,6 +221,26 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert detail_payload["replay_runs"] == []
     assert detail_payload["live_shadow_evaluations"] == []
     assert detail_payload["gate_history"] == []
+
+    profitability_response = await client.get("/api/v1/strategies/profitability")
+    assert profitability_response.status_code == 200
+    profitability_payload = profitability_response.json()
+    assert profitability_payload["paper_only"] is True
+    assert profitability_payload["live_submission_permitted"] is False
+    snapshots = {row["family"]: row for row in profitability_payload["snapshots"]}
+    assert snapshots["default_strategy"]["strategy_version"] == "default_strategy_benchmark_v1"
+    assert snapshots["default_strategy"]["paper_only"] is True
+    assert snapshots["structure"]["strategy_version"] == "structure_candidate_v1"
+    assert snapshots["structure"]["profitability_blockers"] == ["paper_lane_not_populated"]
+    assert snapshots["kalshi_down_yes_fade"]["strategy_version"] == "kalshi_down_yes_fade_v2"
+    assert snapshots["kalshi_down_yes_fade"]["source_kind"] == "kalshi_down_yes_fade_snapshot"
+    assert "paper_lane_not_populated" not in snapshots["kalshi_down_yes_fade"]["profitability_blockers"]
+    assert snapshots["kalshi_low_yes_fade"]["strategy_version"] == "kalshi_low_yes_fade_v1"
+    assert snapshots["kalshi_low_yes_fade"]["source_kind"] == "kalshi_low_yes_fade_snapshot"
+    assert "paper_lane_not_populated" not in snapshots["kalshi_low_yes_fade"]["profitability_blockers"]
+    assert snapshots["maker"]["strategy_version"] == "maker_candidate_v1"
+    assert snapshots["exec_policy"]["strategy_version"] == "exec_policy_infra_v1"
+    assert all(snapshot["live_submission_permitted"] is False for snapshot in snapshots.values())
 
 
 # ── Signals list ────────────────────────────────────────

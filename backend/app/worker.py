@@ -21,6 +21,7 @@ from app.ingestion.polymarket_stream import PolymarketStreamService
 from app.ingestion.structure_engine import PolymarketStructureEngineService
 from app.jobs.scheduler import scheduler as scheduler_runtime
 from app.jobs.scheduler import start_scheduler, stop_scheduler
+from app.strategies.registry import sync_strategy_registry
 
 logger = logging.getLogger(__name__)
 _worker_metrics_started = False
@@ -39,6 +40,16 @@ async def _maybe_await(result):
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+async def _sync_strategy_registry_on_startup() -> None:
+    try:
+        async with async_session() as session:
+            await sync_strategy_registry(session)
+            await session.commit()
+        logger.info("Strategy-family registry synced on worker startup")
+    except Exception:
+        logger.warning("Strategy-family registry sync failed on worker startup", exc_info=True)
 
 
 def _scheduler_supervisor_retry_seconds() -> float:
@@ -108,6 +119,7 @@ async def _run_worker() -> None:
         return
 
     _start_worker_metrics_server()
+    await _sync_strategy_registry_on_startup()
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

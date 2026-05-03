@@ -12,7 +12,11 @@ from app.backtesting.comparison import compare_locked_modes
 from app.config import settings
 from app.models.polymarket_live_execution import CapitalReservation, LiveFill, LiveOrder, PositionLot
 from app.models.polymarket_pilot import PolymarketPilotConfig, PolymarketPilotRun
-from app.paper_trading.analysis import get_strategy_health
+from app.paper_trading.analysis import (
+    clear_default_strategy_evidence_cache,
+    get_default_strategy_activity_fingerprint,
+    get_strategy_health,
+)
 
 _REVIEW_ARTIFACT_NAME_RE = re.compile(
     r"(?P<review_date>\d{4}-\d{2}-\d{2})-default-strategy-baseline\.(?P<extension>json|md)$"
@@ -83,6 +87,37 @@ def _review_generation_guidance() -> dict[str, str]:
     }
 
 
+def _group_default_strategy_review_artifacts(repo_root: Path) -> dict[str, dict[str, Path]]:
+    review_dir = repo_root / "docs" / "strategy-reviews"
+    grouped_artifacts: dict[str, dict[str, Path]] = {}
+    if not review_dir.exists():
+        return grouped_artifacts
+    for path in review_dir.iterdir():
+        if not path.is_file():
+            continue
+        match = _REVIEW_ARTIFACT_NAME_RE.fullmatch(path.name)
+        if match is None:
+            continue
+        review_date = match.group("review_date")
+        extension = match.group("extension")
+        grouped_artifacts.setdefault(review_date, {})[extension] = path
+    return grouped_artifacts
+
+
+def _read_review_json_payload(path: Path | None) -> tuple[dict | None, str | None]:
+    if path is None:
+        return None, "missing"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return None, "unreadable"
+    except json.JSONDecodeError:
+        return None, "invalid"
+    if not isinstance(payload, dict):
+        return None, "invalid"
+    return payload, None
+
+
 def _strategy_run_ref_from_review_payload(review_payload: dict | None) -> dict[str, str | None]:
     strategy_run = (review_payload or {}).get("strategy_run")
     if not isinstance(strategy_run, dict):
@@ -114,19 +149,7 @@ def _contract_ref_from_review_payload(review_payload: dict | None) -> dict[str, 
 
 def get_latest_default_strategy_review_artifact_metadata() -> dict:
     repo_root = _repo_root()
-    review_dir = repo_root / "docs" / "strategy-reviews"
-    grouped_artifacts: dict[str, dict[str, Path]] = {}
-
-    if review_dir.exists():
-        for path in review_dir.iterdir():
-            if not path.is_file():
-                continue
-            match = _REVIEW_ARTIFACT_NAME_RE.fullmatch(path.name)
-            if match is None:
-                continue
-            review_date = match.group("review_date")
-            extension = match.group("extension")
-            grouped_artifacts.setdefault(review_date, {})[extension] = path
+    grouped_artifacts = _group_default_strategy_review_artifacts(repo_root)
 
     if not grouped_artifacts:
         return {
@@ -158,16 +181,8 @@ def get_latest_default_strategy_review_artifact_metadata() -> dict:
     markdown_path = artifacts.get("md")
     json_path = artifacts.get("json")
 
-    review_payload = None
-    json_error = None
-    if json_path is not None:
-        try:
-            review_payload = json.loads(json_path.read_text(encoding="utf-8"))
-        except OSError:
-            json_error = "unreadable"
-        except json.JSONDecodeError:
-            json_error = "invalid"
-    if not isinstance(review_payload, dict):
+    review_payload, json_error = _read_review_json_payload(json_path)
+    if review_payload is None:
         review_payload = {}
 
     markdown_metadata = _parse_review_markdown_metadata(markdown_path)
@@ -212,6 +227,67 @@ def get_latest_default_strategy_review_artifact_metadata() -> dict:
             "json": _repo_relative_path(json_path, repo_root=repo_root),
         },
     }
+
+
+def get_latest_default_strategy_review_artifact_payload() -> dict:
+    repo_root = _repo_root()
+    grouped_artifacts = _group_default_strategy_review_artifacts(repo_root)
+    if not grouped_artifacts:
+        return {
+            "generation_status": "missing",
+            "status_detail": "No default-strategy review artifacts have been generated yet.",
+            "review_date": None,
+            "payload": None,
+            "artifact_paths": {
+                "markdown": None,
+                "json": None,
+            },
+        }
+
+    latest_review_date = max(grouped_artifacts)
+    artifacts = grouped_artifacts[latest_review_date]
+    markdown_path = artifacts.get("md")
+    json_path = artifacts.get("json")
+    payload, json_error = _read_review_json_payload(json_path)
+
+    if json_error == "missing":
+        generation_status = "partial"
+        status_detail = "Markdown review artifact exists, but the JSON artifact is missing."
+    elif json_error == "unreadable":
+        generation_status = "invalid"
+        status_detail = "The latest review JSON artifact could not be read."
+    elif json_error == "invalid":
+        generation_status = "invalid"
+        status_detail = "The latest review JSON artifact could not be parsed."
+    elif markdown_path is not None:
+        generation_status = "complete"
+        status_detail = "Markdown and JSON review artifacts are present."
+    else:
+        generation_status = "partial"
+        status_detail = "JSON review artifact exists, but the markdown artifact is missing."
+
+    return {
+        "generation_status": generation_status,
+        "status_detail": status_detail,
+        "review_date": latest_review_date,
+        "payload": payload if generation_status == "complete" else None,
+        "artifact_paths": {
+            "markdown": _repo_relative_path(markdown_path, repo_root=repo_root),
+            "json": _repo_relative_path(json_path, repo_root=repo_root),
+        },
+    }
+
+
+def should_generate_default_strategy_review(health: dict) -> bool:
+    if health.get("run_state") != "active_run":
+        return False
+    latest_artifact = health.get("latest_review_artifact") or {}
+    freshness = health.get("evidence_freshness") or {}
+    if latest_artifact.get("generation_status") in {"missing", "partial", "invalid"}:
+        return True
+    if freshness.get("artifact_identity_status") == "mismatch":
+        return True
+    return bool(freshness.get("review_outdated"))
 
 
 def _fmt_money(value) -> str:
@@ -286,6 +362,10 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime, 
     evidence_boundary = contract_snapshot.get("evidence_boundary") or {}
     observation = health.get("observation") or {}
     headline = health.get("headline") or {}
+    profitability = health.get("profitability_snapshot") or {}
+    exposure = profitability.get("open_exposure_buckets") or health.get("open_exposure_buckets") or {}
+    exposure_buckets = exposure.get("buckets") or {}
+    capital_drag = exposure.get("capital_drag") or {}
     review_verdict = health.get("review_verdict") or {}
     execution_realism = health.get("execution_realism") or {}
     funnel = health.get("trade_funnel") or {}
@@ -340,6 +420,11 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime, 
         f"- trade `{row['trade_id']}` on `{row['platform']}:{row['platform_id']}` ended {row.get('market_end_date') or '-'}"
         for row in overdue_watch.get("examples", [])
     )
+    exposure_bucket_lines = "\n".join(
+        f"- `{bucket_key}`: {row.get('trade_count', 0)} trade(s), {_fmt_money(row.get('open_exposure'))} exposure, "
+        f"{_fmt_money(row.get('open_mark_to_market_pnl'))} open MTM"
+        for bucket_key, row in exposure_buckets.items()
+    ) or "- No open exposure."
     empty_state = "" if funnel.get("opened_trade_signals", 0) else (
         "\n## Empty State\n\n"
         "No active-run paper trades have resolved yet. Keep the baseline frozen, "
@@ -388,6 +473,28 @@ def _render_review_markdown(health: dict, comparison: dict, *, as_of: datetime, 
 - Brier score: {headline.get('brier_score') if headline.get('brier_score') is not None else '-'}
 - Max drawdown: {_fmt_money(headline.get('max_drawdown'))}
 - Current drawdown pct: {_fmt_pct(headline.get('drawdown_pct'))}
+
+## Profitability Snapshot
+
+- Gate verdict: `{profitability.get('verdict', '-')}`
+- Strategy version: `{profitability.get('strategy_version', '-')}`
+- Window: {profitability.get('window_start') or '-'} to {profitability.get('window_end') or '-'}
+- Realized P&L: {_fmt_money(profitability.get('realized_pnl'))}
+- Mark-to-market P&L: {_fmt_money(profitability.get('mark_to_market_pnl'))}
+- Open exposure: {_fmt_money(profitability.get('open_exposure'))}
+- Resolved trades: {profitability.get('resolved_trades', 0)}
+- Avg CLV: {_fmt_cents(profitability.get('avg_clv'))}
+- Replay coverage: `{profitability.get('replay_coverage_mode', '-')}`
+- Profitability blockers: {", ".join(profitability.get('profitability_blockers') or []) or "-"}
+
+### Open exposure timing
+
+- Short horizon: {exposure.get('short_horizon_days', 7)} day(s)
+- Operating window: {exposure.get('operating_window_days', 30)} day(s)
+- Capital drag exposure: {_fmt_money(capital_drag.get('open_exposure'))}
+- Capital drag share: {capital_drag.get('pct_open_exposure', 0.0)}
+
+{exposure_bucket_lines}
 
 ## Live Automation Safety
 
@@ -505,14 +612,24 @@ def _review_artifact_payload(
     *,
     as_of: datetime,
     live_safety: dict | None = None,
+    activity_fingerprint: dict | None = None,
+    current_activity_fingerprint: dict | None = None,
+    artifact_fingerprint_status: str = "unknown",
 ) -> dict:
     return {
         "generated_at": as_of.isoformat(),
+        "artifact_schema_version": "default_strategy_review_v2",
+        "activity_fingerprint": activity_fingerprint,
+        "current_activity_fingerprint": current_activity_fingerprint,
+        "artifact_fingerprint_status": artifact_fingerprint_status,
         "strategy_run": health.get("strategy_run"),
+        "strategy_health": health,
         "live_safety": live_safety,
         "review_verdict": health.get("review_verdict"),
         "observation": health.get("observation"),
         "headline": health.get("headline"),
+        "profitability_snapshot": health.get("profitability_snapshot"),
+        "open_exposure_buckets": health.get("open_exposure_buckets"),
         "trade_funnel": health.get("trade_funnel"),
         "resolution_reconciliation": health.get("resolution_reconciliation"),
         "pending_decision_watch": health.get("pending_decision_watch"),
@@ -524,6 +641,9 @@ def _review_artifact_payload(
 
 def _render_analysis_markdown(health: dict, comparison: dict, *, as_of: datetime) -> str:
     headline = health.get("headline") or {}
+    profitability = health.get("profitability_snapshot") or {}
+    exposure = profitability.get("open_exposure_buckets") or {}
+    capital_drag = exposure.get("capital_drag") or {}
     execution_realism = health.get("execution_realism") or {}
     signal_level = comparison.get("signal_level") or {}
     benchmark = signal_level.get("benchmark") or {}
@@ -549,6 +669,19 @@ def _render_analysis_markdown(health: dict, comparison: dict, *, as_of: datetime
 - Max drawdown: {_fmt_money(headline.get('max_drawdown'))}
 - Shadow profit factor: {execution_realism.get('shadow_profit_factor') if execution_realism.get('shadow_profit_factor') is not None else '-'}
 
+## Profitability Gate
+
+- Verdict: `{profitability.get('verdict', '-')}`
+- Realized P&L: {_fmt_money(profitability.get('realized_pnl'))}
+- Mark-to-market P&L: {_fmt_money(profitability.get('mark_to_market_pnl'))}
+- Open exposure: {_fmt_money(profitability.get('open_exposure'))}
+- Resolved trades: {profitability.get('resolved_trades', 0)}
+- Avg CLV: {_fmt_cents(profitability.get('avg_clv'))}
+- Replay coverage: `{profitability.get('replay_coverage_mode', '-')}`
+- Blockers: {", ".join(profitability.get('profitability_blockers') or []) or "-"}
+- Capital drag exposure: {_fmt_money(capital_drag.get('open_exposure'))}
+- Capital drag share: {capital_drag.get('pct_open_exposure', 0.0)}
+
 ## Heuristic vs Probability
 
 - Default strategy resolved signals: {default_strategy.get('resolved_signals', 0)}
@@ -569,9 +702,16 @@ def _render_analysis_markdown(health: dict, comparison: dict, *, as_of: datetime
 """
 
 
-async def generate_default_strategy_review(session: AsyncSession) -> dict:
+async def generate_default_strategy_review(session: AsyncSession, *, health: dict | None = None) -> dict:
     as_of = datetime.now(timezone.utc)
-    health = await get_strategy_health(session)
+    health = health or await get_strategy_health(session, use_cache=False)
+    health_activity_fingerprint = health.get("activity_fingerprint") if isinstance(health.get("activity_fingerprint"), dict) else None
+    current_activity_fingerprint = await get_default_strategy_activity_fingerprint(session)
+    artifact_fingerprint_status = (
+        "current"
+        if health_activity_fingerprint is not None and health_activity_fingerprint == current_activity_fingerprint
+        else "activity_changed_since_health"
+    )
     live_safety = await _build_live_safety_snapshot(session)
     strategy_run = health.get("strategy_run") or {}
     comparison = health.get("comparison_modes")
@@ -599,13 +739,22 @@ async def generate_default_strategy_review(session: AsyncSession) -> dict:
     )
     review_json_path.write_text(
         json.dumps(
-            _review_artifact_payload(health, comparison, as_of=as_of, live_safety=live_safety),
+            _review_artifact_payload(
+                health,
+                comparison,
+                as_of=as_of,
+                live_safety=live_safety,
+                activity_fingerprint=health_activity_fingerprint,
+                current_activity_fingerprint=current_activity_fingerprint,
+                artifact_fingerprint_status=artifact_fingerprint_status,
+            ),
             indent=2,
             sort_keys=True,
         ),
         encoding="utf-8",
     )
     analysis_path.write_text(_render_analysis_markdown(health, comparison, as_of=as_of), encoding="utf-8")
+    clear_default_strategy_evidence_cache()
     return {
         "review_path": str(review_path),
         "review_json_path": str(review_json_path),
@@ -614,4 +763,26 @@ async def generate_default_strategy_review(session: AsyncSession) -> dict:
         "review_verdict": health.get("review_verdict"),
         "live_safety": live_safety,
         "comparison": comparison,
+        "artifact_fingerprint_status": artifact_fingerprint_status,
+    }
+
+
+async def ensure_default_strategy_review_current(session: AsyncSession) -> dict:
+    health = await get_strategy_health(session, use_cache=False)
+    if not should_generate_default_strategy_review(health):
+        return {
+            "generated": False,
+            "reason": "current",
+            "review_verdict": health.get("review_verdict"),
+            "evidence_freshness": health.get("evidence_freshness"),
+            "latest_review_artifact": health.get("latest_review_artifact"),
+        }
+    result = await generate_default_strategy_review(session, health=health)
+    return {
+        "generated": True,
+        "reason": "stale_or_missing",
+        "review_path": result.get("review_path"),
+        "review_json_path": result.get("review_json_path"),
+        "review_verdict": result.get("review_verdict"),
+        "live_safety": result.get("live_safety"),
     }

@@ -25,6 +25,128 @@ def _session_factory(engine):
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+@pytest.mark.asyncio
+async def test_history_insert_helpers_treat_existing_fingerprints_as_idempotent(session):
+    observed_at = datetime.now(timezone.utc).replace(microsecond=0)
+    market_dim = PolymarketMarketDim(
+        condition_id="cond-idempotent-history",
+        market_slug="idempotent-history",
+    )
+    asset_dim = PolymarketAssetDim(
+        asset_id="asset-idempotent-history",
+        condition_id=market_dim.condition_id,
+        market_dim_id=None,
+    )
+    session.add_all([market_dim, asset_dim])
+    await session.flush()
+    asset_dim.market_dim_id = market_dim.id
+
+    assert await insert_token_fee_history_if_changed(
+        session,
+        market_dim=market_dim,
+        asset_dim=asset_dim,
+        condition_id=market_dim.condition_id,
+        asset_id=asset_dim.asset_id,
+        source_kind=FEE_SOURCE_KIND,
+        effective_at_exchange=observed_at,
+        observed_at_local=observed_at,
+        sync_run_id=None,
+        fees_enabled=True,
+        maker_fee_rate=Decimal("0.0000"),
+        taker_fee_rate=Decimal("0.0200"),
+        token_base_fee_rate=Decimal("6.0000"),
+        fee_schedule_json={"rate": "0.02"},
+    ) is True
+    assert await insert_token_fee_history_if_changed(
+        session,
+        market_dim=market_dim,
+        asset_dim=asset_dim,
+        condition_id=market_dim.condition_id,
+        asset_id=asset_dim.asset_id,
+        source_kind=FEE_SOURCE_KIND,
+        effective_at_exchange=observed_at + timedelta(minutes=1),
+        observed_at_local=observed_at + timedelta(minutes=1),
+        sync_run_id=None,
+        fees_enabled=True,
+        maker_fee_rate=Decimal("0.0000"),
+        taker_fee_rate=Decimal("0.0180"),
+        token_base_fee_rate=Decimal("5.5000"),
+        fee_schedule_json={"rate": "0.018"},
+    ) is True
+    assert await insert_token_fee_history_if_changed(
+        session,
+        market_dim=market_dim,
+        asset_dim=asset_dim,
+        condition_id=market_dim.condition_id,
+        asset_id=asset_dim.asset_id,
+        source_kind=FEE_SOURCE_KIND,
+        effective_at_exchange=observed_at,
+        observed_at_local=observed_at + timedelta(minutes=2),
+        sync_run_id=None,
+        fees_enabled=True,
+        maker_fee_rate=Decimal("0.0000"),
+        taker_fee_rate=Decimal("0.0200"),
+        token_base_fee_rate=Decimal("6.0000"),
+        fee_schedule_json={"rate": "0.02"},
+    ) is False
+
+    assert await insert_reward_history_if_changed(
+        session,
+        market_dim=market_dim,
+        condition_id=market_dim.condition_id,
+        source_kind=REWARD_SOURCE_KIND,
+        effective_at_exchange=observed_at,
+        observed_at_local=observed_at,
+        sync_run_id=None,
+        reward_status="active",
+        reward_program_id="program-1",
+        reward_daily_rate=Decimal("1.0000"),
+        min_incentive_size=Decimal("1.0000"),
+        max_incentive_spread=Decimal("0.0500"),
+        start_at_exchange=observed_at,
+        end_at_exchange=observed_at + timedelta(hours=1),
+        rewards_config_json=[{"rate": "1.0"}],
+    ) is True
+    assert await insert_reward_history_if_changed(
+        session,
+        market_dim=market_dim,
+        condition_id=market_dim.condition_id,
+        source_kind=REWARD_SOURCE_KIND,
+        effective_at_exchange=observed_at + timedelta(minutes=1),
+        observed_at_local=observed_at + timedelta(minutes=1),
+        sync_run_id=None,
+        reward_status="expired",
+        reward_program_id="program-2",
+        reward_daily_rate=Decimal("0.5000"),
+        min_incentive_size=Decimal("2.0000"),
+        max_incentive_spread=Decimal("0.0200"),
+        start_at_exchange=observed_at + timedelta(minutes=1),
+        end_at_exchange=observed_at + timedelta(hours=2),
+        rewards_config_json=[{"rate": "0.5"}],
+    ) is True
+    assert await insert_reward_history_if_changed(
+        session,
+        market_dim=market_dim,
+        condition_id=market_dim.condition_id,
+        source_kind=REWARD_SOURCE_KIND,
+        effective_at_exchange=observed_at,
+        observed_at_local=observed_at + timedelta(minutes=2),
+        sync_run_id=None,
+        reward_status="active",
+        reward_program_id="program-1",
+        reward_daily_rate=Decimal("1.0000"),
+        min_incentive_size=Decimal("1.0000"),
+        max_incentive_spread=Decimal("0.0500"),
+        start_at_exchange=observed_at,
+        end_at_exchange=observed_at + timedelta(hours=1),
+        rewards_config_json=[{"rate": "1.0"}],
+    ) is False
+
+    await session.flush()
+    assert len((await session.execute(select(maker_module.PolymarketTokenFeeRateHistory))).scalars().all()) == 2
+    assert len((await session.execute(select(maker_module.PolymarketMarketRewardConfigHistory))).scalars().all()) == 2
+
+
 async def _validated_opportunity(client, *, event_slug: str) -> dict:
     build_response = await client.post(
         "/api/v1/ingest/polymarket/structure/groups/build",

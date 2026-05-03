@@ -255,6 +255,8 @@ async def _run_paper_trading(session, signals):
         hydrate_strategy_run_state,
         load_missing_qualified_signals,
     )
+    from app.strategies.kalshi_down_yes_fade import run_kalshi_down_yes_fade_paper_lane
+    from app.strategies.kalshi_low_yes_fade import run_kalshi_low_yes_fade_paper_lane
     from app.strategy_runs.service import get_active_strategy_run
 
     count = 0
@@ -270,6 +272,20 @@ async def _run_paper_trading(session, signals):
         logger.info(
             "Paper trading skipped for %d signal(s): no active default-strategy run is bootstrapped",
             len(signals),
+        )
+        await run_kalshi_down_yes_fade_paper_lane(
+            session,
+            signals,
+            pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
+            backlog_limit=PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
+            pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
+        )
+        await run_kalshi_low_yes_fade_paper_lane(
+            session,
+            signals,
+            pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
+            backlog_limit=PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
+            pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
         )
         return
     state_rehydrated = await hydrate_strategy_run_state(session, strategy_run)
@@ -456,6 +472,21 @@ async def _run_paper_trading(session, signals):
             )
         if skip_counts:
             logger.info("Paper trading skips by reason: %s", skip_counts)
+
+    await run_kalshi_down_yes_fade_paper_lane(
+        session,
+        signals,
+        pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
+        backlog_limit=PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
+        pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
+    )
+    await run_kalshi_low_yes_fade_paper_lane(
+        session,
+        signals,
+        pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
+        backlog_limit=PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
+        pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
+    )
 
 
 async def _broadcast_new_signals(session, signals):
@@ -847,15 +878,9 @@ async def _resolve_paper_trades(session, resolved_markets, *, platform: str | No
 
 
 def _should_generate_default_strategy_review(health: dict) -> bool:
-    if health.get("run_state") != "active_run":
-        return False
-    latest_artifact = health.get("latest_review_artifact") or {}
-    freshness = health.get("evidence_freshness") or {}
-    if latest_artifact.get("generation_status") in {"missing", "partial", "invalid"}:
-        return True
-    if freshness.get("artifact_identity_status") == "mismatch":
-        return True
-    return bool(freshness.get("review_outdated"))
+    from app.reports.strategy_review import should_generate_default_strategy_review
+
+    return should_generate_default_strategy_review(health)
 
 
 async def _run_default_strategy_review_generation():
@@ -863,9 +888,11 @@ async def _run_default_strategy_review_generation():
     async with async_session() as session:
         try:
             from app.paper_trading.analysis import get_strategy_health
+            from app.reports.profitability_snapshot import generate_profitability_snapshot_artifact
             from app.reports.strategy_review import generate_default_strategy_review
 
-            health = await get_strategy_health(session)
+            health = await get_strategy_health(session, use_cache=False)
+            review_result = None
             if not _should_generate_default_strategy_review(health):
                 freshness = health.get("evidence_freshness") or {}
                 latest_artifact = health.get("latest_review_artifact") or {}
@@ -876,15 +903,23 @@ async def _run_default_strategy_review_generation():
                     freshness.get("review_outdated"),
                     freshness.get("artifact_identity_status"),
                 )
-                return
+            else:
+                review_result = await generate_default_strategy_review(session, health=health)
+                verdict = review_result.get("review_verdict") or {}
+                logger.info(
+                    "Job: default_strategy_review_generation wrote %s and %s with verdict=%s",
+                    review_result.get("review_path"),
+                    review_result.get("review_json_path"),
+                    verdict.get("verdict"),
+                )
 
-            result = await generate_default_strategy_review(session)
-            verdict = result.get("review_verdict") or {}
+            snapshot_result = await generate_profitability_snapshot_artifact(
+                session,
+                ensure_review_current=False,
+            )
             logger.info(
-                "Job: default_strategy_review_generation wrote %s and %s with verdict=%s",
-                result.get("review_path"),
-                result.get("review_json_path"),
-                verdict.get("verdict"),
+                "Job: default_strategy_review_generation wrote profitability snapshot %s",
+                snapshot_result.get("snapshot_json_path"),
             )
         except Exception:
             logger.error("Job: default_strategy_review_generation failed", exc_info=True)

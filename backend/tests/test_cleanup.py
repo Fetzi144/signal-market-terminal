@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import select
 
 from app.jobs.cleanup import cleanup_old_data
+from app.models.polymarket_stream import PolymarketMarketEvent
 from app.models.signal import Signal, SignalEvaluation
 from app.models.snapshot import PriceSnapshot
 from tests.conftest import (
@@ -123,3 +124,39 @@ class TestCleanup:
 
         counts = await cleanup_old_data(session)
         assert counts["orderbook_snapshots"] == 1
+
+    async def test_old_polymarket_market_events_deleted(self, session):
+        """Raw scanner market events should follow raw retention."""
+        now = datetime.now(timezone.utc)
+        old = now - timedelta(days=15)
+
+        session.add_all(
+            [
+                PolymarketMarketEvent(
+                    venue="polymarket",
+                    provenance="stream",
+                    channel="market",
+                    message_type="price_change",
+                    asset_id="stale-asset",
+                    received_at_local=old,
+                    payload={"price": "0.50"},
+                ),
+                PolymarketMarketEvent(
+                    venue="polymarket",
+                    provenance="stream",
+                    channel="market",
+                    message_type="price_change",
+                    asset_id="fresh-asset",
+                    received_at_local=now,
+                    payload={"price": "0.51"},
+                ),
+            ]
+        )
+        await session.flush()
+
+        counts = await cleanup_old_data(session)
+        assert counts["polymarket_market_events"] == 1
+
+        remaining = (await session.execute(select(PolymarketMarketEvent))).scalars().all()
+        assert len(remaining) == 1
+        assert remaining[0].asset_id == "fresh-asset"

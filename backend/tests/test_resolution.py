@@ -172,6 +172,86 @@ async def test_kalshi_resolution(session):
 
 
 @pytest.mark.asyncio
+async def test_kalshi_resolution_uses_platform_outcome_side(session):
+    """Kalshi resolution maps sides encoded in platform_outcome_id."""
+    market = make_market(session, platform="kalshi", platform_id="KTEST-PLATFORM-SIDE")
+    await session.flush()
+    outcome_yes = make_outcome(
+        session,
+        market.id,
+        name="KTEST-PLATFORM-SIDE",
+        platform_outcome_id="KTEST-PLATFORM-SIDE_yes",
+        token_id="KTEST-PLATFORM-SIDE:yes",
+    )
+    _outcome_no = make_outcome(
+        session,
+        market.id,
+        name="KTEST-PLATFORM-SIDE",
+        platform_outcome_id="KTEST-PLATFORM-SIDE_no",
+        token_id="KTEST-PLATFORM-SIDE:no",
+    )
+    await session.flush()
+
+    signal = make_signal(
+        session,
+        market.id,
+        outcome_yes.id,
+        details={"direction": "up", "market_question": "Test?", "outcome_name": "Yes"},
+    )
+    await session.commit()
+
+    count = await resolve_signals(
+        session,
+        "kalshi",
+        [{"platform_id": "KTEST-PLATFORM-SIDE", "winning_outcome": "yes"}],
+    )
+
+    assert count == 1
+    await session.refresh(signal)
+    assert signal.resolved_correctly is True
+
+
+@pytest.mark.asyncio
+async def test_kalshi_resolution_uses_token_id_side(session):
+    """Kalshi resolution maps sides encoded only in token_id."""
+    market = make_market(session, platform="kalshi", platform_id="KTEST-TOKEN-SIDE")
+    await session.flush()
+    outcome_yes = make_outcome(
+        session,
+        market.id,
+        name="Contract",
+        platform_outcome_id="contract_yes_side",
+        token_id="KTEST-TOKEN-SIDE:yes",
+    )
+    _outcome_no = make_outcome(
+        session,
+        market.id,
+        name="Contract",
+        platform_outcome_id="contract_no_side",
+        token_id="KTEST-TOKEN-SIDE:no",
+    )
+    await session.flush()
+
+    signal = make_signal(
+        session,
+        market.id,
+        outcome_yes.id,
+        details={"direction": "down", "market_question": "Test?", "outcome_name": "Yes"},
+    )
+    await session.commit()
+
+    count = await resolve_signals(
+        session,
+        "kalshi",
+        [{"platform_id": "KTEST-TOKEN-SIDE", "winning_outcome": "no"}],
+    )
+
+    assert count == 1
+    await session.refresh(signal)
+    assert signal.resolved_correctly is True
+
+
+@pytest.mark.asyncio
 async def test_unknown_market_ignored(session):
     """Resolution for a market not in our DB → skipped."""
     resolved_markets = [{"platform_id": "nonexistent-999", "winner": "Yes"}]

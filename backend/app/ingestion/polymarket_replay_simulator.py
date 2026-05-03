@@ -369,6 +369,7 @@ class PolymarketReplaySimulatorService:
             "opportunity_ids": normalized_opportunities,
             "quote_recommendation_ids": normalized_quotes,
             "scenario_limit": scenario_limit,
+            "require_complete_book_coverage": settings.polymarket_replay_require_complete_book_coverage,
             "structure_enabled": settings.polymarket_replay_enable_structure,
             "maker_enabled": settings.polymarket_replay_enable_maker,
             "risk_enabled": settings.polymarket_replay_enable_risk_adjustments,
@@ -678,6 +679,60 @@ class PolymarketReplaySimulatorService:
                         "signal_id": signal.id,
                         "source_chosen_action_type": decision.chosen_action_type,
                         "source_reason_code": decision.reason_code,
+                    },
+                )
+            )
+
+        candidate_rows = (
+            await session.execute(
+                select(
+                    PolymarketExecutionActionCandidate,
+                    Signal,
+                )
+                .join(Signal, Signal.id == PolymarketExecutionActionCandidate.signal_id)
+                .where(
+                    PolymarketExecutionActionCandidate.execution_decision_id.is_(None),
+                    PolymarketExecutionActionCandidate.valid.is_(True),
+                    PolymarketExecutionActionCandidate.action_type != "skip",
+                    PolymarketExecutionActionCandidate.decided_at >= window_start,
+                    PolymarketExecutionActionCandidate.decided_at <= window_end,
+                )
+                .order_by(
+                    PolymarketExecutionActionCandidate.decided_at.asc(),
+                    PolymarketExecutionActionCandidate.est_net_ev_total.desc().nullslast(),
+                    PolymarketExecutionActionCandidate.id.asc(),
+                )
+            )
+        ).all()
+        for candidate, signal in candidate_rows:
+            if asset_ids and candidate.asset_id not in asset_ids:
+                continue
+            if condition_ids and candidate.condition_id not in condition_ids:
+                continue
+            decision_at = _ensure_utc(candidate.decided_at) or window_start
+            scenario_end = min(window_end, decision_at + timedelta(minutes=max(settings.polymarket_replay_default_window_minutes, 1)))
+            blueprints.append(
+                ReplayScenarioBlueprint(
+                    scenario_type=POLICY_SCENARIO,
+                    scenario_key=f"policy-candidate:{candidate.id}",
+                    decision_at=decision_at,
+                    window_start=decision_at,
+                    window_end=scenario_end,
+                    condition_id=candidate.condition_id,
+                    asset_id=candidate.asset_id,
+                    source_execution_candidate_id=candidate.id,
+                    source_signal_id=signal.id,
+                    policy_version=candidate.policy_version or POLICY_VERSION,
+                    direction=candidate.side,
+                    estimated_probability=_to_decimal(signal.estimated_probability),
+                    market_price=_to_decimal(signal.price_at_fire),
+                    baseline_target_size=_to_decimal(candidate.target_size) or Decimal("100.00"),
+                    market_id=signal.market_id,
+                    outcome_id=signal.outcome_id,
+                    details={
+                        "signal_id": signal.id,
+                        "source_action_type": candidate.action_type,
+                        "source": "standalone_execution_policy_candidate",
                     },
                 )
             )
@@ -3443,10 +3498,21 @@ async def fetch_polymarket_replay_status(session: AsyncSession) -> dict[str, Any
     )
     observed_detector_rows = (
         await session.execute(
-            select(Signal.signal_type).distinct().order_by(Signal.signal_type.asc())
+            select(Signal.signal_type)
+            .where(Signal.fired_at >= since)
+            .order_by(Signal.fired_at.desc())
+            .limit(5000)
         )
     ).scalars().all()
-    observed_detectors = sorted(str(row) for row in observed_detector_rows if row)
+    if not observed_detector_rows:
+        observed_detector_rows = (
+            await session.execute(
+                select(Signal.signal_type)
+                .order_by(Signal.fired_at.desc())
+                .limit(5000)
+            )
+        ).scalars().all()
+    observed_detectors = sorted({str(row) for row in observed_detector_rows if row})
     supported_detector_set = set(_supported_replay_detector_types())
     supported_detectors = [detector for detector in observed_detectors if detector in supported_detector_set]
     unsupported_detectors = [detector for detector in observed_detectors if detector not in supported_detector_set]

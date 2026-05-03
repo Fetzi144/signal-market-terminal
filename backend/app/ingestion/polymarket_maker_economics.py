@@ -9,6 +9,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -430,6 +431,28 @@ async def _latest_reward_history_row(
     return (await session.execute(query)).scalar_one_or_none()
 
 
+async def _fee_history_fingerprint_exists(session: AsyncSession, fingerprint: str) -> bool:
+    existing_id = (
+        await session.execute(
+            select(PolymarketTokenFeeRateHistory.id)
+            .where(PolymarketTokenFeeRateHistory.fingerprint == fingerprint)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return existing_id is not None
+
+
+async def _reward_history_fingerprint_exists(session: AsyncSession, fingerprint: str) -> bool:
+    existing_id = (
+        await session.execute(
+            select(PolymarketMarketRewardConfigHistory.id)
+            .where(PolymarketMarketRewardConfigHistory.fingerprint == fingerprint)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return existing_id is not None
+
+
 async def insert_token_fee_history_if_changed(
     session: AsyncSession,
     *,
@@ -460,6 +483,8 @@ async def insert_token_fee_history_if_changed(
     )
     if latest is not None and latest.fingerprint == fingerprint:
         return False
+    if await _fee_history_fingerprint_exists(session, fingerprint):
+        return False
 
     row = PolymarketTokenFeeRateHistory(
         market_dim_id=market_dim.id if market_dim is not None else None,
@@ -482,8 +507,14 @@ async def insert_token_fee_history_if_changed(
             "previous_fingerprint": latest.fingerprint if latest is not None else None,
         },
     )
-    session.add(row)
-    await session.flush()
+    try:
+        async with session.begin_nested():
+            session.add(row)
+            await session.flush()
+    except IntegrityError:
+        # A concurrent metadata sync may have inserted the same fingerprint
+        # after our latest-row check. Treat that as idempotent.
+        return False
     polymarket_maker_fee_history_rows.labels(source_kind=source_kind).inc()
     polymarket_maker_last_fee_sync_timestamp.set(observed_at_local.timestamp())
     return True
@@ -522,6 +553,8 @@ async def insert_reward_history_if_changed(
     )
     if latest is not None and latest.fingerprint == fingerprint:
         return False
+    if await _reward_history_fingerprint_exists(session, fingerprint):
+        return False
 
     config_count = len(rewards_config_json) if isinstance(rewards_config_json, list) else 0
     row = PolymarketMarketRewardConfigHistory(
@@ -547,8 +580,14 @@ async def insert_reward_history_if_changed(
             "previous_fingerprint": latest.fingerprint if latest is not None else None,
         },
     )
-    session.add(row)
-    await session.flush()
+    try:
+        async with session.begin_nested():
+            session.add(row)
+            await session.flush()
+    except IntegrityError:
+        # A concurrent metadata sync may have inserted the same fingerprint
+        # after our latest-row check. Treat that as idempotent.
+        return False
     polymarket_maker_reward_history_rows.labels(reward_status=reward_status).inc()
     polymarket_maker_last_reward_sync_timestamp.set(observed_at_local.timestamp())
     return True
