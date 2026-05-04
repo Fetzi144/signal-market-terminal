@@ -14,6 +14,10 @@ from app.paper_trading.analysis import (
     build_paper_lane_profitability_snapshot,
     get_profitability_snapshot,
 )
+from app.reports.kalshi_cheap_yes_follow import (
+    build_kalshi_cheap_yes_follow_snapshot,
+    kalshi_cheap_yes_follow_lane_payload,
+)
 from app.reports.kalshi_down_yes_fade import (
     build_kalshi_down_yes_fade_snapshot,
     kalshi_down_yes_fade_lane_payload,
@@ -307,6 +311,10 @@ async def get_strategy_profitability(db: AsyncSession = Depends(get_db)):
         if family_key == "kalshi_low_yes_fade":
             snapshot = await build_kalshi_low_yes_fade_snapshot(db, as_of=observed_at)
             snapshots.append(_kalshi_profitability_snapshot(snapshot, kalshi_low_yes_fade_lane_payload(snapshot)))
+            continue
+        if family_key == "kalshi_cheap_yes_follow":
+            snapshot = await build_kalshi_cheap_yes_follow_snapshot(db, as_of=observed_at)
+            snapshots.append(_kalshi_profitability_snapshot(snapshot, kalshi_cheap_yes_follow_lane_payload(snapshot)))
             continue
         snapshots.append(
             build_paper_lane_profitability_snapshot(

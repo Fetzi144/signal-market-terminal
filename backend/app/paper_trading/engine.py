@@ -378,6 +378,7 @@ async def build_execution_decision(
     strategy_run_id: uuid.UUID | None = None,
     precheck_reason_code: str | None = None,
     precheck_reason_label: str | None = None,
+    min_ev_threshold: Decimal | None = None,
 ) -> ExecutionDecisionBuildResult:
     """Build and persist the Phase 0 execution decision before a trade opens."""
 
@@ -785,18 +786,23 @@ async def build_execution_decision(
         )
 
     bankroll = Decimal(str(settings.default_bankroll))
-    min_ev_threshold = Decimal(str(settings.min_ev_threshold))
+    resolved_min_ev_threshold = (
+        Decimal(str(settings.min_ev_threshold))
+        if min_ev_threshold is None
+        else Decimal(str(min_ev_threshold))
+    )
 
     ideal_ev = compute_ev_full(estimated_probability, market_price)
-    if ideal_ev["ev_per_share"] < min_ev_threshold:
+    if ideal_ev["ev_per_share"] < resolved_min_ev_threshold:
         return await finish(
             decision="skipped",
             reason_code="ev_below_threshold",
-            detail=f"Directional EV {ideal_ev['ev_per_share']} below threshold {settings.min_ev_threshold}",
+            detail=f"Directional EV {ideal_ev['ev_per_share']} below threshold {resolved_min_ev_threshold}",
             diagnostics={
                 "direction": ideal_ev["direction"],
                 "ev_per_share": str(ideal_ev["ev_per_share"]),
                 "edge_pct": str(ideal_ev["edge_pct"]),
+                "min_ev_threshold": str(resolved_min_ev_threshold),
             },
             direction=ideal_ev["direction"],
             ideal_entry_price=ideal_ev["entry_price"],
@@ -1273,19 +1279,20 @@ async def build_execution_decision(
         estimated_probability=estimated_probability,
         entry_price=executable_entry_price,
     )
-    if executable_ev["ev_per_share"] < min_ev_threshold:
+    if executable_ev["ev_per_share"] < resolved_min_ev_threshold:
         return await finish(
             decision="skipped",
             reason_code="execution_ev_below_threshold",
             detail=(
                 f"Executable EV {executable_ev['ev_per_share']} below threshold "
-                f"{settings.min_ev_threshold}"
+                f"{resolved_min_ev_threshold}"
             ),
             diagnostics={
                 "direction": ideal_ev["direction"],
                 "ideal_ev_per_share": str(ideal_ev["ev_per_share"]),
                 "executable_ev_per_share": str(executable_ev["ev_per_share"]),
                 "executable_entry_price": str(executable_entry_price),
+                "min_ev_threshold": str(resolved_min_ev_threshold),
             },
             direction=ideal_ev["direction"],
             ideal_entry_price=ideal_ev["entry_price"],
@@ -1502,6 +1509,7 @@ async def attempt_open_trade(
     strategy_run_id: uuid.UUID | None = None,
     precheck_reason_code: str | None = None,
     precheck_reason_label: str | None = None,
+    min_ev_threshold: Decimal | None = None,
 ) -> TradeOpenResult:
     """Open a paper trade only after the Phase 0 execution gate approves it."""
 
@@ -1517,6 +1525,7 @@ async def attempt_open_trade(
         strategy_run_id=strategy_run_id,
         precheck_reason_code=precheck_reason_code,
         precheck_reason_label=precheck_reason_label,
+        min_ev_threshold=min_ev_threshold,
     )
     if decision_result.decision != "opened":
         return TradeOpenResult(

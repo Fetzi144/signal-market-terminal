@@ -72,6 +72,10 @@ const BLOCKER_ACTIONS = {
     label: "Wait for fresh down-YES candidates",
     why: "The v2 lane only learns when fresh mid-priced Kalshi YES contracts move down with negative YES EV.",
   },
+  no_matching_kalshi_cheap_yes_follow_signals: {
+    label: "Wait for fresh cheap-YES candidates",
+    why: "The v1 lane only learns when very cheap Kalshi YES contracts move down while YES EV remains mildly positive.",
+  },
   observation_window_below_30d: {
     label: "Let the candidate lane age",
     why: "Forward paper alpha needs a 30-day observation window before promotion talk is meaningful.",
@@ -138,7 +142,11 @@ function sourceLink(row) {
   if (row.source_kind === "profitability_snapshot" || row.source_kind === "profit_tools") {
     return { to: "/paper-trading", label: "Profit Tools" };
   }
-  if (row.source_kind === "kalshi_low_yes_fade_snapshot" || row.source_kind === "kalshi_down_yes_fade_snapshot") {
+  if (
+    row.source_kind === "kalshi_low_yes_fade_snapshot" ||
+    row.source_kind === "kalshi_down_yes_fade_snapshot" ||
+    row.source_kind === "kalshi_cheap_yes_follow_snapshot"
+  ) {
     return { to: "/paper-trading", label: "Paper Lane" };
   }
   if (row.source_kind === "alpha_factory_snapshot") {

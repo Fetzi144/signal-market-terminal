@@ -1,6 +1,7 @@
 from app.reports.alpha_factory import generate_alpha_factory_artifact
 from app.reports.alpha_gauntlet import generate_alpha_gauntlet_artifact
 from app.reports.execution_policy_replay import generate_execution_policy_replay_artifact
+from app.reports.kalshi_cheap_yes_follow import generate_kalshi_cheap_yes_follow_artifact
 from app.reports.kalshi_down_yes_fade import generate_kalshi_down_yes_fade_artifact
 from app.reports.kalshi_low_yes_fade import generate_kalshi_low_yes_fade_artifact
 from app.reports.profit_operations import run_orderbook_context_repair, run_resolution_accelerator
@@ -14,6 +15,7 @@ __all__ = [
     "generate_alpha_gauntlet_artifact",
     "generate_default_strategy_review",
     "generate_execution_policy_replay_artifact",
+    "generate_kalshi_cheap_yes_follow_artifact",
     "generate_kalshi_down_yes_fade_artifact",
     "generate_kalshi_low_yes_fade_artifact",
     "generate_profitability_snapshot_artifact",

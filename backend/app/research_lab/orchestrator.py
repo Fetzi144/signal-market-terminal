@@ -25,6 +25,10 @@ from app.models.signal import Signal
 from app.models.snapshot import PriceSnapshot
 from app.paper_trading.analysis import get_profitability_snapshot
 from app.reports.alpha_factory import alpha_factory_lane_payload, build_alpha_factory_snapshot
+from app.reports.kalshi_cheap_yes_follow import (
+    build_kalshi_cheap_yes_follow_snapshot,
+    kalshi_cheap_yes_follow_lane_payload,
+)
 from app.reports.kalshi_down_yes_fade import (
     build_kalshi_down_yes_fade_snapshot,
     kalshi_down_yes_fade_lane_payload,
@@ -44,7 +48,13 @@ from app.research_lab.ranker import rank_lane_payloads
 from app.research_lab.universe import select_research_universe
 
 PRESET_PROFIT_HUNT_V1 = "profit_hunt_v1"
-DEFAULT_FAMILIES = ("default_strategy", "kalshi_down_yes_fade", "kalshi_low_yes_fade", "alpha_factory")
+DEFAULT_FAMILIES = (
+    "default_strategy",
+    "kalshi_down_yes_fade",
+    "kalshi_low_yes_fade",
+    "kalshi_cheap_yes_follow",
+    "alpha_factory",
+)
 RETIRED_POLYMARKET_FAMILIES = {
     "structure": "structure_replay",
     "maker": "maker_replay",
@@ -698,6 +708,16 @@ async def _run_kalshi_down_yes_fade_lane(session: AsyncSession, batch: ResearchB
     return kalshi_down_yes_fade_lane_payload(snapshot)
 
 
+async def _run_kalshi_cheap_yes_follow_lane(session: AsyncSession, batch: ResearchBatch) -> dict[str, Any]:
+    snapshot = await build_kalshi_cheap_yes_follow_snapshot(
+        session,
+        window_days=int(batch.window_days or 30),
+        max_signals=min(int(batch.max_markets or 500) * 10, 5000),
+        as_of=batch.window_end,
+    )
+    return kalshi_cheap_yes_follow_lane_payload(snapshot)
+
+
 async def _run_alpha_factory_lane(session: AsyncSession, batch: ResearchBatch) -> dict[str, Any]:
     snapshot = await build_alpha_factory_snapshot(
         session,
@@ -768,6 +788,10 @@ BLOCKER_ACTIONS: dict[str, dict[str, str]] = {
     "no_matching_kalshi_down_yes_fade_signals": {
         "label": "Wait for fresh Kalshi down-YES fade candidates",
         "why": "The v2 lane only learns when fresh mid-priced YES contracts move down with negative YES EV.",
+    },
+    "no_matching_kalshi_cheap_yes_follow_signals": {
+        "label": "Wait for fresh cheap-YES follow candidates",
+        "why": "The v1 lane only learns when very cheap Kalshi YES contracts move down while YES EV remains mildly positive.",
     },
     "observation_window_below_30d": {
         "label": "Let the candidate lane age honestly",
@@ -1081,6 +1105,12 @@ async def run_research_batch(
                 "kalshi_low_yes_fade",
                 "paper_forward_gate",
                 lambda: _run_kalshi_low_yes_fade_lane(session, batch),
+            )
+        if "kalshi_cheap_yes_follow" in families:
+            await run_lane(
+                "kalshi_cheap_yes_follow",
+                "paper_forward_gate",
+                lambda: _run_kalshi_cheap_yes_follow_lane(session, batch),
             )
         if "alpha_factory" in families:
             await run_lane(

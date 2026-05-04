@@ -7,6 +7,7 @@ from app.reports.alpha_factory import generate_alpha_factory_artifact
 from app.reports.alpha_gauntlet import generate_alpha_gauntlet_artifact
 from app.reports.api_smoke import run_evidence_api_smoke
 from app.reports.execution_policy_replay import generate_execution_policy_replay_artifact
+from app.reports.kalshi_cheap_yes_follow import generate_kalshi_cheap_yes_follow_artifact
 from app.reports.kalshi_down_yes_fade import generate_kalshi_down_yes_fade_artifact
 from app.reports.kalshi_low_yes_fade import generate_kalshi_low_yes_fade_artifact
 from app.reports.profit_operations import (
@@ -75,7 +76,7 @@ def _parser() -> argparse.ArgumentParser:
     research.add_argument("--max-markets", type=int, default=500)
     research.add_argument(
         "--families",
-        default="default_strategy,kalshi_down_yes_fade,kalshi_low_yes_fade,alpha_factory",
+        default="default_strategy,kalshi_down_yes_fade,kalshi_low_yes_fade,kalshi_cheap_yes_follow,alpha_factory",
         help="Comma-separated strategy families to test.",
     )
 
@@ -113,6 +114,14 @@ def _parser() -> argparse.ArgumentParser:
     kalshi_down_fade.add_argument("--window-days", type=int, default=30)
     kalshi_down_fade.add_argument("--max-signals", type=int, default=5000)
     kalshi_down_fade.add_argument("--seed-paper", action="store_true", help="Idempotently seed matching paper decisions/trades.")
+
+    kalshi_cheap_yes_follow = subparsers.add_parser(
+        "kalshi-cheap-yes-follow",
+        help="Generate the paper-only Kalshi cheap-YES follow candidate report.",
+    )
+    kalshi_cheap_yes_follow.add_argument("--window-days", type=int, default=30)
+    kalshi_cheap_yes_follow.add_argument("--max-signals", type=int, default=5000)
+    kalshi_cheap_yes_follow.add_argument("--seed-paper", action="store_true", help="Idempotently seed matching paper decisions/trades.")
 
     exec_policy_replay = subparsers.add_parser(
         "execution-policy-replay",
@@ -237,6 +246,17 @@ async def _main() -> None:
 
         if command == "kalshi-down-yes-fade":
             result = await generate_kalshi_down_yes_fade_artifact(
+                session,
+                window_days=args.window_days,
+                max_signals=args.max_signals,
+                seed_paper=args.seed_paper,
+            )
+            print(result["snapshot_markdown_path"])
+            print(result["snapshot_json_path"])
+            return
+
+        if command == "kalshi-cheap-yes-follow":
+            result = await generate_kalshi_cheap_yes_follow_artifact(
                 session,
                 window_days=args.window_days,
                 max_signals=args.max_signals,

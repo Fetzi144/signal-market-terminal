@@ -177,6 +177,18 @@ def _known_existing_lane(rule: dict[str, Any]) -> dict[str, Any] | None:
             "strategy_version": "kalshi_low_yes_fade_v1",
             "lane": "paper_forward_gate",
         }
+    if (
+        rule.get("signal_type") == "price_move"
+        and rule.get("direction") == "down"
+        and rule.get("price_bucket") == "p00_005"
+        and rule.get("expected_value_bucket") == "ev_000_001"
+        and rule.get("platform") in {"kalshi", "all"}
+    ):
+        return {
+            "family": "kalshi_cheap_yes_follow",
+            "strategy_version": "kalshi_cheap_yes_follow_v1",
+            "lane": "paper_forward_gate",
+        }
     return None
 
 
