@@ -275,6 +275,15 @@ class Settings(BaseSettings):
     default_strategy_review_auto_generate_enabled: bool = False
     default_strategy_review_auto_generate_interval_seconds: int = 900
     legacy_benchmark_rank_threshold: float = 0.55
+    alpha_factory_auto_run_enabled: bool = False
+    alpha_factory_auto_run_interval_seconds: int = 21_600
+    alpha_factory_auto_run_window_days: int = 365
+    alpha_factory_auto_run_max_signals: int = 50_000
+    alpha_factory_auto_run_max_candidates: int = 10
+    alpha_factory_auto_run_stop_after_no_new_candidate_runs: int = 28
+    alpha_factory_auto_run_min_train_sample: int = 20
+    alpha_factory_auto_run_min_validation_sample: int = 10
+    alpha_factory_auto_run_min_test_sample: int = 10
 
     # Evaluation
     evaluation_interval_seconds: int = 300
@@ -318,11 +327,31 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: str = "text"  # "text" or "json"
 
-    @field_validator("snapshot_interval_seconds", "market_discovery_interval_seconds", "evaluation_interval_seconds")
+    @field_validator(
+        "snapshot_interval_seconds",
+        "market_discovery_interval_seconds",
+        "evaluation_interval_seconds",
+        "alpha_factory_auto_run_interval_seconds",
+    )
     @classmethod
     def intervals_must_be_at_least_30(cls, v: int) -> int:
         if v < 30:
             raise ValueError("Interval must be >= 30 seconds")
+        return v
+
+    @field_validator(
+        "alpha_factory_auto_run_window_days",
+        "alpha_factory_auto_run_max_signals",
+        "alpha_factory_auto_run_max_candidates",
+        "alpha_factory_auto_run_stop_after_no_new_candidate_runs",
+        "alpha_factory_auto_run_min_train_sample",
+        "alpha_factory_auto_run_min_validation_sample",
+        "alpha_factory_auto_run_min_test_sample",
+    )
+    @classmethod
+    def alpha_factory_autorun_values_must_be_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("Alpha Factory auto-run values must be >= 1")
         return v
 
     @field_validator("retention_price_snapshots_days", "retention_orderbook_snapshots_days", "retention_signals_days")

@@ -28,6 +28,8 @@ PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE = 100
 
 _scheduler_owner_token: str | None = None
 _scheduler_lease_task: asyncio.Task | None = None
+_alpha_factory_no_new_candidate_runs = 0
+_alpha_factory_autopilot_paused = False
 
 
 def _utcnow() -> datetime:
@@ -940,6 +942,96 @@ async def _run_default_strategy_review_generation():
             logger.error("Job: default_strategy_review_generation failed", exc_info=True)
 
 
+def _alpha_factory_new_candidate_count(snapshot: dict) -> int:
+    candidates = snapshot.get("top_candidates") or []
+    return sum(
+        1
+        for candidate in candidates
+        if candidate.get("ready_for_paper_lane")
+        and candidate.get("trade_direction")
+        and not candidate.get("existing_lane")
+    )
+
+
+def _alpha_factory_existing_lane_candidate_count(snapshot: dict) -> int:
+    candidates = snapshot.get("top_candidates") or []
+    return sum(
+        1
+        for candidate in candidates
+        if candidate.get("ready_for_paper_lane") and candidate.get("existing_lane")
+    )
+
+
+async def _run_alpha_factory_autopilot():
+    global _alpha_factory_autopilot_paused, _alpha_factory_no_new_candidate_runs
+
+    if _alpha_factory_autopilot_paused:
+        logger.info("Job: alpha_factory_autopilot skipped because the no-new-candidate stop condition was reached")
+        return
+
+    logger.info("Job: alpha_factory_autopilot starting")
+    async with async_session() as session:
+        try:
+            from app.reports.alpha_factory import generate_alpha_factory_artifact
+
+            result = await generate_alpha_factory_artifact(
+                session,
+                window_days=settings.alpha_factory_auto_run_window_days,
+                max_signals=settings.alpha_factory_auto_run_max_signals,
+                platform="kalshi",
+                max_candidates=settings.alpha_factory_auto_run_max_candidates,
+                min_train_sample=settings.alpha_factory_auto_run_min_train_sample,
+                min_validation_sample=settings.alpha_factory_auto_run_min_validation_sample,
+                min_test_sample=settings.alpha_factory_auto_run_min_test_sample,
+            )
+            snapshot = result.get("snapshot") or {}
+            new_candidate_count = _alpha_factory_new_candidate_count(snapshot)
+            existing_lane_candidate_count = _alpha_factory_existing_lane_candidate_count(snapshot)
+            candidate_count = int(snapshot.get("candidate_count") or 0)
+            ready_candidate_count = int(snapshot.get("ready_candidate_count") or 0)
+
+            if new_candidate_count:
+                _alpha_factory_no_new_candidate_runs = 0
+                logger.warning(
+                    "Job: alpha_factory_autopilot found %d new paper-lane candidate(s); artifact=%s",
+                    new_candidate_count,
+                    result.get("alpha_factory_json_path"),
+                )
+                return
+
+            _alpha_factory_no_new_candidate_runs += 1
+            logger.info(
+                (
+                    "Job: alpha_factory_autopilot done with no new lane; artifact=%s "
+                    "candidates=%d ready=%d existing_ready=%d no_new_runs=%d/%d"
+                ),
+                result.get("alpha_factory_json_path"),
+                candidate_count,
+                ready_candidate_count,
+                existing_lane_candidate_count,
+                _alpha_factory_no_new_candidate_runs,
+                settings.alpha_factory_auto_run_stop_after_no_new_candidate_runs,
+            )
+
+            if (
+                _alpha_factory_no_new_candidate_runs
+                >= settings.alpha_factory_auto_run_stop_after_no_new_candidate_runs
+            ):
+                _alpha_factory_autopilot_paused = True
+                job = scheduler.get_job("alpha_factory_autopilot")
+                if job is not None:
+                    job.pause()
+                logger.warning(
+                    (
+                        "Job: alpha_factory_autopilot paused after %d consecutive run(s) "
+                        "without a new paper-lane candidate"
+                    ),
+                    _alpha_factory_no_new_candidate_runs,
+                )
+        except Exception:
+            logger.error("Job: alpha_factory_autopilot failed", exc_info=True)
+
+
 async def _run_evaluation():
     from app.evaluation.evaluator import evaluate_signals
     from app.models.ingestion import IngestionRun
@@ -1084,6 +1176,14 @@ async def start_scheduler() -> bool:
             _run_default_strategy_review_generation,
             "interval",
             seconds=settings.default_strategy_review_auto_generate_interval_seconds,
+        )
+    if settings.alpha_factory_auto_run_enabled:
+        _add_owned_job(
+            "alpha_factory_autopilot",
+            _run_alpha_factory_autopilot,
+            "interval",
+            seconds=settings.alpha_factory_auto_run_interval_seconds,
+            next_run_time=_utcnow(),
         )
     if settings.whale_tracking_enabled:
         _add_owned_job(
