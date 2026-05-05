@@ -21,6 +21,7 @@ from app.paper_trading.reconciliation import (
     hydrate_strategy_run_state,
 )
 from app.paper_trading.strategy_run_state import initialize_strategy_run_state
+from app.strategies.kalshi_orderbook_capture import capture_targeted_kalshi_orderbook_snapshot
 from app.strategies.registry import get_current_strategy_version, sync_strategy_registry
 from app.strategy_runs.service import ACTIVE_RUN_STATUS, get_active_strategy_run
 
@@ -85,6 +86,10 @@ def _reason_label(reason_code: str) -> str:
         "kalshi_cheap_yes_follow_expected_value_negative": "Expected value is negative",
         "kalshi_cheap_yes_follow_expected_value_too_large": "Expected value outside cheap-YES follow bucket",
         "kalshi_cheap_yes_follow_probability_not_above_price": "Probability is not above YES price",
+        "kalshi_cheap_yes_follow_current_price_unavailable": "Current YES price unavailable",
+        "kalshi_cheap_yes_follow_current_price_outside_bucket": "Current YES price outside cheap follow bucket",
+        "kalshi_cheap_yes_follow_current_probability_not_above_price": "Current probability is not above YES price",
+        "kalshi_cheap_yes_follow_current_expected_value_too_large": "Current expected value outside cheap-YES follow bucket",
     }
     return labels.get(reason_code, reason_code.replace("_", " "))
 
@@ -256,6 +261,7 @@ async def ensure_active_kalshi_cheap_yes_follow_run(
                 "expected_value": ">=0 and <0.01",
                 "trade_direction": "buy_yes",
                 "paper_min_ev_threshold": str(ZERO),
+                "targeted_orderbook_capture": True,
             },
         },
     )
@@ -333,6 +339,7 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
     pending_retry_limit: int = 100,
     backlog_limit: int = 100,
     pending_expiry_limit: int = 100,
+    targeted_orderbook_limit: int = 25,
 ) -> dict:
     strategy_run, run_created = await ensure_active_kalshi_cheap_yes_follow_run(session)
     state_rehydrated = await hydrate_strategy_run_state(session, strategy_run)
@@ -384,6 +391,8 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
     opened_count = 0
     retry_candidates = 0
     backlog_candidates = 0
+    targeted_orderbook_captures = 0
+    targeted_orderbook_skips: dict[str, int] = {}
     skip_counts: dict[str, int] = {}
     changed = run_created or state_rehydrated or expired_pending or finalized_orderbook_context
 
@@ -401,6 +410,50 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
         elif attempt_kind == "backlog_repair":
             backlog_candidates += 1
 
+        targeted_capture_result = None
+        execution_market_price = signal.price_at_fire
+        execution_observed_at = signal.fired_at
+        current_precheck_reason_code = None
+        current_precheck_reason_label = None
+        if (
+            evaluation.eligible
+            and attempt_kind in {"fresh_signal", "retry"}
+            and targeted_orderbook_captures < targeted_orderbook_limit
+        ):
+            captured_at = datetime.now(timezone.utc)
+            targeted_capture_result = await capture_targeted_kalshi_orderbook_snapshot(
+                session,
+                signal,
+                captured_at=captured_at,
+                log_context="Kalshi cheap-YES follow",
+            )
+            changed = True
+            if targeted_capture_result.get("captured"):
+                targeted_orderbook_captures += 1
+                current_midpoint = _decimal(targeted_capture_result.get("midpoint"))
+                execution_observed_at = captured_at
+                current_probability = _decimal(signal.estimated_probability)
+                if current_midpoint is None:
+                    current_precheck_reason_code = "kalshi_cheap_yes_follow_current_price_unavailable"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                elif current_midpoint <= MIN_YES_PRICE or current_midpoint >= MAX_YES_PRICE:
+                    current_precheck_reason_code = "kalshi_cheap_yes_follow_current_price_outside_bucket"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                elif current_probability is None:
+                    current_precheck_reason_code = "kalshi_cheap_yes_follow_missing_probability"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                elif current_probability <= current_midpoint:
+                    current_precheck_reason_code = "kalshi_cheap_yes_follow_current_probability_not_above_price"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                elif (current_probability - current_midpoint) >= MAX_EXPECTED_VALUE:
+                    current_precheck_reason_code = "kalshi_cheap_yes_follow_current_expected_value_too_large"
+                    current_precheck_reason_label = _reason_label(current_precheck_reason_code)
+                else:
+                    execution_market_price = current_midpoint
+            else:
+                reason = str(targeted_capture_result.get("reason") or "targeted_orderbook_not_captured")
+                targeted_orderbook_skips[reason] = targeted_orderbook_skips.get(reason, 0) + 1
+
         details = dict(signal.details or {})
         market_question = str(details.get("market_question") or "")
         attempted_at = datetime.now(timezone.utc).isoformat()
@@ -411,9 +464,9 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
                 outcome_id=signal.outcome_id,
                 market_id=signal.market_id,
                 estimated_probability=signal.estimated_probability,
-                market_price=signal.price_at_fire,
+                market_price=execution_market_price,
                 market_question=market_question,
-                fired_at=signal.fired_at,
+                fired_at=execution_observed_at,
                 strategy_run_id=strategy_run.id,
             )
         result = await attempt_open_trade(
@@ -422,12 +475,16 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
             outcome_id=signal.outcome_id,
             market_id=signal.market_id,
             estimated_probability=signal.estimated_probability,
-            market_price=signal.price_at_fire,
+            market_price=execution_market_price,
             market_question=market_question,
-            fired_at=signal.fired_at,
+            fired_at=execution_observed_at,
             strategy_run_id=strategy_run.id,
-            precheck_reason_code=None if evaluation.eligible else evaluation.reason_code,
-            precheck_reason_label=evaluation.reason_label,
+            precheck_reason_code=(
+                current_precheck_reason_code
+                if current_precheck_reason_code is not None
+                else (None if evaluation.eligible else evaluation.reason_code)
+            ),
+            precheck_reason_label=current_precheck_reason_label or evaluation.reason_label,
             min_ev_threshold=ZERO,
         )
         changed = True
@@ -443,6 +500,12 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
                 "attempt_kind": attempt_kind,
                 "eligible": evaluation.eligible,
                 "intended_direction": "buy_yes",
+                "targeted_orderbook_capture": targeted_capture_result,
+                "execution_market_price": str(execution_market_price) if execution_market_price is not None else None,
+                "execution_observed_at": (
+                    _ensure_utc(execution_observed_at).isoformat() if execution_observed_at is not None else None
+                ),
+                "current_execution_precheck_reason_code": current_precheck_reason_code,
                 "decision": result.decision,
                 "reason_code": result.reason_code,
                 "reason_label": result.reason_label,
@@ -470,6 +533,12 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
             opened_count,
             candidate_count,
         )
+        if targeted_orderbook_captures or targeted_orderbook_skips:
+            logger.info(
+                "Kalshi cheap-YES follow targeted orderbooks: captured=%d skips=%s",
+                targeted_orderbook_captures,
+                targeted_orderbook_skips,
+            )
         if skip_counts:
             logger.info("Kalshi cheap-YES follow skips by reason: %s", skip_counts)
 
@@ -483,5 +552,7 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
         "backlog_candidates": backlog_candidates,
         "expired_pending_decisions": expired_pending,
         "finalized_orderbook_context_decisions": finalized_orderbook_context,
+        "targeted_orderbook_captures": targeted_orderbook_captures,
+        "targeted_orderbook_skips": targeted_orderbook_skips,
         "skip_counts": skip_counts,
     }

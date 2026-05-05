@@ -6,8 +6,10 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
+from app.connectors.base import RawOrderbook
 from app.models.execution_decision import ExecutionDecision
 from app.models.paper_trade import PaperTrade
+from app.models.snapshot import OrderbookSnapshot
 from app.models.strategy_registry import AUTONOMY_TIER_SHADOW_ONLY, VERSION_STATUS_CANDIDATE
 from app.models.strategy_run import StrategyRun
 from app.reports.kalshi_very_low_yes_fade import (
@@ -22,7 +24,30 @@ from app.strategies.kalshi_very_low_yes_fade import (
     run_kalshi_very_low_yes_fade_paper_lane,
 )
 from app.strategies.registry import get_current_strategy_version, sync_strategy_registry
-from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_signal
+from tests.conftest import make_market, make_outcome, make_signal
+
+
+class _FakeKalshiConnector:
+    def __init__(self) -> None:
+        self.orderbook_tokens: list[str] = []
+        self.midpoint_batches: list[list[str]] = []
+        self.closed = False
+
+    async def fetch_orderbook(self, token_id: str) -> RawOrderbook:
+        self.orderbook_tokens.append(token_id)
+        return RawOrderbook(
+            token_id=token_id,
+            bids=[["0.075000", "100000"]],
+            asks=[["0.085000", "100000"]],
+            spread=Decimal("0.010000"),
+        )
+
+    async def fetch_midpoints(self, token_ids: list[str]) -> dict[str, Decimal]:
+        self.midpoint_batches.append(list(token_ids))
+        return {token_id: Decimal("0.075000") for token_id in token_ids}
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -80,10 +105,19 @@ async def test_kalshi_very_low_yes_fade_registry_seeds_shadow_candidate(session)
     assert version.autonomy_tier == AUTONOMY_TIER_SHADOW_ONLY
     assert version.config_json["live_orders_enabled"] is False
     assert version.config_json["rule"]["trade_direction"] == "buy_no"
+    assert version.config_json["rule"]["targeted_orderbook_capture"] is True
 
 
 @pytest.mark.asyncio
-async def test_kalshi_very_low_yes_fade_paper_lane_opens_buy_no_trade_under_candidate_run(session):
+async def test_kalshi_very_low_yes_fade_paper_lane_captures_fresh_book_and_opens_buy_no(
+    session,
+    monkeypatch,
+):
+    import app.strategies.kalshi_orderbook_capture as capture_module
+
+    fake_connector = _FakeKalshiConnector()
+    monkeypatch.setattr(capture_module, "get_connector", lambda _platform: fake_connector)
+
     now = datetime.now(timezone.utc).replace(microsecond=0)
     market = make_market(
         session,
@@ -93,7 +127,7 @@ async def test_kalshi_very_low_yes_fade_paper_lane_opens_buy_no_trade_under_cand
         last_liquidity=Decimal("5000.00"),
         active=True,
     )
-    outcome = make_outcome(session, market.id, name="Yes")
+    outcome = make_outcome(session, market.id, name="Yes", token_id="KTEST-VERYLOW:yes")
     signal = make_signal(
         session,
         market.id,
@@ -106,14 +140,6 @@ async def test_kalshi_very_low_yes_fade_paper_lane_opens_buy_no_trade_under_cand
         price_at_fire=Decimal("0.075000"),
         expected_value=Decimal("-0.045000"),
         estimated_probability=Decimal("0.0300"),
-    )
-    make_orderbook_snapshot(
-        session,
-        outcome.id,
-        spread=Decimal("0.010000"),
-        bids=[["0.075000", "100000"]],
-        asks=[["0.160000", "100000"]],
-        captured_at=now,
     )
     await session.commit()
 
@@ -126,7 +152,12 @@ async def test_kalshi_very_low_yes_fade_paper_lane_opens_buy_no_trade_under_cand
     )
 
     assert result["candidate_count"] == 1
+    assert result["targeted_orderbook_captures"] == 1
     assert result["opened_count"] == 1
+    assert fake_connector.orderbook_tokens == ["KTEST-VERYLOW:yes"]
+    assert fake_connector.closed is True
+
+    orderbook = (await session.execute(select(OrderbookSnapshot))).scalars().one()
     trade = (await session.execute(select(PaperTrade))).scalars().one()
     strategy_run = (
         await session.execute(select(StrategyRun).where(StrategyRun.strategy_name == STRATEGY_NAME))
@@ -134,6 +165,7 @@ async def test_kalshi_very_low_yes_fade_paper_lane_opens_buy_no_trade_under_cand
     decision = (await session.execute(select(ExecutionDecision))).scalars().one()
     version = await get_current_strategy_version(session, STRATEGY_FAMILY)
 
+    assert orderbook.outcome_id == outcome.id
     assert strategy_run.strategy_name == STRATEGY_NAME
     assert strategy_run.strategy_family == STRATEGY_FAMILY
     assert strategy_run.strategy_version_id == version.id
@@ -143,11 +175,20 @@ async def test_kalshi_very_low_yes_fade_paper_lane_opens_buy_no_trade_under_cand
     assert trade.details["strategy_run_id"] == str(strategy_run.id)
     assert decision.decision_status == "opened"
     assert decision.direction == "buy_no"
+    decision_at = decision.decision_at if decision.decision_at.tzinfo else decision.decision_at.replace(tzinfo=timezone.utc)
+    signal_fired_at = signal.fired_at if signal.fired_at.tzinfo else signal.fired_at.replace(tzinfo=timezone.utc)
+    assert decision_at > signal_fired_at
+    assert decision.details["market_price"] == "0.075000"
+    assert decision.details["shadow_execution"]["missing_orderbook_context"] is False
 
 
 @pytest.mark.asyncio
-async def test_scheduler_runs_kalshi_lane_without_default_strategy_run(session):
+async def test_scheduler_runs_kalshi_lane_without_default_strategy_run(session, monkeypatch):
+    import app.strategies.kalshi_orderbook_capture as capture_module
     from app.jobs.scheduler import _run_paper_trading
+
+    fake_connector = _FakeKalshiConnector()
+    monkeypatch.setattr(capture_module, "get_connector", lambda _platform: fake_connector)
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     market = make_market(
@@ -158,7 +199,7 @@ async def test_scheduler_runs_kalshi_lane_without_default_strategy_run(session):
         last_liquidity=Decimal("5000.00"),
         active=True,
     )
-    outcome = make_outcome(session, market.id, name="Yes")
+    outcome = make_outcome(session, market.id, name="Yes", token_id="KTEST-VERYLOW-SCHED:yes")
     signal = make_signal(
         session,
         market.id,
@@ -171,14 +212,6 @@ async def test_scheduler_runs_kalshi_lane_without_default_strategy_run(session):
         price_at_fire=Decimal("0.075000"),
         expected_value=Decimal("-0.045000"),
         estimated_probability=Decimal("0.0300"),
-    )
-    make_orderbook_snapshot(
-        session,
-        outcome.id,
-        spread=Decimal("0.010000"),
-        bids=[["0.075000", "100000"]],
-        asks=[["0.160000", "100000"]],
-        captured_at=now,
     )
     await session.commit()
 
