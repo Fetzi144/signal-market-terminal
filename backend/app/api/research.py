@@ -31,6 +31,7 @@ class ResearchBatchCreateRequest(BaseModel):
             "default_strategy",
             "kalshi_down_yes_fade",
             "kalshi_low_yes_fade",
+            "kalshi_very_low_yes_fade",
             "kalshi_cheap_yes_follow",
             "alpha_factory",
         ]

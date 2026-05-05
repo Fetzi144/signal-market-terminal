@@ -238,6 +238,9 @@ async def test_strategies_registry_endpoint_seeds_phase13a_registry_and_exposes_
     assert snapshots["kalshi_low_yes_fade"]["strategy_version"] == "kalshi_low_yes_fade_v1"
     assert snapshots["kalshi_low_yes_fade"]["source_kind"] == "kalshi_low_yes_fade_snapshot"
     assert "paper_lane_not_populated" not in snapshots["kalshi_low_yes_fade"]["profitability_blockers"]
+    assert snapshots["kalshi_very_low_yes_fade"]["strategy_version"] == "kalshi_very_low_yes_fade_v1"
+    assert snapshots["kalshi_very_low_yes_fade"]["source_kind"] == "kalshi_very_low_yes_fade_snapshot"
+    assert "paper_lane_not_populated" not in snapshots["kalshi_very_low_yes_fade"]["profitability_blockers"]
     assert snapshots["kalshi_cheap_yes_follow"]["strategy_version"] == "kalshi_cheap_yes_follow_v1"
     assert snapshots["kalshi_cheap_yes_follow"]["source_kind"] == "kalshi_cheap_yes_follow_snapshot"
     assert "paper_lane_not_populated" not in snapshots["kalshi_cheap_yes_follow"]["profitability_blockers"]

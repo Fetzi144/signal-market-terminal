@@ -120,6 +120,53 @@ def test_alpha_factory_maps_mid_price_down_fade_to_v2_existing_lane():
     } in existing_lanes
 
 
+def test_alpha_factory_maps_very_low_price_down_fade_to_existing_lane():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                profit_loss=0.08,
+                clv=0.012,
+                timeframe="30m",
+                expected_value=-0.045,
+                estimated_probability=0.03,
+                price_at_fire=0.075,
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                profit_loss=-0.06,
+                clv=-0.01,
+                direction="up",
+                expected_value=0.04,
+                estimated_probability=0.90,
+                price_at_fire=0.85,
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    existing_lanes = [
+        candidate["existing_lane"]
+        for candidate in snapshot["top_candidates"]
+        if candidate.get("existing_lane")
+    ]
+
+    assert {
+        "family": "kalshi_very_low_yes_fade",
+        "strategy_version": "kalshi_very_low_yes_fade_v1",
+        "lane": "paper_forward_gate",
+    } in existing_lanes
+
+
 def test_alpha_factory_maps_cheap_yes_follow_to_existing_lane():
     rows = []
     for index in range(90):

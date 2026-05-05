@@ -76,6 +76,10 @@ const BLOCKER_ACTIONS = {
     label: "Wait for fresh cheap-YES candidates",
     why: "The v1 lane only learns when very cheap Kalshi YES contracts move down while YES EV remains mildly positive.",
   },
+  no_matching_kalshi_very_low_yes_fade_signals: {
+    label: "Wait for fresh very-low-YES fade candidates",
+    why: "The v1 lane only learns when 5-10 cent Kalshi YES contracts move down on the 30m signal with negative YES EV.",
+  },
   observation_window_below_30d: {
     label: "Let the candidate lane age",
     why: "Forward paper alpha needs a 30-day observation window before promotion talk is meaningful.",
@@ -145,6 +149,7 @@ function sourceLink(row) {
   if (
     row.source_kind === "kalshi_low_yes_fade_snapshot" ||
     row.source_kind === "kalshi_down_yes_fade_snapshot" ||
+    row.source_kind === "kalshi_very_low_yes_fade_snapshot" ||
     row.source_kind === "kalshi_cheap_yes_follow_snapshot"
   ) {
     return { to: "/paper-trading", label: "Paper Lane" };

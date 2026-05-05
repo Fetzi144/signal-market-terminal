@@ -4,6 +4,7 @@ from app.reports.execution_policy_replay import generate_execution_policy_replay
 from app.reports.kalshi_cheap_yes_follow import generate_kalshi_cheap_yes_follow_artifact
 from app.reports.kalshi_down_yes_fade import generate_kalshi_down_yes_fade_artifact
 from app.reports.kalshi_low_yes_fade import generate_kalshi_low_yes_fade_artifact
+from app.reports.kalshi_very_low_yes_fade import generate_kalshi_very_low_yes_fade_artifact
 from app.reports.profit_operations import run_orderbook_context_repair, run_resolution_accelerator
 from app.reports.profit_tools import generate_profit_tools_artifact
 from app.reports.profitability_snapshot import generate_profitability_snapshot_artifact
@@ -18,6 +19,7 @@ __all__ = [
     "generate_kalshi_cheap_yes_follow_artifact",
     "generate_kalshi_down_yes_fade_artifact",
     "generate_kalshi_low_yes_fade_artifact",
+    "generate_kalshi_very_low_yes_fade_artifact",
     "generate_profitability_snapshot_artifact",
     "generate_profit_tools_artifact",
     "run_orderbook_context_repair",

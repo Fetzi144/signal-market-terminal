@@ -52,6 +52,16 @@ def _family_index() -> dict[str, dict[str, Any]]:
             "description": "Paper-only Kalshi candidate that buys NO on low-priced YES contracts already moving down.",
             "disabled_reason": None,
         },
+        "kalshi_very_low_yes_fade": {
+            "family": "kalshi_very_low_yes_fade",
+            "label": "Kalshi Very-Low-YES Fade",
+            "posture": POSTURE_RESEARCH_ACTIVE,
+            "configured": True,
+            "review_enabled": True,
+            "primary_surface": "paper_trading",
+            "description": "Paper-only Kalshi candidate that buys NO on 5-10 cent YES contracts moving down on the 30m signal.",
+            "disabled_reason": None,
+        },
         "kalshi_down_yes_fade": {
             "family": "kalshi_down_yes_fade",
             "label": "Kalshi Down-YES Fade",

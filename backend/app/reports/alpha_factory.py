@@ -168,6 +168,19 @@ def _known_existing_lane(rule: dict[str, Any]) -> dict[str, Any] | None:
     if (
         rule.get("signal_type") == "price_move"
         and rule.get("direction") == "down"
+        and rule.get("timeframe") == "30m"
+        and rule.get("price_bucket") == "p005_010"
+        and rule.get("expected_value_bucket") == "ev_neg"
+        and rule.get("platform") in {"kalshi", "all"}
+    ):
+        return {
+            "family": "kalshi_very_low_yes_fade",
+            "strategy_version": "kalshi_very_low_yes_fade_v1",
+            "lane": "paper_forward_gate",
+        }
+    if (
+        rule.get("signal_type") == "price_move"
+        and rule.get("direction") == "down"
         and rule.get("price_bucket") == "p010_020"
         and rule.get("expected_value_bucket") == "ev_neg"
         and rule.get("platform") in {"kalshi", "all"}

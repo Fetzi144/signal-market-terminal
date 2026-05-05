@@ -37,6 +37,10 @@ from app.reports.kalshi_low_yes_fade import (
     build_kalshi_low_yes_fade_snapshot,
     kalshi_low_yes_fade_lane_payload,
 )
+from app.reports.kalshi_very_low_yes_fade import (
+    build_kalshi_very_low_yes_fade_snapshot,
+    kalshi_very_low_yes_fade_lane_payload,
+)
 from app.reports.profit_tools import build_profit_tools_snapshot
 from app.research_lab.artifacts import write_research_batch_artifacts
 from app.research_lab.normalizer import (
@@ -52,6 +56,7 @@ DEFAULT_FAMILIES = (
     "default_strategy",
     "kalshi_down_yes_fade",
     "kalshi_low_yes_fade",
+    "kalshi_very_low_yes_fade",
     "kalshi_cheap_yes_follow",
     "alpha_factory",
 )
@@ -698,6 +703,16 @@ async def _run_kalshi_low_yes_fade_lane(session: AsyncSession, batch: ResearchBa
     return kalshi_low_yes_fade_lane_payload(snapshot)
 
 
+async def _run_kalshi_very_low_yes_fade_lane(session: AsyncSession, batch: ResearchBatch) -> dict[str, Any]:
+    snapshot = await build_kalshi_very_low_yes_fade_snapshot(
+        session,
+        window_days=int(batch.window_days or 30),
+        max_signals=min(int(batch.max_markets or 500) * 10, 5000),
+        as_of=batch.window_end,
+    )
+    return kalshi_very_low_yes_fade_lane_payload(snapshot)
+
+
 async def _run_kalshi_down_yes_fade_lane(session: AsyncSession, batch: ResearchBatch) -> dict[str, Any]:
     snapshot = await build_kalshi_down_yes_fade_snapshot(
         session,
@@ -788,6 +803,10 @@ BLOCKER_ACTIONS: dict[str, dict[str, str]] = {
     "no_matching_kalshi_down_yes_fade_signals": {
         "label": "Wait for fresh Kalshi down-YES fade candidates",
         "why": "The v2 lane only learns when fresh mid-priced YES contracts move down with negative YES EV.",
+    },
+    "no_matching_kalshi_very_low_yes_fade_signals": {
+        "label": "Wait for fresh Kalshi very-low-YES fade candidates",
+        "why": "The v1 lane only learns when 5-10 cent YES contracts move down on the 30m signal with negative YES EV.",
     },
     "no_matching_kalshi_cheap_yes_follow_signals": {
         "label": "Wait for fresh cheap-YES follow candidates",
@@ -1105,6 +1124,12 @@ async def run_research_batch(
                 "kalshi_low_yes_fade",
                 "paper_forward_gate",
                 lambda: _run_kalshi_low_yes_fade_lane(session, batch),
+            )
+        if "kalshi_very_low_yes_fade" in families:
+            await run_lane(
+                "kalshi_very_low_yes_fade",
+                "paper_forward_gate",
+                lambda: _run_kalshi_very_low_yes_fade_lane(session, batch),
             )
         if "kalshi_cheap_yes_follow" in families:
             await run_lane(

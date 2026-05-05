@@ -26,6 +26,10 @@ from app.reports.kalshi_low_yes_fade import (
     build_kalshi_low_yes_fade_snapshot,
     kalshi_low_yes_fade_lane_payload,
 )
+from app.reports.kalshi_very_low_yes_fade import (
+    build_kalshi_very_low_yes_fade_snapshot,
+    kalshi_very_low_yes_fade_lane_payload,
+)
 from app.strategies.registry import (
     get_strategy_registry_payload,
     get_strategy_version_detail_payload,
@@ -311,6 +315,10 @@ async def get_strategy_profitability(db: AsyncSession = Depends(get_db)):
         if family_key == "kalshi_low_yes_fade":
             snapshot = await build_kalshi_low_yes_fade_snapshot(db, as_of=observed_at)
             snapshots.append(_kalshi_profitability_snapshot(snapshot, kalshi_low_yes_fade_lane_payload(snapshot)))
+            continue
+        if family_key == "kalshi_very_low_yes_fade":
+            snapshot = await build_kalshi_very_low_yes_fade_snapshot(db, as_of=observed_at)
+            snapshots.append(_kalshi_profitability_snapshot(snapshot, kalshi_very_low_yes_fade_lane_payload(snapshot)))
             continue
         if family_key == "kalshi_cheap_yes_follow":
             snapshot = await build_kalshi_cheap_yes_follow_snapshot(db, as_of=observed_at)
