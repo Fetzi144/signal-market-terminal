@@ -404,7 +404,7 @@ async def run_kalshi_low_yes_fade_paper_lane(
         current_precheck_reason_label = None
         if (
             evaluation.eligible
-            and attempt_kind in {"fresh_signal", "retry"}
+            and attempt_kind in {"fresh_signal", "retry", "backlog_repair"}
             and targeted_orderbook_captures < targeted_orderbook_limit
         ):
             captured_at = datetime.now(timezone.utc)
