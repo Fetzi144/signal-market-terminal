@@ -107,17 +107,16 @@ def test_alpha_factory_maps_mid_price_down_fade_to_v2_existing_lane():
         min_test_sample=10,
     )
 
-    existing_lanes = [
-        candidate["existing_lane"]
-        for candidate in snapshot["top_candidates"]
-        if candidate.get("existing_lane")
-    ]
-
-    assert {
-        "family": "kalshi_down_yes_fade",
-        "strategy_version": "kalshi_down_yes_fade_v2",
-        "lane": "paper_forward_gate",
-    } in existing_lanes
+    assert any(
+        lane["family"] == "kalshi_down_yes_fade"
+        and lane["strategy_version"] == "kalshi_down_yes_fade_v2"
+        and lane["match_type"] == "exact_existing_lane"
+        for lane in (
+            candidate["existing_lane"]
+            for candidate in snapshot["top_candidates"]
+            if candidate.get("existing_lane")
+        )
+    )
 
 
 def test_alpha_factory_maps_very_low_price_down_fade_to_existing_lane():
@@ -154,17 +153,68 @@ def test_alpha_factory_maps_very_low_price_down_fade_to_existing_lane():
         min_test_sample=10,
     )
 
-    existing_lanes = [
-        candidate["existing_lane"]
-        for candidate in snapshot["top_candidates"]
-        if candidate.get("existing_lane")
-    ]
+    assert any(
+        lane["family"] == "kalshi_very_low_yes_fade"
+        and lane["strategy_version"] == "kalshi_very_low_yes_fade_v1"
+        and lane["match_type"] == "exact_existing_lane"
+        for lane in (
+            candidate["existing_lane"]
+            for candidate in snapshot["top_candidates"]
+            if candidate.get("existing_lane")
+        )
+    )
 
-    assert {
-        "family": "kalshi_very_low_yes_fade",
-        "strategy_version": "kalshi_very_low_yes_fade_v1",
-        "lane": "paper_forward_gate",
-    } in existing_lanes
+
+def test_alpha_factory_suppresses_broad_very_low_fade_variant_as_not_new():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                profit_loss=0.08,
+                clv=0.012,
+                timeframe="30m",
+                expected_value=None,
+                estimated_probability=0.03,
+                price_at_fire=0.075,
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                profit_loss=-0.06,
+                clv=-0.01,
+                direction="up",
+                expected_value=0.04,
+                estimated_probability=0.90,
+                price_at_fire=0.85,
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    variant = next(
+        candidate
+        for candidate in snapshot["top_candidates"]
+        if candidate["rule"]["price_bucket"] == "p005_010"
+        and candidate["rule"]["timeframe"] == "30m"
+        and candidate["rule"]["expected_value_bucket"] == "all"
+    )
+
+    assert variant["existing_lane"]["family"] == "kalshi_very_low_yes_fade"
+    assert variant["existing_lane"]["match_type"] == "covered_existing_lane_variant"
+    assert variant["ready_for_paper_lane"] is False
+    assert variant["dedupe_status"] == "covered_existing_lane_variant"
+    assert variant["next_step"] == "review_existing_lane_variant"
+    assert "covered_by_existing_lane_variant" in variant["blockers"]
+    assert snapshot["new_ready_candidate_count"] == 0
+    assert snapshot["suppressed_candidate_count"] >= 1
 
 
 def test_alpha_factory_maps_cheap_yes_follow_to_existing_lane():
@@ -200,17 +250,66 @@ def test_alpha_factory_maps_cheap_yes_follow_to_existing_lane():
         min_test_sample=10,
     )
 
-    existing_lanes = [
-        candidate["existing_lane"]
+    cheap_candidates = [
+        candidate
         for candidate in snapshot["top_candidates"]
-        if candidate.get("existing_lane")
+        if (candidate.get("existing_lane") or {}).get("family") == "kalshi_cheap_yes_follow"
     ]
 
-    assert {
-        "family": "kalshi_cheap_yes_follow",
-        "strategy_version": "kalshi_cheap_yes_follow_v1",
-        "lane": "paper_forward_gate",
-    } in existing_lanes
+    assert cheap_candidates
+    assert all(candidate["ready_for_paper_lane"] is False for candidate in cheap_candidates)
+    assert all(candidate["next_step"] == "keep_quarantined_lane_paused" for candidate in cheap_candidates)
+    assert all("matched_quarantined_lane_family" in candidate["blockers"] for candidate in cheap_candidates)
+    assert all(candidate["existing_lane"]["quarantine"]["enabled"] is True for candidate in cheap_candidates)
+
+
+def test_alpha_factory_suppresses_tiny_positive_yes_variant_near_quarantined_cheap_lane():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                profit_loss=0.04,
+                clv=0.01,
+                timeframe="1h",
+                expected_value=0.005,
+                estimated_probability=0.40,
+                price_at_fire=0.40,
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                profit_loss=-0.06,
+                clv=-0.01,
+                direction="up",
+                expected_value=-0.03,
+                estimated_probability=0.55,
+                price_at_fire=0.58,
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        max_candidates=30,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    variant = next(
+        candidate
+        for candidate in snapshot["top_candidates"]
+        if (candidate.get("existing_lane") or {}).get("family") == "kalshi_cheap_yes_follow"
+    )
+
+    assert variant["existing_lane"]["family"] == "kalshi_cheap_yes_follow"
+    assert variant["existing_lane"]["match_type"] == "quarantined_related_lane_variant"
+    assert variant["ready_for_paper_lane"] is False
+    assert variant["next_step"] == "keep_quarantined_lane_paused"
+    assert "matched_quarantined_lane_family" in variant["blockers"]
+    assert snapshot["new_ready_candidate_count"] == 0
 
 
 def test_alpha_factory_filters_to_kalshi_and_reports_empty_history():

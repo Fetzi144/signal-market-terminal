@@ -964,7 +964,9 @@ def _alpha_factory_new_candidate_count(snapshot: dict) -> int:
         for candidate in candidates
         if candidate.get("ready_for_paper_lane")
         and candidate.get("trade_direction")
+        and not candidate.get("blockers")
         and not candidate.get("existing_lane")
+        and candidate.get("dedupe_status", "new_candidate") == "new_candidate"
     )
 
 

@@ -28,6 +28,14 @@ ALPHA_FACTORY_ARTIFACT_DIR = "docs/research-lab/alpha-factory"
 DEFAULT_PLATFORM = "kalshi"
 DEFAULT_MAX_CANDIDATES = 10
 POSITIVE_EV_BUCKETS = {"ev_000_001", "ev_001_002", "ev_002_005", "ev_005_plus"}
+CHEAP_YES_FOLLOW_QUARANTINE = {
+    "enabled": True,
+    "reason_code": "kalshi_cheap_yes_follow_forward_paper_quarantine",
+    "detail": (
+        "Initial forward paper evidence for kalshi_cheap_yes_follow resolved negative; "
+        "related tiny-positive-YES candidates require manual review instead of a new lane."
+    ),
+}
 
 
 def _utcnow() -> datetime:
@@ -152,56 +160,110 @@ def _strategy_expression(rule: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _known_existing_lane(rule: dict[str, Any]) -> dict[str, Any] | None:
-    if (
+def _lane_match(
+    *,
+    family: str,
+    strategy_version: str,
+    match_type: str,
+    reason_code: str,
+    detail: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "family": family,
+        "strategy_version": strategy_version,
+        "lane": "paper_forward_gate",
+        "match_type": match_type,
+        "reason_code": reason_code,
+        "detail": detail,
+    }
+    if family == "kalshi_cheap_yes_follow":
+        payload["quarantine"] = dict(CHEAP_YES_FOLLOW_QUARANTINE)
+    return payload
+
+
+def _known_existing_lane(rule: dict[str, Any], *, trade_direction: str | None = None) -> dict[str, Any] | None:
+    is_kalshi_price_down = (
         rule.get("signal_type") == "price_move"
         and rule.get("direction") == "down"
-        and rule.get("price_bucket") == "p020_050"
-        and rule.get("expected_value_bucket") == "ev_neg"
         and rule.get("platform") in {"kalshi", "all"}
-    ):
-        return {
-            "family": "kalshi_down_yes_fade",
-            "strategy_version": "kalshi_down_yes_fade_v2",
-            "lane": "paper_forward_gate",
-        }
+    )
+    if not is_kalshi_price_down:
+        return None
+
     if (
-        rule.get("signal_type") == "price_move"
-        and rule.get("direction") == "down"
-        and rule.get("timeframe") == "30m"
+        rule.get("price_bucket") == "p020_050"
+        and rule.get("expected_value_bucket") == "ev_neg"
+    ):
+        return _lane_match(
+            family="kalshi_down_yes_fade",
+            strategy_version="kalshi_down_yes_fade_v2",
+            match_type="exact_existing_lane",
+            reason_code="known_kalshi_down_yes_fade",
+            detail="Exact rule is already covered by the Kalshi down-YES fade paper lane.",
+        )
+    if (
+        rule.get("timeframe") == "30m"
         and rule.get("price_bucket") == "p005_010"
         and rule.get("expected_value_bucket") == "ev_neg"
-        and rule.get("platform") in {"kalshi", "all"}
     ):
-        return {
-            "family": "kalshi_very_low_yes_fade",
-            "strategy_version": "kalshi_very_low_yes_fade_v1",
-            "lane": "paper_forward_gate",
-        }
-    if (
-        rule.get("signal_type") == "price_move"
-        and rule.get("direction") == "down"
-        and rule.get("price_bucket") == "p010_020"
-        and rule.get("expected_value_bucket") == "ev_neg"
-        and rule.get("platform") in {"kalshi", "all"}
+        return _lane_match(
+            family="kalshi_very_low_yes_fade",
+            strategy_version="kalshi_very_low_yes_fade_v1",
+            match_type="exact_existing_lane",
+            reason_code="known_kalshi_very_low_yes_fade",
+            detail="Exact rule is already covered by the Kalshi very-low-YES fade paper lane.",
+        )
+    if rule.get("price_bucket") == "p005_010" and trade_direction == "buy_no":
+        return _lane_match(
+            family="kalshi_very_low_yes_fade",
+            strategy_version="kalshi_very_low_yes_fade_v1",
+            match_type="covered_existing_lane_variant",
+            reason_code="covered_by_kalshi_very_low_yes_fade_variant",
+            detail=(
+                "Rule is a broader very-low/falling-YES fade variant; compare it inside the existing lane "
+                "instead of spawning another paper lane."
+            ),
+        )
+    if rule.get("price_bucket") == "p010_020" and rule.get("expected_value_bucket") == "ev_neg":
+        return _lane_match(
+            family="kalshi_low_yes_fade",
+            strategy_version="kalshi_low_yes_fade_v1",
+            match_type="exact_existing_lane",
+            reason_code="known_kalshi_low_yes_fade",
+            detail="Exact rule is already covered by the Kalshi low-YES fade paper lane.",
+        )
+    if rule.get("price_bucket") == "p010_020" and trade_direction == "buy_no":
+        return _lane_match(
+            family="kalshi_low_yes_fade",
+            strategy_version="kalshi_low_yes_fade_v1",
+            match_type="covered_existing_lane_variant",
+            reason_code="covered_by_kalshi_low_yes_fade_variant",
+            detail=(
+                "Rule is a broader low/falling-YES fade variant; compare it inside the existing lane "
+                "instead of spawning another paper lane."
+            ),
+        )
+    if rule.get("price_bucket") == "p00_005" and rule.get("expected_value_bucket") == "ev_000_001":
+        return _lane_match(
+            family="kalshi_cheap_yes_follow",
+            strategy_version="kalshi_cheap_yes_follow_v1",
+            match_type="exact_existing_lane",
+            reason_code="known_quarantined_kalshi_cheap_yes_follow",
+            detail="Exact rule is already covered by the quarantined Kalshi cheap-YES follow paper lane.",
+        )
+    if trade_direction == "buy_yes" and (
+        rule.get("price_bucket") == "p00_005" or rule.get("expected_value_bucket") == "ev_000_001"
     ):
-        return {
-            "family": "kalshi_low_yes_fade",
-            "strategy_version": "kalshi_low_yes_fade_v1",
-            "lane": "paper_forward_gate",
-        }
-    if (
-        rule.get("signal_type") == "price_move"
-        and rule.get("direction") == "down"
-        and rule.get("price_bucket") == "p00_005"
-        and rule.get("expected_value_bucket") == "ev_000_001"
-        and rule.get("platform") in {"kalshi", "all"}
-    ):
-        return {
-            "family": "kalshi_cheap_yes_follow",
-            "strategy_version": "kalshi_cheap_yes_follow_v1",
-            "lane": "paper_forward_gate",
-        }
+        return _lane_match(
+            family="kalshi_cheap_yes_follow",
+            strategy_version="kalshi_cheap_yes_follow_v1",
+            match_type="quarantined_related_lane_variant",
+            reason_code="related_to_quarantined_kalshi_cheap_yes_follow",
+            detail=(
+                "Rule is a tiny-positive-YES follow variant near the quarantined cheap-YES lane; "
+                "do not promote it as a fresh lane until forward evidence is reviewed."
+            ),
+        )
     return None
 
 
@@ -226,13 +288,20 @@ def _candidate_payload(candidate: dict[str, Any], *, platform: str, rank: int) -
     expression = _strategy_expression(rule)
     digest = _rule_digest(rule)
     label = _rule_label(rule)
-    existing_lane = _known_existing_lane(rule)
     trade_direction = expression.get("trade_direction")
+    existing_lane = _known_existing_lane(rule, trade_direction=trade_direction)
     blockers: list[str] = []
     if not candidate.get("test_pass"):
         blockers.append("failed_chronological_holdout")
     if not trade_direction:
         blockers.append("ambiguous_trade_expression")
+    if rule.get("direction") == "all":
+        blockers.append("overbroad_alpha_rule")
+    if existing_lane is not None and existing_lane.get("match_type") == "covered_existing_lane_variant":
+        blockers.append("covered_by_existing_lane_variant")
+    quarantine = (existing_lane or {}).get("quarantine") or {}
+    if quarantine.get("enabled"):
+        blockers.append("matched_quarantined_lane_family")
 
     strategy_slug = _safe_slug(label, max_length=48)
     strategy_version = (
@@ -240,11 +309,21 @@ def _candidate_payload(candidate: dict[str, Any], *, platform: str, rank: int) -
         if existing_lane is not None
         else f"alpha_{platform}_{strategy_slug}_{digest}_v1"
     )
-    ready_for_paper = bool(candidate.get("test_pass") and trade_direction)
+    ready_for_paper = bool(candidate.get("test_pass") and trade_direction and not blockers)
 
     next_step = "continue_forward_paper_collection" if existing_lane else "implement_frozen_paper_lane"
+    if "matched_quarantined_lane_family" in blockers:
+        next_step = "keep_quarantined_lane_paused"
+    elif "covered_by_existing_lane_variant" in blockers:
+        next_step = "review_existing_lane_variant"
+    elif "overbroad_alpha_rule" in blockers:
+        next_step = "refine_overbroad_alpha_rule"
     if blockers:
-        next_step = "review_or_discard_candidate"
+        next_step = (
+            next_step
+            if existing_lane or "overbroad_alpha_rule" in blockers
+            else "review_or_discard_candidate"
+        )
 
     return {
         "rank": rank,
@@ -259,6 +338,7 @@ def _candidate_payload(candidate: dict[str, Any], *, platform: str, rank: int) -
         "expression_rationale": expression.get("why"),
         "inference_warning": expression.get("inference_warning"),
         "existing_lane": existing_lane,
+        "dedupe_status": (existing_lane or {}).get("match_type") or "new_candidate",
         "ready_for_paper_lane": ready_for_paper,
         "paper_only": True,
         "live_orders_enabled": False,
@@ -302,7 +382,30 @@ def _next_best_actions(candidates: list[dict[str, Any]], *, platform: str) -> li
     actions: list[dict[str, Any]] = []
     for candidate in candidates[:5]:
         existing_lane = candidate.get("existing_lane")
-        if existing_lane:
+        blockers = set(candidate.get("blockers") or [])
+        if "matched_quarantined_lane_family" in blockers:
+            step = "keep_quarantined_lane_paused"
+            operator_action = (
+                f"Do not implement {candidate.get('strategy_version')} as a new lane; "
+                "keep the related quarantined paper lane paused until forward evidence is reviewed."
+            )
+            priority = 75
+        elif "covered_by_existing_lane_variant" in blockers:
+            step = "review_existing_lane_variant"
+            operator_action = (
+                f"Treat {candidate.get('candidate_id')} as a variant of "
+                f"{existing_lane.get('strategy_version') if existing_lane else 'an existing lane'}; "
+                "compare it in lane diagnostics before creating any new paper evaluator."
+            )
+            priority = 70
+        elif "overbroad_alpha_rule" in blockers:
+            step = "refine_overbroad_alpha_rule"
+            operator_action = (
+                f"Do not implement {candidate.get('candidate_id')} directly; require a directional cohort "
+                "or lane-specific rule before paper-lane creation."
+            )
+            priority = 65
+        elif existing_lane:
             step = "keep_existing_candidate_lane_collecting_forward_evidence"
             operator_action = (
                 f"Keep {existing_lane.get('strategy_version')} paper-only and compare forward CLV/P&L "
@@ -382,7 +485,18 @@ def build_alpha_factory_snapshot_from_rows(
         for index, candidate in enumerate(candidate_rows, start=1)
     ]
     ready_count = sum(1 for candidate in candidates if candidate.get("ready_for_paper_lane"))
+    new_ready_count = sum(
+        1
+        for candidate in candidates
+        if candidate.get("ready_for_paper_lane") and not candidate.get("existing_lane")
+    )
     existing_count = sum(1 for candidate in candidates if candidate.get("existing_lane"))
+    suppressed_count = sum(
+        1
+        for candidate in candidates
+        if set(candidate.get("blockers") or [])
+        & {"covered_by_existing_lane_variant", "matched_quarantined_lane_family", "overbroad_alpha_rule"}
+    )
     blockers: list[str] = []
     if not filtered_rows:
         blockers.append("no_kalshi_resolved_signal_history")
@@ -418,7 +532,9 @@ def build_alpha_factory_snapshot_from_rows(
         "blockers": blockers,
         "candidate_count": len(candidates),
         "ready_candidate_count": ready_count,
+        "new_ready_candidate_count": new_ready_count,
         "existing_lane_count": existing_count,
+        "suppressed_candidate_count": suppressed_count,
         "top_candidates": candidates,
         "holdout_failures": selected[: min(len(selected), max_candidates)],
         "next_best_actions": actions,
@@ -430,6 +546,11 @@ def build_alpha_factory_snapshot_from_rows(
                     "paper_lane_required_before_any_real_money_decision",
                     "candidate_thresholds_must_remain_frozen_after_creation",
                 ]
+                + (
+                    ["known_lane_or_overbroad_variants_suppressed_from_new_candidate_count"]
+                    if suppressed_count
+                    else []
+                )
             )
         ),
     }
@@ -502,6 +623,8 @@ def alpha_factory_lane_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
             "row_count": snapshot.get("row_count"),
             "candidate_count": snapshot.get("candidate_count"),
             "ready_candidate_count": snapshot.get("ready_candidate_count"),
+            "new_ready_candidate_count": snapshot.get("new_ready_candidate_count"),
+            "suppressed_candidate_count": snapshot.get("suppressed_candidate_count"),
             "top_candidates": candidates[:10],
             "next_best_actions": snapshot.get("next_best_actions") or [],
             "warnings": snapshot.get("warnings") or [],
@@ -524,12 +647,13 @@ def _render_markdown(snapshot: dict[str, Any]) -> str:
             f"`{row.get('strategy_archetype')}` | {((row.get('metrics') or {}).get('test') or {}).get('sample_count', 0)} | "
             f"{((row.get('metrics') or {}).get('test') or {}).get('total_profit_loss', 0)} | "
             f"{((row.get('metrics') or {}).get('test') or {}).get('avg_clv')} | "
+            f"`{row.get('dedupe_status')}` | "
             f"`{row.get('next_step')}` |"
         )
         for row in candidates
     )
     if not candidate_lines:
-        candidate_lines = "| - | - | - | - | - | - | - | - |"
+        candidate_lines = "| - | - | - | - | - | - | - | - | - |"
 
     action_lines = "\n".join(
         f"- `{row.get('step')}`: {row.get('operator_action')} ({row.get('why_ev')})"
@@ -544,13 +668,15 @@ def _render_markdown(snapshot: dict[str, Any]) -> str:
 **Window days:** {snapshot.get('window_days')}
 **Rows tested:** {snapshot.get('row_count')}
 **Verdict:** `{snapshot.get('verdict')}`
+**New ready candidates:** {snapshot.get('new_ready_candidate_count')}
+**Suppressed known/quarantined/overbroad variants:** {snapshot.get('suppressed_candidate_count')}
 **Paper only:** `true`
 **Live submission permitted:** `false`
 
 ## Candidate Queue
 
-| Rank | Strategy Version | Trade | Archetype | Test N | Test P&L | Test CLV | Next Step |
-| ---: | --- | --- | --- | ---: | ---: | ---: | --- |
+| Rank | Strategy Version | Trade | Archetype | Test N | Test P&L | Test CLV | Dedupe | Next Step |
+| ---: | --- | --- | --- | ---: | ---: | ---: | --- | --- |
 {candidate_lines}
 
 ## Top Actions
