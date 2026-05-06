@@ -7,12 +7,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.alpha_rule_specs import ALPHA_KALSHI_4237F81367_FAMILY
 from app.db import get_db
 from app.paper_trading.analysis import (
     PROFITABILITY_MIN_RESOLVED_TRADES,
     PROFITABILITY_OPERATING_WINDOW_DAYS,
     build_paper_lane_profitability_snapshot,
     get_profitability_snapshot,
+)
+from app.reports.alpha_rule_paper_lane import (
+    alpha_rule_paper_lane_payload,
+    build_alpha_rule_paper_lane_snapshot,
 )
 from app.reports.kalshi_cheap_yes_follow import (
     build_kalshi_cheap_yes_follow_snapshot,
@@ -323,6 +328,10 @@ async def get_strategy_profitability(db: AsyncSession = Depends(get_db)):
         if family_key == "kalshi_cheap_yes_follow":
             snapshot = await build_kalshi_cheap_yes_follow_snapshot(db, as_of=observed_at)
             snapshots.append(_kalshi_profitability_snapshot(snapshot, kalshi_cheap_yes_follow_lane_payload(snapshot)))
+            continue
+        if family_key == ALPHA_KALSHI_4237F81367_FAMILY:
+            snapshot = await build_alpha_rule_paper_lane_snapshot(db, as_of=observed_at)
+            snapshots.append(_kalshi_profitability_snapshot(snapshot, alpha_rule_paper_lane_payload(snapshot)))
             continue
         snapshots.append(
             build_paper_lane_profitability_snapshot(

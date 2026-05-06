@@ -280,6 +280,7 @@ async def _run_paper_trading(session, signals):
         hydrate_strategy_run_state,
         load_missing_qualified_signals,
     )
+    from app.strategies.alpha_rule_paper_lane import run_enabled_alpha_rule_paper_lanes
     from app.strategies.kalshi_cheap_yes_follow import run_kalshi_cheap_yes_follow_paper_lane
     from app.strategies.kalshi_down_yes_fade import run_kalshi_down_yes_fade_paper_lane
     from app.strategies.kalshi_low_yes_fade import run_kalshi_low_yes_fade_paper_lane
@@ -322,6 +323,13 @@ async def _run_paper_trading(session, signals):
             pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
         )
         await run_kalshi_cheap_yes_follow_paper_lane(
+            session,
+            signals,
+            pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
+            backlog_limit=PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
+            pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
+        )
+        await run_enabled_alpha_rule_paper_lanes(
             session,
             signals,
             pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
@@ -536,6 +544,13 @@ async def _run_paper_trading(session, signals):
         pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
     )
     await run_kalshi_cheap_yes_follow_paper_lane(
+        session,
+        signals,
+        pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,
+        backlog_limit=PAPER_TRADING_BACKLOG_REPAIR_BATCH_SIZE,
+        pending_expiry_limit=PAPER_TRADING_PENDING_EXPIRY_BATCH_SIZE,
+    )
+    await run_enabled_alpha_rule_paper_lanes(
         session,
         signals,
         pending_retry_limit=PAPER_TRADING_PENDING_RETRY_BATCH_SIZE,

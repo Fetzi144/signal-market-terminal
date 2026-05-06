@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.alpha_rule_specs import alpha_rule_family_seed_rows
 from app.config import settings
 
 POSTURE_BENCHMARK_ONLY = "benchmark_only"
@@ -11,7 +12,7 @@ POSTURE_DISABLED = "disabled"
 
 
 def _family_index() -> dict[str, dict[str, Any]]:
-    return {
+    index = {
         "default_strategy": {
             "family": "default_strategy",
             "label": "Default Strategy",
@@ -93,6 +94,9 @@ def _family_index() -> dict[str, dict[str, Any]]:
             "disabled_reason": "Paired executable hedge routing is not implemented yet.",
         },
     }
+    for row in alpha_rule_family_seed_rows():
+        index[row["family"]] = row
+    return index
 
 
 def build_strategy_family_reviews() -> list[dict[str, Any]]:

@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.alpha_rule_specs import ALPHA_KALSHI_4237F81367_FAMILY
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.modes import DETECTOR_REPLAY_MODE, STRATEGY_COMPARISON_REPLAY_MODE, with_replay_mode
 from app.backtesting.sweep import parameter_sweep
@@ -25,6 +26,10 @@ from app.models.signal import Signal
 from app.models.snapshot import PriceSnapshot
 from app.paper_trading.analysis import get_profitability_snapshot
 from app.reports.alpha_factory import alpha_factory_lane_payload, build_alpha_factory_snapshot
+from app.reports.alpha_rule_paper_lane import (
+    alpha_rule_paper_lane_payload,
+    build_alpha_rule_paper_lane_snapshot,
+)
 from app.reports.kalshi_cheap_yes_follow import (
     build_kalshi_cheap_yes_follow_snapshot,
     kalshi_cheap_yes_follow_lane_payload,
@@ -58,6 +63,7 @@ DEFAULT_FAMILIES = (
     "kalshi_low_yes_fade",
     "kalshi_very_low_yes_fade",
     "kalshi_cheap_yes_follow",
+    ALPHA_KALSHI_4237F81367_FAMILY,
     "alpha_factory",
 )
 RETIRED_POLYMARKET_FAMILIES = {
@@ -745,6 +751,16 @@ async def _run_alpha_factory_lane(session: AsyncSession, batch: ResearchBatch) -
     return alpha_factory_lane_payload(snapshot)
 
 
+async def _run_alpha_rule_paper_lane(session: AsyncSession, batch: ResearchBatch) -> dict[str, Any]:
+    snapshot = await build_alpha_rule_paper_lane_snapshot(
+        session,
+        window_days=int(batch.window_days or 30),
+        max_signals=min(int(batch.max_markets or 500) * 10, 5000),
+        as_of=batch.window_end,
+    )
+    return alpha_rule_paper_lane_payload(snapshot)
+
+
 def _top_blockers(lanes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts: dict[str, int] = {}
     for row in lanes:
@@ -1136,6 +1152,12 @@ async def run_research_batch(
                 "kalshi_cheap_yes_follow",
                 "paper_forward_gate",
                 lambda: _run_kalshi_cheap_yes_follow_lane(session, batch),
+            )
+        if ALPHA_KALSHI_4237F81367_FAMILY in families:
+            await run_lane(
+                ALPHA_KALSHI_4237F81367_FAMILY,
+                "paper_forward_gate",
+                lambda: _run_alpha_rule_paper_lane(session, batch),
             )
         if "alpha_factory" in families:
             await run_lane(

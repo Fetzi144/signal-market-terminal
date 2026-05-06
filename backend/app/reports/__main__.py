@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 
+from app.alpha_rule_specs import ALPHA_KALSHI_4237F81367_FAMILY
 from app.db import async_session
 from app.reports.alpha_factory import generate_alpha_factory_artifact
 from app.reports.alpha_gauntlet import generate_alpha_gauntlet_artifact
@@ -78,7 +79,11 @@ def _parser() -> argparse.ArgumentParser:
     research.add_argument("--max-markets", type=int, default=500)
     research.add_argument(
         "--families",
-        default="default_strategy,kalshi_down_yes_fade,kalshi_low_yes_fade,kalshi_very_low_yes_fade,kalshi_cheap_yes_follow,alpha_factory",
+        default=(
+            "default_strategy,kalshi_down_yes_fade,kalshi_low_yes_fade,"
+            "kalshi_very_low_yes_fade,kalshi_cheap_yes_follow,"
+            f"{ALPHA_KALSHI_4237F81367_FAMILY},alpha_factory"
+        ),
         help="Comma-separated strategy families to test.",
     )
 

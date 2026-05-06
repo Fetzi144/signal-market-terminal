@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.alpha_rule_specs import alpha_rule_version_seed_rows
 from app.config import settings
 from app.default_strategy import get_default_strategy_contract
 from app.execution.polymarket_autonomy_state import (
@@ -134,7 +135,7 @@ def _seed_version_config(family: str, config_json: dict[str, Any] | None) -> dic
 
 
 def _version_seed_rows() -> list[dict[str, Any]]:
-    return [
+    rows = [
         {
             "family": STRATEGY_FAMILY_DEFAULT,
             "version_key": "default_strategy_benchmark_v1",
@@ -372,6 +373,8 @@ def _version_seed_rows() -> list[dict[str, Any]]:
             },
         },
     ]
+    rows.extend(alpha_rule_version_seed_rows())
+    return rows
 
 
 def _gate_policy_seed_rows() -> list[dict[str, Any]]:
