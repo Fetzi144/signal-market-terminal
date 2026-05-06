@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.alpha_rule_specs import (
     ALPHA_KALSHI_4237F81367_FAMILY,
     ALPHA_KALSHI_4237F81367_VERSION,
+    ALPHA_KALSHI_D80BDF77A9_FAMILY,
+    ALPHA_KALSHI_D80BDF77A9_VERSION,
 )
 from app.reports.alpha_gauntlet import (
     AlphaSignalRow,
@@ -315,6 +317,24 @@ def _known_existing_lane(rule: dict[str, Any], *, trade_direction: str | None = 
             match_type="exact_existing_lane",
             reason_code="known_alpha_kalshi_4237f81367",
             detail="Exact rule is already covered by the frozen Alpha Factory paper lane.",
+        )
+
+    if (
+        rule.get("signal_type") == "price_move"
+        and rule.get("platform") in {"kalshi", "all"}
+        and rule.get("direction") == "up"
+        and str(rule.get("price_bucket") or "all") == "all"
+        and rule.get("expected_value_bucket") == "ev_001_002"
+        and rule.get("volume_bucket") == "volume_001k_010k"
+        and str(rule.get("liquidity_bucket") or "all") == "all"
+        and trade_direction == "buy_yes"
+    ):
+        return _lane_match(
+            family=ALPHA_KALSHI_D80BDF77A9_FAMILY,
+            strategy_version=ALPHA_KALSHI_D80BDF77A9_VERSION,
+            match_type="exact_existing_lane",
+            reason_code="known_alpha_kalshi_d80bdf77a9",
+            detail="Exact rule is already covered by the frozen Alpha Factory volume paper lane.",
         )
 
     is_kalshi_price_down = (

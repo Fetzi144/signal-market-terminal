@@ -196,6 +196,56 @@ def test_alpha_factory_maps_mid_price_down_fade_to_v2_existing_lane():
     )
 
 
+def test_alpha_factory_maps_d80_volume_rule_to_existing_alpha_lane():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                profit_loss=0.04,
+                clv=0.012,
+                direction="up",
+                expected_value=0.015,
+                estimated_probability=0.38,
+                price_at_fire=0.36,
+                volume_bucket="volume_001k_010k",
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                profit_loss=-0.06,
+                clv=-0.01,
+                direction="down",
+                expected_value=-0.03,
+                estimated_probability=0.55,
+                price_at_fire=0.58,
+                volume_bucket="volume_010k_100k",
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        max_candidates=200,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    assert any(
+        lane["family"] == "alpha_kalshi_price_move_up_vol_d80bdf77a9"
+        and lane["strategy_version"]
+        == "alpha_kalshi_type_price_move_platform_kalshi_direction_up_ev_d80bdf77a9_v1"
+        and lane["match_type"] == "exact_existing_lane"
+        for lane in (
+            candidate["existing_lane"]
+            for candidate in snapshot["top_candidates"]
+            if candidate.get("existing_lane")
+        )
+    )
+
+
 def test_alpha_factory_maps_very_low_price_down_fade_to_existing_lane():
     rows = []
     for index in range(90):

@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.alpha_rule_specs import ALPHA_KALSHI_4237F81367_FAMILY
+from app.alpha_rule_specs import alpha_rule_blueprint_by_family, enabled_alpha_rule_blueprints
 from app.backtesting.engine import BacktestEngine
 from app.backtesting.modes import DETECTOR_REPLAY_MODE, STRATEGY_COMPARISON_REPLAY_MODE, with_replay_mode
 from app.backtesting.sweep import parameter_sweep
@@ -57,13 +57,16 @@ from app.research_lab.ranker import rank_lane_payloads
 from app.research_lab.universe import select_research_universe
 
 PRESET_PROFIT_HUNT_V1 = "profit_hunt_v1"
+ALPHA_RULE_FAMILIES = tuple(
+    str(blueprint["strategy_family"]) for blueprint in enabled_alpha_rule_blueprints()
+)
 DEFAULT_FAMILIES = (
     "default_strategy",
     "kalshi_down_yes_fade",
     "kalshi_low_yes_fade",
     "kalshi_very_low_yes_fade",
     "kalshi_cheap_yes_follow",
-    ALPHA_KALSHI_4237F81367_FAMILY,
+    *ALPHA_RULE_FAMILIES,
     "alpha_factory",
 )
 RETIRED_POLYMARKET_FAMILIES = {
@@ -751,9 +754,15 @@ async def _run_alpha_factory_lane(session: AsyncSession, batch: ResearchBatch) -
     return alpha_factory_lane_payload(snapshot)
 
 
-async def _run_alpha_rule_paper_lane(session: AsyncSession, batch: ResearchBatch) -> dict[str, Any]:
+async def _run_alpha_rule_paper_lane(
+    session: AsyncSession,
+    batch: ResearchBatch,
+    *,
+    blueprint: dict[str, Any],
+) -> dict[str, Any]:
     snapshot = await build_alpha_rule_paper_lane_snapshot(
         session,
+        blueprint=blueprint,
         window_days=int(batch.window_days or 30),
         max_signals=min(int(batch.max_markets or 500) * 10, 5000),
         as_of=batch.window_end,
@@ -1153,11 +1162,16 @@ async def run_research_batch(
                 "paper_forward_gate",
                 lambda: _run_kalshi_cheap_yes_follow_lane(session, batch),
             )
-        if ALPHA_KALSHI_4237F81367_FAMILY in families:
+        for alpha_rule_family in ALPHA_RULE_FAMILIES:
+            if alpha_rule_family not in families:
+                continue
+            blueprint = alpha_rule_blueprint_by_family(alpha_rule_family)
+            if blueprint is None:
+                continue
             await run_lane(
-                ALPHA_KALSHI_4237F81367_FAMILY,
+                alpha_rule_family,
                 "paper_forward_gate",
-                lambda: _run_alpha_rule_paper_lane(session, batch),
+                lambda bp=blueprint: _run_alpha_rule_paper_lane(session, batch, blueprint=bp),
             )
         if "alpha_factory" in families:
             await run_lane(

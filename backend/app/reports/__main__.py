@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import json
 
-from app.alpha_rule_specs import ALPHA_KALSHI_4237F81367_FAMILY
+from app.alpha_rule_specs import enabled_alpha_rule_blueprints
 from app.db import async_session
 from app.reports.alpha_factory import generate_alpha_factory_artifact
 from app.reports.alpha_gauntlet import generate_alpha_gauntlet_artifact
@@ -24,6 +24,19 @@ from app.reports.scanner_storage import run_scanner_storage_retention
 from app.reports.signal_resolution_backfill import run_signal_resolution_backfill
 from app.reports.strategy_review import generate_default_strategy_review
 from app.research_lab.orchestrator import create_research_batch, run_research_batch
+
+
+def _default_research_families() -> str:
+    families = [
+        "default_strategy",
+        "kalshi_down_yes_fade",
+        "kalshi_low_yes_fade",
+        "kalshi_very_low_yes_fade",
+        "kalshi_cheap_yes_follow",
+        *(str(blueprint["strategy_family"]) for blueprint in enabled_alpha_rule_blueprints()),
+        "alpha_factory",
+    ]
+    return ",".join(families)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,11 +92,7 @@ def _parser() -> argparse.ArgumentParser:
     research.add_argument("--max-markets", type=int, default=500)
     research.add_argument(
         "--families",
-        default=(
-            "default_strategy,kalshi_down_yes_fade,kalshi_low_yes_fade,"
-            "kalshi_very_low_yes_fade,kalshi_cheap_yes_follow,"
-            f"{ALPHA_KALSHI_4237F81367_FAMILY},alpha_factory"
-        ),
+        default=_default_research_families(),
         help="Comma-separated strategy families to test.",
     )
 

@@ -116,9 +116,11 @@ def _reason_label(reason_code: str) -> str:
         "missing_probability": "Missing estimated probability",
         "missing_expected_value": "Missing expected value",
         "missing_liquidity": "Missing market liquidity",
+        "missing_volume": "Missing market volume",
         "price_bucket": "YES price outside frozen bucket",
         "expected_value_bucket": "Expected value outside frozen bucket",
         "liquidity_bucket": "Market liquidity outside frozen bucket",
+        "volume_bucket": "Market volume outside frozen bucket",
         "probability_not_above_price": "Probability is not above YES price",
         "probability_not_below_price": "Probability is not below YES price",
         "current_price_unavailable": "Current YES price unavailable",
@@ -174,6 +176,12 @@ def _market_liquidity(market: Market | None) -> Decimal | None:
     return _decimal(market.last_liquidity)
 
 
+def _market_volume(market: Market | None) -> Decimal | None:
+    if market is None:
+        return None
+    return _decimal(market.last_volume_24h)
+
+
 def _build_diagnostics(
     signal: Signal,
     *,
@@ -186,6 +194,7 @@ def _build_diagnostics(
     expected_value = _decimal(signal.expected_value)
     estimated_probability = _decimal(signal.estimated_probability)
     liquidity = _market_liquidity(market)
+    volume = _market_volume(market)
     return {
         "strategy_family": blueprint.get("strategy_family"),
         "strategy_version": blueprint.get("strategy_version"),
@@ -200,6 +209,7 @@ def _build_diagnostics(
         "expected_value": str(expected_value) if expected_value is not None else None,
         "estimated_probability": str(estimated_probability) if estimated_probability is not None else None,
         "market_liquidity": str(liquidity) if liquidity is not None else None,
+        "market_volume_24h": str(volume) if volume is not None else None,
         "intended_direction": blueprint.get("trade_direction"),
         "frozen_rule": rule,
     }
@@ -340,6 +350,26 @@ def evaluate_alpha_rule_signal(
                 eligible=False,
                 reason_code=f"not_{_reason_code(blueprint, 'liquidity_bucket')}",
                 reason_label=_reason_label("liquidity_bucket"),
+                diagnostics=diagnostics,
+            )
+
+    volume_bounds = _money_bucket_bounds(str(rule.get("volume_bucket") or "all"))
+    if volume_bounds is not None:
+        volume = _market_volume(market)
+        if volume is None:
+            return AlphaRuleEvaluation(
+                in_scope=True,
+                eligible=False,
+                reason_code=_reason_code(blueprint, "missing_volume"),
+                reason_label=_reason_label("missing_volume"),
+                diagnostics=diagnostics,
+            )
+        if not _value_in_bounds(volume, volume_bounds):
+            return AlphaRuleEvaluation(
+                in_scope=False,
+                eligible=False,
+                reason_code=f"not_{_reason_code(blueprint, 'volume_bucket')}",
+                reason_label=_reason_label("volume_bucket"),
                 diagnostics=diagnostics,
             )
 
@@ -516,6 +546,11 @@ async def load_unprocessed_alpha_rule_signals(
         Market.last_liquidity,
         _money_bucket_bounds(str(rule.get("liquidity_bucket") or "all")),
     )
+    query = _apply_sql_bounds(
+        query,
+        Market.last_volume_24h,
+        _money_bucket_bounds(str(rule.get("volume_bucket") or "all")),
+    )
     if exclude_ids:
         query = query.where(Signal.id.not_in(exclude_ids))
     rows = (await session.execute(query)).all()
@@ -539,14 +574,21 @@ def _current_precheck(
     current_midpoint: Decimal | None,
 ) -> tuple[str | None, str | None]:
     rule = _rule(blueprint)
+    precheck = blueprint.get("current_market_precheck") or {}
     trade_direction = _normalize_text(blueprint.get("trade_direction"))
     if current_midpoint is None:
         code = _reason_code(blueprint, "current_price_unavailable")
         return code, _reason_label("current_price_unavailable")
     price_bounds = _bucket_bounds(str(rule.get("price_bucket") or "all"), PRICE_BUCKET_RANGES)
-    if price_bounds is not None and not _value_in_bounds(current_midpoint, price_bounds):
+    reject_price_bucket = bool(
+        precheck.get("reject_if_current_price_outside_frozen_price_bucket", True)
+    )
+    if reject_price_bucket and price_bounds is not None and not _value_in_bounds(current_midpoint, price_bounds):
         code = _reason_code(blueprint, "current_price_outside_bucket")
         return code, _reason_label("current_price_outside_bucket")
+    reject_edge = bool(precheck.get("reject_if_trade_side_no_longer_has_positive_yes_edge", True))
+    if not reject_edge:
+        return None, None
     estimated_probability = _decimal(signal.estimated_probability)
     if estimated_probability is None:
         code = _reason_code(blueprint, "missing_probability")
