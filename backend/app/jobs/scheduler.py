@@ -981,7 +981,11 @@ async def _run_default_strategy_review_generation():
 
 
 def _alpha_factory_new_candidate_count(snapshot: dict) -> int:
-    candidates = snapshot.get("top_candidates") or []
+    candidates = (
+        snapshot.get("candidate_queue")
+        if "candidate_queue" in snapshot
+        else snapshot.get("top_candidates")
+    ) or []
     return sum(
         1
         for candidate in candidates

@@ -46,6 +46,49 @@ def test_alpha_factory_autopilot_counts_only_new_ready_candidates():
     assert _alpha_factory_existing_lane_candidate_count(snapshot) == 1
 
 
+def test_alpha_factory_autopilot_prefers_candidate_queue_when_present():
+    snapshot = {
+        "candidate_queue": [
+            {
+                "ready_for_paper_lane": True,
+                "trade_direction": "buy_yes",
+                "dedupe_status": "new_candidate",
+                "existing_lane": None,
+                "blockers": [],
+            }
+        ],
+        "top_candidates": [
+            {
+                "ready_for_paper_lane": True,
+                "trade_direction": "buy_no",
+                "existing_lane": {
+                    "family": "kalshi_down_yes_fade",
+                    "strategy_version": "kalshi_down_yes_fade_v2",
+                },
+            }
+        ],
+    }
+
+    assert _alpha_factory_new_candidate_count(snapshot) == 1
+    assert _alpha_factory_existing_lane_candidate_count(snapshot) == 1
+
+
+def test_alpha_factory_autopilot_respects_empty_candidate_queue():
+    snapshot = {
+        "candidate_queue": [],
+        "top_candidates": [
+            {
+                "ready_for_paper_lane": True,
+                "trade_direction": "buy_yes",
+                "dedupe_status": "new_candidate",
+                "existing_lane": None,
+            }
+        ],
+    }
+
+    assert _alpha_factory_new_candidate_count(snapshot) == 0
+
+
 def test_alpha_factory_autopilot_does_not_count_existing_lanes_as_new():
     snapshot = {
         "top_candidates": [

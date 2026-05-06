@@ -19,6 +19,10 @@ def _row(
     expected_value: float | None = -0.01,
     estimated_probability: float | None = 0.12,
     price_at_fire: float | None = 0.15,
+    market_category: str = "unknown",
+    market_tenor_bucket: str = "tenor_unknown",
+    volume_bucket: str = "volume_unknown",
+    liquidity_bucket: str = "liquidity_unknown",
 ) -> AlphaSignalRow:
     return AlphaSignalRow(
         signal_id=f"signal-{index}",
@@ -34,6 +38,10 @@ def _row(
         expected_value=expected_value,
         estimated_probability=estimated_probability,
         price_at_fire=price_at_fire,
+        market_category=market_category,
+        market_tenor_bucket=market_tenor_bucket,
+        volume_bucket=volume_bucket,
+        liquidity_bucket=liquidity_bucket,
     )
 
 
@@ -72,6 +80,75 @@ def test_alpha_factory_turns_surviving_kalshi_rule_into_paper_lane_candidate():
     ]
     assert buy_no_candidates
     assert any(candidate["existing_lane"] for candidate in buy_no_candidates)
+
+
+def test_alpha_factory_emits_new_candidate_queue_blueprint():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                profit_loss=0.12,
+                clv=0.035,
+                direction="up",
+                expected_value=0.08,
+                estimated_probability=0.44,
+                price_at_fire=0.35,
+                market_category="sports",
+                market_tenor_bucket="tenor_3_7d",
+                volume_bucket="volume_010k_100k",
+                liquidity_bucket="liquidity_010k_100k",
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                profit_loss=-0.05,
+                clv=-0.02,
+                direction="down",
+                expected_value=-0.04,
+                estimated_probability=0.70,
+                price_at_fire=0.68,
+                market_category="politics",
+                market_tenor_bucket="tenor_30d_plus",
+                volume_bucket="volume_001k_010k",
+                liquidity_bucket="liquidity_001k_010k",
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        max_candidates=20,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    assert snapshot["candidate_queue_count"] >= 1
+    assert snapshot["new_ready_candidate_count"] == snapshot["candidate_queue_count"]
+
+    candidate = snapshot["candidate_queue"][0]
+    blueprint = candidate["paper_lane_blueprint"]
+    assert candidate["candidate_queue_status"] == "paper_lane_blueprint_ready"
+    assert candidate["dedupe_status"] == "new_candidate"
+    assert candidate["existing_lane"] is None
+    assert candidate["live_orders_enabled"] is False
+    assert blueprint["implementation_status"] == "ready_to_implement"
+    assert blueprint["candidate_id"] == candidate["candidate_id"]
+    assert blueprint["rule_digest"] == candidate["rule_digest"]
+    assert blueprint["frozen_rule"] == candidate["rule"]
+    assert blueprint["paper_only"] is True
+    assert blueprint["live_orders_enabled"] is False
+    assert "frozen_rule_evaluator" in blueprint["required_surfaces"]
+    assert "price_at_fire" in blueprint["frozen_thresholds"]
+    assert snapshot["next_best_actions"][0]["evidence"]["candidate_id"] == candidate["candidate_id"]
+
+    payload = alpha_factory_lane_payload(snapshot)
+    assert payload["strategy_version"] == candidate["strategy_version"]
+    assert payload["details_json"]["candidate_queue_count"] == snapshot["candidate_queue_count"]
+    assert payload["details_json"]["candidate_queue"][0]["candidate_id"] == candidate["candidate_id"]
+    assert payload["details_json"]["paper_lane_blueprint"]["candidate_id"] == candidate["candidate_id"]
 
 
 def test_alpha_factory_maps_mid_price_down_fade_to_v2_existing_lane():
