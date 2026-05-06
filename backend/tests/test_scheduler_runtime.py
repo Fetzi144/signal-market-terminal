@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -118,11 +119,15 @@ async def test_start_scheduler_releases_ownership_on_stop(monkeypatch):
     async def heartbeat(_owner_token):
         await asyncio.sleep(3600)
 
+    async def mark_stale():
+        return 0
+
     monkeypatch.setattr(scheduler_module, "scheduler", fake_scheduler)
     monkeypatch.setattr(scheduler_module, "_build_scheduler_owner_token", lambda: "owner-fixed")
     monkeypatch.setattr(scheduler_module, "_acquire_scheduler_ownership", acquire)
     monkeypatch.setattr(scheduler_module, "_release_scheduler_ownership", release)
     monkeypatch.setattr(scheduler_module, "_scheduler_lease_heartbeat", heartbeat)
+    monkeypatch.setattr(scheduler_module, "_mark_stale_running_ingestion_runs", mark_stale)
     monkeypatch.setattr(scheduler_module, "_scheduler_owner_token", None)
     monkeypatch.setattr(scheduler_module, "_scheduler_lease_task", None)
 
@@ -155,11 +160,15 @@ async def test_start_scheduler_registers_review_generation_only_when_enabled(mon
     async def release(_owner_token):
         return True
 
+    async def mark_stale():
+        return 0
+
     monkeypatch.setattr(scheduler_module, "scheduler", fake_scheduler)
     monkeypatch.setattr(scheduler_module, "_build_scheduler_owner_token", lambda: "owner-fixed")
     monkeypatch.setattr(scheduler_module, "_acquire_scheduler_ownership", acquire)
     monkeypatch.setattr(scheduler_module, "_release_scheduler_ownership", release)
     monkeypatch.setattr(scheduler_module, "_scheduler_lease_heartbeat", heartbeat)
+    monkeypatch.setattr(scheduler_module, "_mark_stale_running_ingestion_runs", mark_stale)
     monkeypatch.setattr(scheduler_module, "_scheduler_owner_token", None)
     monkeypatch.setattr(scheduler_module, "_scheduler_lease_task", None)
     monkeypatch.setattr(scheduler_module.settings, "default_strategy_review_auto_generate_enabled", True)
@@ -170,6 +179,47 @@ async def test_start_scheduler_registers_review_generation_only_when_enabled(mon
     assert "default_strategy_review_generation" in job_ids
 
     await scheduler_module.stop_scheduler()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_startup_marks_stale_running_ingestion_runs_failed(engine, monkeypatch):
+    from app.jobs import scheduler as scheduler_module
+    from app.models.ingestion import IngestionRun
+
+    async_sess = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(scheduler_module, "async_session", async_sess)
+
+    old_run = IngestionRun(
+        run_type="market_discovery",
+        platform="kalshi",
+        started_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        status="running",
+        markets_processed=0,
+    )
+    fresh_run = IngestionRun(
+        run_type="snapshot",
+        platform="kalshi",
+        started_at=datetime.now(timezone.utc),
+        status="running",
+        markets_processed=0,
+    )
+    async with async_sess() as session:
+        session.add_all([old_run, fresh_run])
+        await session.commit()
+
+    marked = await scheduler_module._mark_stale_running_ingestion_runs()
+
+    async with async_sess() as session:
+        refreshed_old = await session.get(IngestionRun, old_run.id)
+        refreshed_fresh = await session.get(IngestionRun, fresh_run.id)
+
+    assert marked == 1
+    assert refreshed_old is not None
+    assert refreshed_old.status == "failed"
+    assert "previous worker stopped" in (refreshed_old.error or "")
+    assert refreshed_old.finished_at is not None
+    assert refreshed_fresh is not None
+    assert refreshed_fresh.status == "running"
 
 
 @pytest.mark.asyncio

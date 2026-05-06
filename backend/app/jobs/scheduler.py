@@ -2,10 +2,10 @@
 import asyncio
 import logging
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 
 from app.config import settings
 from app.db import async_session
@@ -30,6 +30,7 @@ _scheduler_owner_token: str | None = None
 _scheduler_lease_task: asyncio.Task | None = None
 _alpha_factory_no_new_candidate_runs = 0
 _alpha_factory_autopilot_paused = False
+STALE_RUNNING_INGESTION_GRACE = timedelta(minutes=2)
 
 
 def _utcnow() -> datetime:
@@ -133,6 +134,28 @@ def _add_owned_job(job_name: str, job_func, trigger: str, **trigger_kwargs) -> N
         args=[job_name, job_func],
         **trigger_kwargs,
     )
+
+
+async def _mark_stale_running_ingestion_runs() -> int:
+    from app.models.ingestion import IngestionRun
+
+    now = _utcnow()
+    stale_before = now - STALE_RUNNING_INGESTION_GRACE
+    async with async_session() as session:
+        result = await session.execute(
+            update(IngestionRun)
+            .where(
+                IngestionRun.status == "running",
+                IngestionRun.started_at < stale_before,
+            )
+            .values(
+                status="failed",
+                finished_at=now,
+                error="Marked failed on scheduler startup after previous worker stopped before completion.",
+            )
+        )
+        await session.commit()
+    return int(result.rowcount or 0)
 
 
 async def _run_market_discovery():
@@ -1143,6 +1166,13 @@ async def start_scheduler() -> bool:
         return False
 
     _scheduler_owner_token = owner_token
+    stale_ingestion_runs = await _mark_stale_running_ingestion_runs()
+    if stale_ingestion_runs:
+        logger.warning(
+            "Marked %d stale running ingestion run(s) failed during scheduler startup",
+            stale_ingestion_runs,
+        )
+
     scheduler.remove_all_jobs()
     _add_owned_job(
         "market_discovery",
