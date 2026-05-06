@@ -36,6 +36,12 @@ MIN_YES_PRICE = Decimal("0")
 MAX_YES_PRICE = Decimal("0.05")
 MAX_EXPECTED_VALUE = Decimal("0.01")
 ZERO = Decimal("0")
+PAPER_QUARANTINE_ENABLED = True
+PAPER_QUARANTINE_REASON_CODE = "kalshi_cheap_yes_follow_forward_paper_quarantine"
+PAPER_QUARANTINE_DETAIL = (
+    "Lane is quarantined after initial forward paper trades resolved negative; "
+    "it will keep recording skip evidence but will not open new paper trades until reviewed."
+)
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,7 @@ def _reason_label(reason_code: str) -> str:
         "kalshi_cheap_yes_follow_current_price_outside_bucket": "Current YES price outside cheap follow bucket",
         "kalshi_cheap_yes_follow_current_probability_not_above_price": "Current probability is not above YES price",
         "kalshi_cheap_yes_follow_current_expected_value_too_large": "Current expected value outside cheap-YES follow bucket",
+        PAPER_QUARANTINE_REASON_CODE: "Kalshi cheap-YES follow is quarantined",
     }
     return labels.get(reason_code, reason_code.replace("_", " "))
 
@@ -252,6 +259,11 @@ async def ensure_active_kalshi_cheap_yes_follow_run(
             "paper_only": True,
             "live_orders_enabled": False,
             "pilot_arming_enabled": False,
+            "paper_quarantine": {
+                "enabled": PAPER_QUARANTINE_ENABLED,
+                "reason_code": PAPER_QUARANTINE_REASON_CODE,
+                "detail": PAPER_QUARANTINE_DETAIL,
+            },
             "rule": {
                 "platform": "kalshi",
                 "signal_type": "price_move",
@@ -415,8 +427,15 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
         execution_observed_at = signal.fired_at
         current_precheck_reason_code = None
         current_precheck_reason_label = None
+        current_precheck_detail = None
+        paper_quarantined = bool(evaluation.eligible and PAPER_QUARANTINE_ENABLED)
+        if paper_quarantined:
+            current_precheck_reason_code = PAPER_QUARANTINE_REASON_CODE
+            current_precheck_reason_label = _reason_label(PAPER_QUARANTINE_REASON_CODE)
+            current_precheck_detail = PAPER_QUARANTINE_DETAIL
         if (
             evaluation.eligible
+            and not paper_quarantined
             and attempt_kind in {"fresh_signal", "retry", "backlog_repair"}
             and targeted_orderbook_captures < targeted_orderbook_limit
         ):
@@ -457,7 +476,7 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
         details = dict(signal.details or {})
         market_question = str(details.get("market_question") or "")
         attempted_at = datetime.now(timezone.utc).isoformat()
-        if evaluation.eligible and attempt_kind != "retry":
+        if evaluation.eligible and not paper_quarantined and attempt_kind != "retry":
             await ensure_pending_execution_decision(
                 session=session,
                 signal_id=signal.id,
@@ -506,6 +525,8 @@ async def run_kalshi_cheap_yes_follow_paper_lane(
                     _ensure_utc(execution_observed_at).isoformat() if execution_observed_at is not None else None
                 ),
                 "current_execution_precheck_reason_code": current_precheck_reason_code,
+                "paper_quarantined": paper_quarantined,
+                "paper_quarantine_detail": current_precheck_detail,
                 "decision": result.decision,
                 "reason_code": result.reason_code,
                 "reason_label": result.reason_label,

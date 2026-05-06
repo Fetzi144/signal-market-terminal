@@ -253,6 +253,7 @@ class Settings(BaseSettings):
     paper_trading_enabled: bool = True
     paper_trading_pending_decision_max_age_seconds: int = 900
     paper_trading_orderbook_context_finalization_grace_seconds: int = 120
+    paper_trading_market_cooldown_seconds: int = 21_600
     paper_trading_profitability_filter_enabled: bool = False
     paper_trading_max_resolution_horizon_days: int = 30
     paper_trading_min_market_liquidity_usd: float = 500.0
@@ -433,6 +434,7 @@ class Settings(BaseSettings):
         "cleanup_interval_hours",
         "paper_trading_pending_decision_max_age_seconds",
         "paper_trading_orderbook_context_finalization_grace_seconds",
+        "paper_trading_market_cooldown_seconds",
         "paper_trading_max_resolution_horizon_days",
         "shadow_execution_max_staleness_seconds",
         "shadow_execution_max_forward_seconds",

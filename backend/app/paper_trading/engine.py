@@ -7,7 +7,7 @@ using Kelly-recommended sizing, subject to risk management checks.
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -47,6 +47,8 @@ REASON_LABELS = {
     "paper_trading_disabled": "Paper trading disabled",
     "already_recorded": "Already recorded in run",
     "already_open": "Already open",
+    "evidence_duplicate_open_market": "Market already has an open paper trade",
+    "evidence_market_cooldown": "Market is in paper-trade cooldown",
     "size_zero": "Recommended size is zero",
     "execution_policy_skip": "Execution policy chose skip",
     "execution_policy_failure": "Execution policy evaluation failed",
@@ -87,6 +89,11 @@ async def _resolve_strategy_version_id(
         select(StrategyRun.strategy_version_id).where(StrategyRun.id == strategy_run_id).limit(1)
     )
     return result.scalar_one_or_none()
+
+
+def _iso(value: datetime | None) -> str | None:
+    normalized = _ensure_utc(value)
+    return normalized.isoformat() if normalized is not None else None
 
 
 @dataclass
@@ -364,6 +371,85 @@ async def _paper_profitability_market_precheck(
             "diagnostics": diagnostics,
         }
     return None
+
+
+async def _paper_market_duplicate_precheck(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None,
+    market_id: uuid.UUID,
+    outcome_id: uuid.UUID | None,
+    observed_at: datetime,
+) -> dict | None:
+    if strategy_run_id is None:
+        return None
+
+    open_row = (
+        await session.execute(
+            select(PaperTrade)
+            .where(
+                PaperTrade.strategy_run_id == strategy_run_id,
+                PaperTrade.market_id == market_id,
+                PaperTrade.status == "open",
+            )
+            .order_by(PaperTrade.opened_at.desc(), PaperTrade.id.asc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if open_row is not None:
+        return {
+            "reason_code": "evidence_duplicate_open_market",
+            "detail": "This strategy run already has an open paper trade for the same market.",
+            "diagnostics": {
+                "strategy_run_id": str(strategy_run_id),
+                "market_id": str(market_id),
+                "outcome_id": str(outcome_id) if outcome_id is not None else None,
+                "existing_trade_id": str(open_row.id),
+                "existing_trade_status": open_row.status,
+                "existing_trade_opened_at": _iso(open_row.opened_at),
+                "existing_trade_outcome_id": str(open_row.outcome_id),
+                "duplicate_scope": "strategy_run_market",
+            },
+        }
+
+    cooldown_seconds = int(settings.paper_trading_market_cooldown_seconds)
+    if cooldown_seconds <= 0:
+        return None
+    cooldown_start = observed_at - timedelta(seconds=cooldown_seconds)
+    cooldown_row = (
+        await session.execute(
+            select(PaperTrade)
+            .where(
+                PaperTrade.strategy_run_id == strategy_run_id,
+                PaperTrade.market_id == market_id,
+                PaperTrade.opened_at >= cooldown_start,
+            )
+            .order_by(PaperTrade.opened_at.desc(), PaperTrade.id.asc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if cooldown_row is None:
+        return None
+
+    return {
+        "reason_code": "evidence_market_cooldown",
+        "detail": (
+            "This market was already paper-traded recently in the same strategy run; "
+            "cooldown blocks duplicate evidence."
+        ),
+        "diagnostics": {
+            "strategy_run_id": str(strategy_run_id),
+            "market_id": str(market_id),
+            "outcome_id": str(outcome_id) if outcome_id is not None else None,
+            "existing_trade_id": str(cooldown_row.id),
+            "existing_trade_status": cooldown_row.status,
+            "existing_trade_opened_at": _iso(cooldown_row.opened_at),
+            "existing_trade_outcome_id": str(cooldown_row.outcome_id),
+            "cooldown_seconds": cooldown_seconds,
+            "cooldown_started_at": _iso(cooldown_start),
+            "duplicate_scope": "strategy_run_market",
+        },
+    }
 
 
 async def build_execution_decision(
@@ -783,6 +869,21 @@ async def build_execution_decision(
             reason_code=profitability_precheck["reason_code"],
             detail=profitability_precheck["detail"],
             diagnostics=profitability_precheck["diagnostics"],
+        )
+
+    duplicate_precheck = await _paper_market_duplicate_precheck(
+        session,
+        strategy_run_id=strategy_run_id,
+        market_id=market_id,
+        outcome_id=outcome_id,
+        observed_at=datetime.now(timezone.utc),
+    )
+    if duplicate_precheck is not None:
+        return await finish(
+            decision="skipped",
+            reason_code=duplicate_precheck["reason_code"],
+            detail=duplicate_precheck["detail"],
+            diagnostics=duplicate_precheck["diagnostics"],
         )
 
     bankroll = Decimal(str(settings.default_bankroll))

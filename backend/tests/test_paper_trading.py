@@ -247,6 +247,152 @@ async def test_attempt_open_trade_persists_strategy_run_and_shadow_execution(ses
 
 
 @pytest.mark.asyncio
+async def test_attempt_open_trade_blocks_duplicate_open_market_in_strategy_run(session):
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    first_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+    )
+    second_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at + timedelta(minutes=1),
+        dedupe_bucket=(fired_at + timedelta(minutes=1)).replace(second=0, microsecond=0),
+        estimated_probability=Decimal("0.6600"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.260000"),
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        captured_at=fired_at,
+        bids=[["0.39", "500"]],
+        asks=[["0.41", "500"]],
+    )
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=fired_at)
+    await session.commit()
+
+    first = await attempt_open_trade(
+        session=session,
+        signal_id=first_signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6500"),
+        market_price=Decimal("0.400000"),
+        market_question="Duplicate market?",
+        fired_at=fired_at,
+        strategy_run_id=strategy_run.id,
+    )
+    second = await attempt_open_trade(
+        session=session,
+        signal_id=second_signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6600"),
+        market_price=Decimal("0.400000"),
+        market_question="Duplicate market?",
+        fired_at=fired_at + timedelta(minutes=1),
+        strategy_run_id=strategy_run.id,
+    )
+    await session.commit()
+
+    assert first.trade is not None
+    assert second.trade is None
+    assert second.execution_decision is not None
+    assert second.reason_code == "evidence_duplicate_open_market"
+    assert second.execution_decision.reason_code == "evidence_duplicate_open_market"
+    assert second.execution_decision.details["diagnostics"]["existing_trade_id"] == str(first.trade.id)
+
+
+@pytest.mark.asyncio
+async def test_attempt_open_trade_blocks_recent_market_cooldown_after_resolution(session, monkeypatch):
+    monkeypatch.setattr(settings, "paper_trading_market_cooldown_seconds", 3600)
+    market = make_market(session)
+    outcome = make_outcome(session, market.id)
+    fired_at = datetime.now(timezone.utc) - timedelta(minutes=20)
+    first_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at,
+        dedupe_bucket=fired_at.replace(second=0, microsecond=0),
+        estimated_probability=Decimal("0.6500"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.250000"),
+    )
+    second_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="confluence",
+        fired_at=fired_at + timedelta(minutes=10),
+        dedupe_bucket=(fired_at + timedelta(minutes=10)).replace(second=0, microsecond=0),
+        estimated_probability=Decimal("0.6600"),
+        price_at_fire=Decimal("0.400000"),
+        expected_value=Decimal("0.260000"),
+    )
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread="0.0200",
+        captured_at=fired_at,
+        bids=[["0.39", "500"]],
+        asks=[["0.41", "500"]],
+    )
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=fired_at)
+    await session.commit()
+
+    first = await attempt_open_trade(
+        session=session,
+        signal_id=first_signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6500"),
+        market_price=Decimal("0.400000"),
+        market_question="Cooldown market?",
+        fired_at=fired_at,
+        strategy_run_id=strategy_run.id,
+    )
+    assert first.trade is not None
+    first.trade.status = "resolved"
+    first.trade.resolved_at = datetime.now(timezone.utc)
+    first.trade.exit_price = Decimal("1.000000")
+    first.trade.pnl = Decimal("1.00")
+    await session.commit()
+
+    second = await attempt_open_trade(
+        session=session,
+        signal_id=second_signal.id,
+        outcome_id=outcome.id,
+        market_id=market.id,
+        estimated_probability=Decimal("0.6600"),
+        market_price=Decimal("0.400000"),
+        market_question="Cooldown market?",
+        fired_at=fired_at + timedelta(minutes=10),
+        strategy_run_id=strategy_run.id,
+    )
+    await session.commit()
+
+    assert second.trade is None
+    assert second.execution_decision is not None
+    assert second.reason_code == "evidence_market_cooldown"
+    assert second.execution_decision.details["diagnostics"]["cooldown_seconds"] == 3600
+
+
+@pytest.mark.asyncio
 async def test_attempt_open_trade_partial_shadow_fill_when_near_touch_depth_is_thin(session):
     market = make_market(session)
     outcome = make_outcome(session, market.id)

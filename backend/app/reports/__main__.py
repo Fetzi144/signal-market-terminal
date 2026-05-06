@@ -9,6 +9,7 @@ from app.reports.api_smoke import run_evidence_api_smoke
 from app.reports.execution_policy_replay import generate_execution_policy_replay_artifact
 from app.reports.kalshi_cheap_yes_follow import generate_kalshi_cheap_yes_follow_artifact
 from app.reports.kalshi_down_yes_fade import generate_kalshi_down_yes_fade_artifact
+from app.reports.kalshi_lane_pulse import generate_kalshi_lane_pulse_artifact
 from app.reports.kalshi_low_yes_fade import generate_kalshi_low_yes_fade_artifact
 from app.reports.kalshi_very_low_yes_fade import generate_kalshi_very_low_yes_fade_artifact
 from app.reports.profit_operations import (
@@ -131,6 +132,13 @@ def _parser() -> argparse.ArgumentParser:
     kalshi_cheap_yes_follow.add_argument("--window-days", type=int, default=30)
     kalshi_cheap_yes_follow.add_argument("--max-signals", type=int, default=5000)
     kalshi_cheap_yes_follow.add_argument("--seed-paper", action="store_true", help="Idempotently seed matching paper decisions/trades.")
+
+    kalshi_lane_pulse = subparsers.add_parser(
+        "kalshi-lane-pulse",
+        help="Generate a concise forward-paper pulse report for active Kalshi lanes.",
+    )
+    kalshi_lane_pulse.add_argument("--window-hours", type=int, default=24)
+    kalshi_lane_pulse.add_argument("--duplicate-lookback-hours", type=int, default=72)
 
     exec_policy_replay = subparsers.add_parser(
         "execution-policy-replay",
@@ -284,6 +292,16 @@ async def _main() -> None:
             )
             print(result["snapshot_markdown_path"])
             print(result["snapshot_json_path"])
+            return
+
+        if command == "kalshi-lane-pulse":
+            result = await generate_kalshi_lane_pulse_artifact(
+                session,
+                window_hours=args.window_hours,
+                duplicate_lookback_hours=args.duplicate_lookback_hours,
+            )
+            print(result["pulse_markdown_path"])
+            print(result["pulse_json_path"])
             return
 
         if command == "execution-policy-replay":

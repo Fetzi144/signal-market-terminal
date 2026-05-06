@@ -75,11 +75,11 @@ def _family_index() -> dict[str, dict[str, Any]]:
         "kalshi_cheap_yes_follow": {
             "family": "kalshi_cheap_yes_follow",
             "label": "Kalshi Cheap-YES Follow",
-            "posture": POSTURE_RESEARCH_ACTIVE,
+            "posture": POSTURE_ADVISORY_ONLY,
             "configured": True,
             "review_enabled": True,
             "primary_surface": "paper_trading",
-            "description": "Paper-only Kalshi candidate that buys very cheap YES contracts after a down move when YES EV is mildly positive.",
+            "description": "Quarantined Kalshi paper lane; initial forward paper evidence was negative, so new paper entries are paused.",
             "disabled_reason": None,
         },
         "cross_venue_basis": {

@@ -305,6 +305,14 @@ def _version_seed_rows() -> list[dict[str, Any]]:
                 "target_lane": "paper_alpha_candidate",
                 "paper_only": True,
                 "live_orders_enabled": False,
+                "paper_quarantine": {
+                    "enabled": True,
+                    "reason_code": "kalshi_cheap_yes_follow_forward_paper_quarantine",
+                    "detail": (
+                        "Lane is quarantined after initial forward paper trades resolved negative; "
+                        "it will keep reporting but will not open new paper trades until reviewed."
+                    ),
+                },
                 "rule": {
                     "platform": "kalshi",
                     "signal_type": "price_move",
@@ -316,7 +324,7 @@ def _version_seed_rows() -> list[dict[str, Any]]:
                     "paper_min_ev_threshold": "0",
                     "targeted_orderbook_capture": True,
                 },
-                "notes": "Alpha Factory candidate promoted only to forward paper evidence collection; tiny EV bucket intentionally bypasses the global 0.03 discovery threshold.",
+                "notes": "Alpha Factory candidate is quarantined after negative forward paper evidence; tiny EV bucket intentionally bypasses the global 0.03 discovery threshold.",
             },
             "provenance_json": {
                 "seed_source": "alpha_factory_2026_05_03",
