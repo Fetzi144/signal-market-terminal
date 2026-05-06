@@ -118,6 +118,10 @@ def _specificity(rule: dict[str, Any]) -> int:
         "timeframe",
         "price_bucket",
         "expected_value_bucket",
+        "market_category",
+        "market_tenor_bucket",
+        "volume_bucket",
+        "liquidity_bucket",
     ):
         value = rule.get(key)
         if value not in (None, "", "all", "unknown"):

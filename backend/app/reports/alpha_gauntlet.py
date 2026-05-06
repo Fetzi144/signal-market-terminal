@@ -41,6 +41,10 @@ class AlphaSignalRow:
     expected_value: float | None = None
     estimated_probability: float | None = None
     price_at_fire: float | None = None
+    market_category: str = "unknown"
+    market_tenor_bucket: str = "tenor_unknown"
+    volume_bucket: str = "volume_unknown"
+    liquidity_bucket: str = "liquidity_unknown"
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,11 @@ class AlphaRule:
     timeframe: str = "all"
     price_bucket: str = "all"
     expected_value_bucket: str = "all"
+    market_category: str = "all"
+    market_tenor_bucket: str = "all"
+    volume_bucket: str = "all"
+    liquidity_bucket: str = "all"
+    feature_family: str = "core"
     min_rank_score: float | None = None
     min_expected_value: float | None = None
     min_price_at_fire: float | None = None
@@ -67,6 +76,16 @@ class AlphaRule:
             parts.append(f"price_bucket={self.price_bucket}")
         if self.expected_value_bucket != "all":
             parts.append(f"ev_bucket={self.expected_value_bucket}")
+        if self.market_category != "all":
+            parts.append(f"category={self.market_category}")
+        if self.market_tenor_bucket != "all":
+            parts.append(f"tenor={self.market_tenor_bucket}")
+        if self.volume_bucket != "all":
+            parts.append(f"volume={self.volume_bucket}")
+        if self.liquidity_bucket != "all":
+            parts.append(f"liquidity={self.liquidity_bucket}")
+        if self.feature_family != "core":
+            parts.append(f"family={self.feature_family}")
         if self.min_rank_score is not None:
             parts.append(f"rank>={self.min_rank_score:g}")
         if self.min_expected_value is not None:
@@ -174,6 +193,35 @@ def _price_bucket(value: float | None) -> str:
     return "p090_100"
 
 
+def _market_tenor_bucket(fired_at: datetime, end_date: datetime | None) -> str:
+    if end_date is None:
+        return "tenor_unknown"
+    hours = (_ensure_utc(end_date) - _ensure_utc(fired_at)).total_seconds() / 3600
+    if hours <= 0:
+        return "tenor_expired"
+    if hours <= 24:
+        return "tenor_0_1d"
+    if hours <= 72:
+        return "tenor_1_3d"
+    if hours <= 168:
+        return "tenor_3_7d"
+    if hours <= 720:
+        return "tenor_7_30d"
+    return "tenor_30d_plus"
+
+
+def _money_bucket(value: float | None, *, prefix: str) -> str:
+    if value is None:
+        return f"{prefix}_unknown"
+    if value < 1_000:
+        return f"{prefix}_000_001k"
+    if value < 10_000:
+        return f"{prefix}_001k_010k"
+    if value < 100_000:
+        return f"{prefix}_010k_100k"
+    return f"{prefix}_100k_plus"
+
+
 def _expected_value_bucket(value: float | None) -> str:
     if value is None:
         return "ev_unknown"
@@ -203,6 +251,14 @@ def _rule_matches(rule: AlphaRule, row: AlphaSignalRow) -> bool:
         rule.expected_value_bucket != "all"
         and _expected_value_bucket(row.expected_value) != rule.expected_value_bucket
     ):
+        return False
+    if rule.market_category != "all" and row.market_category != rule.market_category:
+        return False
+    if rule.market_tenor_bucket != "all" and row.market_tenor_bucket != rule.market_tenor_bucket:
+        return False
+    if rule.volume_bucket != "all" and row.volume_bucket != rule.volume_bucket:
+        return False
+    if rule.liquidity_bucket != "all" and row.liquidity_bucket != rule.liquidity_bucket:
         return False
     if rule.min_rank_score is not None and (row.rank_score is None or row.rank_score < rule.min_rank_score):
         return False
@@ -289,12 +345,35 @@ def _generate_train_cohort_rules(
     min_train_sample: int,
 ) -> list[AlphaRule]:
     templates = (
-        ("signal_type", "platform", "direction", "timeframe", "price_bucket", "expected_value_bucket"),
-        ("signal_type", "platform", "direction", "price_bucket", "expected_value_bucket"),
-        ("signal_type", "platform", "direction", "timeframe", "price_bucket"),
-        ("signal_type", "platform", "direction", "price_bucket"),
-        ("signal_type", "platform", "direction", "timeframe", "expected_value_bucket"),
-        ("signal_type", "platform", "direction", "expected_value_bucket"),
+        (
+            "core_price_ev",
+            ("signal_type", "platform", "direction", "timeframe", "price_bucket", "expected_value_bucket"),
+        ),
+        ("core_price_ev", ("signal_type", "platform", "direction", "price_bucket", "expected_value_bucket")),
+        ("core_price", ("signal_type", "platform", "direction", "timeframe", "price_bucket")),
+        ("core_price", ("signal_type", "platform", "direction", "price_bucket")),
+        ("core_ev", ("signal_type", "platform", "direction", "timeframe", "expected_value_bucket")),
+        ("core_ev", ("signal_type", "platform", "direction", "expected_value_bucket")),
+        (
+            "category_price_ev",
+            ("signal_type", "platform", "market_category", "direction", "price_bucket", "expected_value_bucket"),
+        ),
+        (
+            "category_directional",
+            ("signal_type", "platform", "market_category", "direction", "timeframe"),
+        ),
+        (
+            "tenor_price_ev",
+            ("signal_type", "platform", "market_tenor_bucket", "direction", "price_bucket", "expected_value_bucket"),
+        ),
+        (
+            "liquidity_regime",
+            ("signal_type", "platform", "liquidity_bucket", "direction", "price_bucket", "expected_value_bucket"),
+        ),
+        (
+            "volume_regime",
+            ("signal_type", "platform", "volume_bucket", "direction", "expected_value_bucket"),
+        ),
     )
     feature_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -306,6 +385,10 @@ def _generate_train_cohort_rules(
                 "timeframe": row.timeframe,
                 "price_bucket": _price_bucket(row.price_at_fire),
                 "expected_value_bucket": _expected_value_bucket(row.expected_value),
+                "market_category": row.market_category,
+                "market_tenor_bucket": row.market_tenor_bucket,
+                "volume_bucket": row.volume_bucket,
+                "liquidity_bucket": row.liquidity_bucket,
                 "profit_loss": row.profit_loss,
                 "clv": row.clv,
             }
@@ -313,7 +396,7 @@ def _generate_train_cohort_rules(
 
     rules: list[AlphaRule] = []
     seen: set[AlphaRule] = set()
-    for template in templates:
+    for feature_family, template in templates:
         buckets: dict[tuple[str, ...], dict[str, float]] = {}
         for row in feature_rows:
             key = tuple(str(row[dimension]) for dimension in template)
@@ -334,6 +417,11 @@ def _generate_train_cohort_rules(
                 timeframe=values.get("timeframe", "all"),
                 price_bucket=values.get("price_bucket", "all"),
                 expected_value_bucket=values.get("expected_value_bucket", "all"),
+                market_category=values.get("market_category", "all"),
+                market_tenor_bucket=values.get("market_tenor_bucket", "all"),
+                volume_bucket=values.get("volume_bucket", "all"),
+                liquidity_bucket=values.get("liquidity_bucket", "all"),
+                feature_family=feature_family,
             )
             if rule not in seen:
                 seen.add(rule)
@@ -522,6 +610,10 @@ async def load_alpha_signal_rows(
             Signal.estimated_probability,
             Signal.price_at_fire,
             Signal.details,
+            Market.category,
+            Market.end_date,
+            Market.last_volume_24h,
+            Market.last_liquidity,
         )
         .select_from(Signal)
         .outerjoin(Market, Market.id == Signal.market_id)
@@ -551,6 +643,10 @@ async def load_alpha_signal_rows(
         estimated_probability,
         price_at_fire,
         details,
+        market_category,
+        market_end_date,
+        market_volume_24h,
+        market_liquidity,
     ) in result.all():
         if fired_at is None or profit_loss is None or clv is None:
             continue
@@ -570,6 +666,10 @@ async def load_alpha_signal_rows(
                 expected_value=_float(expected_value),
                 estimated_probability=_float(estimated_probability),
                 price_at_fire=_float(price_at_fire),
+                market_category=_safe_dimension(market_category),
+                market_tenor_bucket=_market_tenor_bucket(_ensure_utc(fired_at), market_end_date),
+                volume_bucket=_money_bucket(_float(market_volume_24h), prefix="volume"),
+                liquidity_bucket=_money_bucket(_float(market_liquidity), prefix="liquidity"),
             )
         )
     rows.sort(key=lambda row: row.fired_at)
@@ -697,6 +797,10 @@ async def generate_alpha_gauntlet_artifact(
                 "timeframe",
                 "price_bucket",
                 "expected_value_bucket",
+                "market_category",
+                "market_tenor_bucket",
+                "volume_bucket",
+                "liquidity_bucket",
             ],
             "holdout_note": "Rules are ranked by train/validation evidence before reading the final test verdict.",
         },

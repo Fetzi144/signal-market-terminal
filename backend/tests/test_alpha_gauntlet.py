@@ -21,6 +21,10 @@ def _row(
     rank_score: float = 0.8,
     expected_value: float = 0.03,
     price_at_fire: float = 0.5,
+    market_category: str = "politics",
+    market_tenor_bucket: str = "tenor_7_30d",
+    volume_bucket: str = "volume_010k_100k",
+    liquidity_bucket: str = "liquidity_010k_100k",
 ) -> AlphaSignalRow:
     return AlphaSignalRow(
         signal_id=f"signal-{index}",
@@ -36,6 +40,10 @@ def _row(
         expected_value=expected_value,
         estimated_probability=0.6 if profit_loss > 0 else 0.4,
         price_at_fire=price_at_fire,
+        market_category=market_category,
+        market_tenor_bucket=market_tenor_bucket,
+        volume_bucket=volume_bucket,
+        liquidity_bucket=liquidity_bucket,
     )
 
 
@@ -151,10 +159,78 @@ def test_alpha_gauntlet_generates_directional_price_ev_bucket_rules_from_train()
     )
 
 
+def test_alpha_gauntlet_generates_market_feature_family_rules_from_train():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                signal_type="price_move",
+                platform="kalshi",
+                direction="down",
+                timeframe="30m",
+                price_at_fire=0.35,
+                expected_value=-0.02,
+                market_category="sports",
+                market_tenor_bucket="tenor_0_1d",
+                volume_bucket="volume_001k_010k",
+                liquidity_bucket="liquidity_001k_010k",
+                profit_loss=0.10,
+                clv=0.025,
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                signal_type="price_move",
+                platform="kalshi",
+                direction="down",
+                timeframe="30m",
+                price_at_fire=0.35,
+                expected_value=-0.02,
+                market_category="crypto",
+                market_tenor_bucket="tenor_0_1d",
+                volume_bucket="volume_001k_010k",
+                liquidity_bucket="liquidity_001k_010k",
+                profit_loss=-0.12,
+                clv=-0.03,
+            )
+        )
+
+    result = evaluate_alpha_gauntlet_rows(
+        rows,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+        top_n=100,
+    )
+
+    assert result["verdict"] == "paper_alpha_candidate"
+    survivor_rules = [candidate["rule"] for candidate in result["surviving_candidates"]]
+    assert any(
+        rule["feature_family"] in {"category_price_ev", "category_directional"}
+        and rule["market_category"] == "sports"
+        for rule in survivor_rules
+    )
+    assert not any(
+        rule["feature_family"] in {"category_price_ev", "category_directional"}
+        and rule["market_category"] == "crypto"
+        for rule in survivor_rules
+    )
+
+
 @pytest.mark.asyncio
 async def test_alpha_gauntlet_loader_caps_to_latest_rows_then_sorts_chronologically(session):
     now = datetime(2026, 4, 28, tzinfo=timezone.utc)
-    market = make_market(session, platform="kalshi", question="Loader cap market")
+    market = make_market(
+        session,
+        platform="kalshi",
+        question="Loader cap market",
+        category="Sports",
+        end_date=now + timedelta(days=2),
+        last_volume_24h=Decimal("5000.00"),
+        last_liquidity=Decimal("15000.00"),
+    )
     outcome = make_outcome(session, market.id, name="Yes")
     for index in range(5):
         fired_at = now - timedelta(days=4 - index)
@@ -187,3 +263,7 @@ async def test_alpha_gauntlet_loader_caps_to_latest_rows_then_sorts_chronologica
         now - timedelta(days=1),
         now,
     ]
+    assert rows[-1].market_category == "sports"
+    assert rows[-1].market_tenor_bucket == "tenor_1_3d"
+    assert rows[-1].volume_bucket == "volume_001k_010k"
+    assert rows[-1].liquidity_bucket == "liquidity_010k_100k"
