@@ -79,6 +79,62 @@ async def test_health_summary_ignores_missing_lease_when_scheduler_disabled(clie
 
 
 @pytest.mark.asyncio
+async def test_health_summary_tolerates_in_progress_ingestion_when_previous_success_is_fresh(client, session, monkeypatch):
+    from app.api import health as health_api
+
+    monkeypatch.setattr(health_api.settings, "scheduler_enabled", True)
+    now = datetime.now(timezone.utc)
+    make_market(session, platform="kalshi", active=True)
+    session.add(
+        IngestionRun(
+            run_type="market_discovery",
+            platform="kalshi",
+            status="success",
+            started_at=now - timedelta(minutes=5),
+            finished_at=now - timedelta(minutes=4),
+            markets_processed=100,
+        )
+    )
+    session.add(
+        IngestionRun(
+            run_type="market_discovery",
+            platform="kalshi",
+            status="running",
+            started_at=now - timedelta(minutes=1),
+            markets_processed=0,
+        )
+    )
+    session.add(
+        IngestionRun(
+            run_type="snapshot",
+            platform="kalshi",
+            status="success",
+            started_at=now - timedelta(minutes=1),
+            finished_at=now - timedelta(seconds=30),
+            markets_processed=10,
+        )
+    )
+    session.add(
+        SchedulerLease(
+            scheduler_name="default",
+            owner_token="default:health-host:123:abc",
+            acquired_at=now - timedelta(seconds=20),
+            heartbeat_at=now - timedelta(seconds=5),
+            expires_at=now + timedelta(seconds=30),
+        )
+    )
+    await session.commit()
+
+    resp = await client.get("/api/v1/health/summary")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+    discovery = next(row for row in data["ingestion"] if row["run_type"] == "market_discovery")
+    assert discovery["last_status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_health_endpoint_surfaces_scheduler_and_runtime_status(client, session, monkeypatch):
     from app.api import health as health_api
 

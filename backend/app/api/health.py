@@ -635,6 +635,16 @@ async def health_summary(db: AsyncSession = Depends(get_db)):
             .limit(1)
         )
         run = result.scalar_one_or_none()
+        latest_success_result = await db.execute(
+            select(IngestionRun)
+            .where(
+                IngestionRun.run_type == run_type,
+                IngestionRun.status == "success",
+            )
+            .order_by(IngestionRun.started_at.desc())
+            .limit(1)
+        )
+        latest_success = latest_success_result.scalar_one_or_none()
         last_run = run.started_at if run else None
         ingestion_statuses.append(
             IngestionStatus(
@@ -644,10 +654,17 @@ async def health_summary(db: AsyncSession = Depends(get_db)):
                 markets_processed=run.markets_processed if run else None,
             )
         )
-        if run is None or run.status != "success":
+        if run is None:
             ingestion_failures = True
             continue
-        run_age_seconds = _age_seconds(now=now, value=last_run)
+        if run.status == "running" and latest_success is not None:
+            freshness_source = latest_success
+        else:
+            if run.status != "success":
+                ingestion_failures = True
+                continue
+            freshness_source = run
+        run_age_seconds = _age_seconds(now=now, value=freshness_source.started_at)
         threshold_seconds = freshness_thresholds[run_type]
         if run_age_seconds is None or run_age_seconds > threshold_seconds:
             ingestion_stale = True
