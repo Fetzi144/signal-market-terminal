@@ -344,6 +344,64 @@ def test_alpha_factory_suppresses_broad_very_low_fade_variant_as_not_new():
     assert snapshot["suppressed_candidate_count"] >= 1
 
 
+def test_alpha_factory_blocks_non_directional_ev_unknown_candidate_from_queue():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                signal_type="deadline_near",
+                profit_loss=0.09,
+                clv=0.025,
+                direction="down",
+                expected_value=None,
+                estimated_probability=None,
+                price_at_fire=0.075,
+                market_tenor_bucket="tenor_0_1d",
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                signal_type="price_move",
+                profit_loss=-0.06,
+                clv=-0.01,
+                direction="up",
+                expected_value=0.04,
+                estimated_probability=0.90,
+                price_at_fire=0.85,
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        max_candidates=30,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    candidate = next(
+        candidate
+        for candidate in snapshot["top_candidates"]
+        if candidate["rule"]["signal_type"] == "deadline_near"
+        and candidate["rule"]["expected_value_bucket"] == "ev_unknown"
+    )
+
+    assert candidate["trade_direction"] == "buy_no"
+    assert candidate["ready_for_paper_lane"] is False
+    assert candidate["candidate_queue_status"] == "blocked"
+    assert candidate["paper_lane_blueprint"] is None
+    assert candidate["next_step"] == "design_explicit_execution_model"
+    assert "non_directional_signal_cohort" in candidate["blockers"]
+    assert "missing_probability_model" in candidate["blockers"]
+    assert "requires_explicit_execution_model" in candidate["blockers"]
+    assert snapshot["new_ready_candidate_count"] == 0
+    assert snapshot["suppressed_candidate_count"] >= 1
+    assert snapshot["next_best_actions"][0]["step"] == "design_explicit_execution_model"
+
+
 def test_alpha_factory_maps_cheap_yes_follow_to_existing_lane():
     rows = []
     for index in range(90):

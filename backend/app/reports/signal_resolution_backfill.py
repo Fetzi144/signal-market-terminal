@@ -158,6 +158,17 @@ async def _alpha_ready_count(session: AsyncSession) -> int:
     return int(result.scalar_one() or 0)
 
 
+async def _resolved_profit_without_clv_count(session: AsyncSession) -> int:
+    result = await session.execute(
+        select(func.count(Signal.id)).where(
+            Signal.resolved_correctly.is_not(None),
+            Signal.profit_loss.is_not(None),
+            Signal.clv.is_(None),
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
 async def _load_target_markets(
     session: AsyncSession,
     *,
@@ -308,6 +319,7 @@ async def run_signal_resolution_backfill(
     requested_platform = str(platform or "all").strip().lower()
     platforms = ["kalshi", "polymarket"] if requested_platform == "all" else [requested_platform]
     alpha_ready_before = await _alpha_ready_count(session)
+    resolved_profit_without_clv_before = await _resolved_profit_without_clv_count(session)
 
     platform_results: list[dict[str, Any]] = []
     resolved_signal_count = 0
@@ -326,6 +338,7 @@ async def run_signal_resolution_backfill(
         platform_results.append(result)
 
     alpha_ready_after = await _alpha_ready_count(session)
+    resolved_profit_without_clv_after = await _resolved_profit_without_clv_count(session)
     return {
         "generated_at": _utcnow().isoformat(),
         "started_at": started_at.isoformat(),
@@ -338,6 +351,11 @@ async def run_signal_resolution_backfill(
         "alpha_ready_before": alpha_ready_before,
         "alpha_ready_after": alpha_ready_after,
         "alpha_ready_delta": alpha_ready_after - alpha_ready_before,
+        "resolved_profit_without_clv_before": resolved_profit_without_clv_before,
+        "resolved_profit_without_clv_after": resolved_profit_without_clv_after,
+        "resolved_profit_without_clv_delta": (
+            resolved_profit_without_clv_after - resolved_profit_without_clv_before
+        ),
         "resolved_signal_count": resolved_signal_count,
         "platform_results": platform_results,
     }

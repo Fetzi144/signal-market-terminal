@@ -119,9 +119,38 @@ async def test_signal_resolution_backfill_applies_targeted_kalshi_resolution(ses
     await session.refresh(signal)
     assert result["resolved_signal_count"] == 1
     assert result["alpha_ready_delta"] == 1
+    assert result["resolved_profit_without_clv_delta"] == 0
     assert signal.resolved_correctly is True
     assert str(signal.profit_loss) == "0.500000"
     assert str(signal.clv) == "0.250000"
+    assert connector.closed is True
+
+
+@pytest.mark.asyncio
+async def test_signal_resolution_backfill_reports_resolved_profit_without_clv(session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KXTEST-SETTLED",
+        end_date=now - timedelta(days=1),
+    )
+    yes = make_outcome(session, market.id, name="Yes", platform_outcome_id="KXTEST-SETTLED_yes")
+    signal = make_signal(session, market.id, yes.id, details={"direction": "up"}, price_at_fire=Decimal("0.50"))
+    await session.commit()
+
+    connector = _FakeKalshiConnector()
+    monkeypatch.setattr("app.reports.signal_resolution_backfill.get_connector", lambda platform: connector)
+
+    result = await run_signal_resolution_backfill(session, platform="kalshi", apply=True)
+
+    await session.refresh(signal)
+    assert result["resolved_signal_count"] == 1
+    assert result["alpha_ready_delta"] == 0
+    assert result["resolved_profit_without_clv_delta"] == 1
+    assert signal.resolved_correctly is True
+    assert str(signal.profit_loss) == "0.500000"
+    assert signal.clv is None
     assert connector.closed is True
 
 
@@ -148,6 +177,7 @@ async def test_signal_resolution_backfill_applies_closed_polymarket_price_resolu
     await session.refresh(signal)
     assert result["resolved_signal_count"] == 1
     assert result["alpha_ready_delta"] == 1
+    assert result["resolved_profit_without_clv_delta"] == 0
     assert signal.resolved_correctly is True
     assert str(signal.profit_loss) == "0.600000"
     assert str(signal.clv) == "0.200000"

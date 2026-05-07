@@ -72,6 +72,15 @@ CHEAP_YES_FOLLOW_QUARANTINE = {
         "related tiny-positive-YES candidates require manual review instead of a new lane."
     ),
 }
+NON_DIRECTIONAL_SIGNAL_TYPES = {"deadline_near", "liquidity_vacuum", "spread_change"}
+NON_EXECUTABLE_ALPHA_BLOCKERS = {
+    "covered_by_existing_lane_variant",
+    "matched_quarantined_lane_family",
+    "overbroad_alpha_rule",
+    "requires_explicit_execution_model",
+    "missing_probability_model",
+    "non_directional_signal_cohort",
+}
 
 
 def _utcnow() -> datetime:
@@ -278,6 +287,19 @@ def _strategy_expression(rule: dict[str, Any]) -> dict[str, Any]:
         "strategy_archetype": "ambiguous_signal_cohort",
         "why": "The surviving rule has positive historical evidence, but the trade side is ambiguous.",
     }
+
+
+def _execution_model_blockers(rule: dict[str, Any], expression: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    signal_type = str(rule.get("signal_type") or "all")
+    ev_bucket = str(rule.get("expected_value_bucket") or "all")
+    if signal_type in NON_DIRECTIONAL_SIGNAL_TYPES:
+        blockers.append("non_directional_signal_cohort")
+    if expression.get("inference_warning"):
+        blockers.append("requires_explicit_execution_model")
+    if ev_bucket == "ev_unknown":
+        blockers.append("missing_probability_model")
+    return blockers
 
 
 def _lane_match(
@@ -511,6 +533,7 @@ def _candidate_payload(candidate: dict[str, Any], *, platform: str, rank: int) -
     quarantine = (existing_lane or {}).get("quarantine") or {}
     if quarantine.get("enabled"):
         blockers.append("matched_quarantined_lane_family")
+    blockers.extend(_execution_model_blockers(rule, expression))
 
     strategy_slug = _safe_slug(label, max_length=48)
     strategy_version = (
@@ -527,10 +550,16 @@ def _candidate_payload(candidate: dict[str, Any], *, platform: str, rank: int) -
         next_step = "review_existing_lane_variant"
     elif "overbroad_alpha_rule" in blockers:
         next_step = "refine_overbroad_alpha_rule"
+    elif blockers and set(blockers) & {
+        "requires_explicit_execution_model",
+        "missing_probability_model",
+        "non_directional_signal_cohort",
+    }:
+        next_step = "design_explicit_execution_model"
     if blockers:
         next_step = (
             next_step
-            if existing_lane or "overbroad_alpha_rule" in blockers
+            if existing_lane or set(blockers) & (NON_EXECUTABLE_ALPHA_BLOCKERS - {"covered_by_existing_lane_variant"})
             else "review_or_discard_candidate"
         )
 
@@ -626,6 +655,17 @@ def _next_best_actions(candidates: list[dict[str, Any]], *, platform: str) -> li
                 "or lane-specific rule before paper-lane creation."
             )
             priority = 65
+        elif blockers & {
+            "requires_explicit_execution_model",
+            "missing_probability_model",
+            "non_directional_signal_cohort",
+        }:
+            step = "design_explicit_execution_model"
+            operator_action = (
+                f"Do not implement {candidate.get('candidate_id')} as a generic Alpha-Rule lane; "
+                "first define an explicit probability/EV model or a dedicated replay for this signal class."
+            )
+            priority = 68
         elif existing_lane:
             step = "keep_existing_candidate_lane_collecting_forward_evidence"
             operator_action = (
@@ -717,8 +757,7 @@ def build_alpha_factory_snapshot_from_rows(
     suppressed_count = sum(
         1
         for candidate in candidate_payloads
-        if set(candidate.get("blockers") or [])
-        & {"covered_by_existing_lane_variant", "matched_quarantined_lane_family", "overbroad_alpha_rule"}
+        if set(candidate.get("blockers") or []) & NON_EXECUTABLE_ALPHA_BLOCKERS
     )
     blockers: list[str] = []
     if not filtered_rows:
