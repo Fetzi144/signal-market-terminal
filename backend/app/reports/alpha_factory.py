@@ -754,6 +754,11 @@ def build_alpha_factory_snapshot_from_rows(
     ready_count = sum(1 for candidate in candidate_payloads if candidate.get("ready_for_paper_lane"))
     new_ready_count = len(candidate_queue)
     existing_count = sum(1 for candidate in candidate_payloads if candidate.get("existing_lane"))
+    existing_ready_count = sum(
+        1
+        for candidate in candidate_payloads
+        if candidate.get("existing_lane") and candidate.get("ready_for_paper_lane")
+    )
     suppressed_count = sum(
         1
         for candidate in candidate_payloads
@@ -767,7 +772,14 @@ def build_alpha_factory_snapshot_from_rows(
     if surviving and ready_count == 0:
         blockers.append("no_executable_alpha_factory_candidates")
 
-    verdict = "candidate_queue_ready" if ready_count else str(result.get("verdict") or "insufficient_data")
+    if new_ready_count:
+        verdict = "candidate_queue_ready"
+    elif existing_ready_count:
+        verdict = "existing_lanes_collecting_forward_evidence"
+    elif surviving and ready_count == 0:
+        verdict = "no_executable_alpha_factory_candidates"
+    else:
+        verdict = str(result.get("verdict") or "insufficient_data")
     action_candidates: list[dict[str, Any]] = []
     seen_action_ids: set[str] = set()
     for candidate in [*candidate_queue, *candidates]:
@@ -807,6 +819,7 @@ def build_alpha_factory_snapshot_from_rows(
         "candidate_queue_count": len(candidate_queue),
         "candidate_queue": candidate_queue,
         "existing_lane_count": existing_count,
+        "existing_ready_candidate_count": existing_ready_count,
         "suppressed_candidate_count": suppressed_count,
         "top_candidates": candidates,
         "holdout_failures": selected[: min(len(selected), max_candidates)],
@@ -822,6 +835,11 @@ def build_alpha_factory_snapshot_from_rows(
                 + (
                     ["known_lane_or_overbroad_variants_suppressed_from_new_candidate_count"]
                     if suppressed_count
+                    else []
+                )
+                + (
+                    ["no_new_alpha_candidate_existing_lanes_collecting_forward_evidence"]
+                    if existing_ready_count and not new_ready_count
                     else []
                 )
             )
@@ -902,6 +920,7 @@ def alpha_factory_lane_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
             "new_ready_candidate_count": snapshot.get("new_ready_candidate_count"),
             "candidate_queue_count": snapshot.get("candidate_queue_count"),
             "candidate_queue": candidate_queue,
+            "existing_ready_candidate_count": snapshot.get("existing_ready_candidate_count"),
             "suppressed_candidate_count": snapshot.get("suppressed_candidate_count"),
             "selected_candidate": best,
             "paper_lane_blueprint": (best or {}).get("paper_lane_blueprint"),

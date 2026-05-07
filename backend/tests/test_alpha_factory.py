@@ -73,6 +73,7 @@ def test_alpha_factory_turns_surviving_kalshi_rule_into_paper_lane_candidate():
     assert snapshot["live_submission_permitted"] is False
     assert snapshot["verdict"] == "candidate_queue_ready"
     assert snapshot["ready_candidate_count"] >= 1
+    assert snapshot["new_ready_candidate_count"] >= 1
     buy_no_candidates = [
         candidate
         for candidate in snapshot["top_candidates"]
@@ -127,6 +128,7 @@ def test_alpha_factory_emits_new_candidate_queue_blueprint():
 
     assert snapshot["candidate_queue_count"] >= 1
     assert snapshot["new_ready_candidate_count"] == snapshot["candidate_queue_count"]
+    assert snapshot["verdict"] == "candidate_queue_ready"
 
     candidate = snapshot["candidate_queue"][0]
     blueprint = candidate["paper_lane_blueprint"]
@@ -400,6 +402,7 @@ def test_alpha_factory_blocks_non_directional_ev_unknown_candidate_from_queue():
     assert snapshot["new_ready_candidate_count"] == 0
     assert snapshot["suppressed_candidate_count"] >= 1
     assert snapshot["next_best_actions"][0]["step"] == "design_explicit_execution_model"
+    assert snapshot["verdict"] == "no_executable_alpha_factory_candidates"
 
 
 def test_alpha_factory_maps_cheap_yes_follow_to_existing_lane():
@@ -514,7 +517,18 @@ def test_alpha_factory_filters_to_kalshi_and_reports_empty_history():
 
 
 def test_alpha_factory_lane_payload_exposes_rankable_holdout_evidence():
-    rows = [_row(index) for index in range(80)]
+    rows = []
+    for index in range(90):
+        rows.append(_row(index * 2))
+        rows.append(
+            _row(
+                index * 2 + 1,
+                profit_loss=-0.20,
+                clv=-0.04,
+                price_at_fire=0.65,
+            )
+        )
+
     snapshot = build_alpha_factory_snapshot_from_rows(
         rows,
         platform="kalshi",
@@ -525,6 +539,9 @@ def test_alpha_factory_lane_payload_exposes_rankable_holdout_evidence():
 
     payload = alpha_factory_lane_payload(snapshot)
 
+    assert snapshot["verdict"] == "existing_lanes_collecting_forward_evidence"
+    assert snapshot["candidate_queue_count"] == 0
+    assert snapshot["existing_ready_candidate_count"] >= 1
     assert payload["family"] == "alpha_factory"
     assert payload["source_kind"] == "alpha_factory_snapshot"
     assert payload["verdict"] == "research_ready"
