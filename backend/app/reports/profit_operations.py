@@ -22,6 +22,7 @@ from app.models.polymarket_metadata import PolymarketAssetDim
 from app.models.polymarket_stream import PolymarketWatchAsset
 from app.models.signal import Signal
 from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
+from app.models.strategy_run import StrategyRun
 from app.paper_trading.engine import resolve_trades
 from app.strategy_runs.service import get_active_strategy_run
 
@@ -35,6 +36,7 @@ CONTEXT_REPAIR_REASON_CODES = (
 )
 ORDERBOOK_REPAIR_WATCH_REASON = "profit_orderbook_context_repair"
 ORDERBOOK_REPAIR_PRIORITY = 100
+DUPLICATE_VOID_STATUS = "voided"
 
 
 def _utcnow() -> datetime:
@@ -73,6 +75,28 @@ def _safe_question(value: Any) -> str | None:
         return None
     text = str(value)
     return text if len(text) <= 180 else f"{text[:177]}..."
+
+
+def _duplicate_trade_candidate(
+    *,
+    family: str | None,
+    strategy_run: StrategyRun,
+    market: Market,
+    kept_trade: PaperTrade,
+    duplicate_trade: PaperTrade,
+) -> dict[str, Any]:
+    return {
+        "family": family or "unknown",
+        "strategy_name": strategy_run.strategy_name,
+        "strategy_run_id": str(strategy_run.id),
+        "market_id": str(market.id),
+        "market_question": _safe_question(market.question),
+        "kept_trade_id": str(kept_trade.id),
+        "duplicate_trade_id": str(duplicate_trade.id),
+        "duplicate_opened_at": _iso(duplicate_trade.opened_at),
+        "duplicate_size_usd": _money(duplicate_trade.size_usd),
+        "reason_code": "evidence_duplicate_open_market",
+    }
 
 
 def _parse_decimal(value) -> Decimal | None:
@@ -268,6 +292,90 @@ async def run_resolution_accelerator(
         "resolved_trade_count": resolved_trade_count,
         "buckets": buckets,
         "candidates": candidates[:50],
+    }
+
+
+async def run_duplicate_trade_hygiene(
+    session: AsyncSession,
+    *,
+    apply: bool = False,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Void duplicate open paper trades so forward evidence stays one trade per market/run."""
+    now = _utcnow()
+    rows = (
+        await session.execute(
+            select(PaperTrade, StrategyRun, Market)
+            .join(StrategyRun, StrategyRun.id == PaperTrade.strategy_run_id)
+            .join(Market, Market.id == PaperTrade.market_id)
+            .where(PaperTrade.status == "open")
+            .order_by(
+                StrategyRun.strategy_family.asc(),
+                PaperTrade.strategy_run_id.asc(),
+                PaperTrade.market_id.asc(),
+                PaperTrade.opened_at.asc(),
+                PaperTrade.id.asc(),
+            )
+        )
+    ).all()
+
+    grouped: dict[tuple[uuid.UUID | None, uuid.UUID], list[tuple[PaperTrade, StrategyRun, Market]]] = {}
+    for trade, strategy_run, market in rows:
+        grouped.setdefault((trade.strategy_run_id, trade.market_id), []).append((trade, strategy_run, market))
+
+    candidates: list[dict[str, Any]] = []
+    duplicate_trades: list[tuple[PaperTrade, PaperTrade]] = []
+    for trade_rows in grouped.values():
+        if len(trade_rows) < 2:
+            continue
+        kept_trade, strategy_run, market = trade_rows[0]
+        for duplicate_trade, _duplicate_run, _duplicate_market in trade_rows[1:]:
+            candidates.append(
+                _duplicate_trade_candidate(
+                    family=strategy_run.strategy_family,
+                    strategy_run=strategy_run,
+                    market=market,
+                    kept_trade=kept_trade,
+                    duplicate_trade=duplicate_trade,
+                )
+            )
+            duplicate_trades.append((kept_trade, duplicate_trade))
+            if len(candidates) >= limit:
+                break
+        if len(candidates) >= limit:
+            break
+
+    if apply:
+        for kept_trade, duplicate_trade in duplicate_trades:
+            details = dict(duplicate_trade.details or {})
+            details["duplicate_hygiene"] = {
+                "voided_at": now.isoformat(),
+                "kept_trade_id": str(kept_trade.id),
+                "reason_code": "evidence_duplicate_open_market",
+                "paper_only": True,
+            }
+            duplicate_trade.status = DUPLICATE_VOID_STATUS
+            duplicate_trade.resolved_at = now
+            duplicate_trade.pnl = ZERO
+            duplicate_trade.shadow_pnl = ZERO
+            duplicate_trade.details = details
+        if duplicate_trades:
+            await session.commit()
+
+    families: dict[str, int] = {}
+    for candidate in candidates:
+        families[candidate["family"]] = families.get(candidate["family"], 0) + 1
+
+    return {
+        "generated_at": now.isoformat(),
+        "operation": "duplicate_trade_hygiene",
+        "mode": "apply" if apply else "dry_run",
+        "paper_only": True,
+        "live_submission_permitted": False,
+        "candidate_count": len(candidates),
+        "voided_trade_count": len(duplicate_trades) if apply else 0,
+        "families": families,
+        "candidates": candidates,
     }
 
 

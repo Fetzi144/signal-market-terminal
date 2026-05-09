@@ -15,6 +15,7 @@ from app.reports.kalshi_low_yes_fade import generate_kalshi_low_yes_fade_artifac
 from app.reports.kalshi_very_low_yes_fade import generate_kalshi_very_low_yes_fade_artifact
 from app.reports.profit_operations import (
     operation_result_to_json,
+    run_duplicate_trade_hygiene,
     run_orderbook_context_repair,
     run_resolution_accelerator,
 )
@@ -64,6 +65,13 @@ def _parser() -> argparse.ArgumentParser:
     orderbook.add_argument("--apply", action="store_true", help="Create or update watch assets.")
     orderbook.add_argument("--capture-orderbooks", action="store_true", help="Fetch targeted current orderbooks.")
     orderbook.add_argument("--limit", type=int, default=100)
+
+    duplicate_hygiene = subparsers.add_parser(
+        "duplicate-trade-hygiene",
+        help="Void duplicate open paper trades within the same strategy run and market.",
+    )
+    duplicate_hygiene.add_argument("--apply", action="store_true", help="Void duplicate paper trades.")
+    duplicate_hygiene.add_argument("--limit", type=int, default=200)
 
     smoke = subparsers.add_parser("smoke", help="Run read-only API smoke checks against evidence surfaces.")
     smoke.add_argument("--base-url", default="http://localhost:8000")
@@ -365,6 +373,11 @@ async def _main() -> None:
                 capture_orderbooks=args.capture_orderbooks,
                 limit=args.limit,
             )
+            print(operation_result_to_json(result))
+            return
+
+        if command == "duplicate-trade-hygiene":
+            result = await run_duplicate_trade_hygiene(session, apply=args.apply, limit=args.limit)
             print(operation_result_to_json(result))
             return
 

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -450,6 +450,23 @@ async def _paper_market_duplicate_precheck(
             "duplicate_scope": "strategy_run_market",
         },
     }
+
+
+async def _acquire_strategy_market_trade_lock(
+    session: AsyncSession,
+    *,
+    strategy_run_id: uuid.UUID | None,
+    market_id: uuid.UUID,
+) -> None:
+    if strategy_run_id is None:
+        return
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return
+    await session.execute(
+        text("select pg_advisory_xact_lock(hashtext(:lock_key))"),
+        {"lock_key": f"paper_trade:{strategy_run_id}:{market_id}"},
+    )
 
 
 async def build_execution_decision(
@@ -1613,6 +1630,11 @@ async def attempt_open_trade(
     min_ev_threshold: Decimal | None = None,
 ) -> TradeOpenResult:
     """Open a paper trade only after the Phase 0 execution gate approves it."""
+    await _acquire_strategy_market_trade_lock(
+        session,
+        strategy_run_id=strategy_run_id,
+        market_id=market_id,
+    )
 
     decision_result = await build_execution_decision(
         session=session,

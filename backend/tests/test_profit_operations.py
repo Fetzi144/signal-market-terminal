@@ -6,7 +6,11 @@ import pytest
 
 from app.models.execution_decision import ExecutionDecision
 from app.models.polymarket_stream import PolymarketWatchAsset
-from app.reports.profit_operations import run_orderbook_context_repair, run_resolution_accelerator
+from app.reports.profit_operations import (
+    run_duplicate_trade_hygiene,
+    run_orderbook_context_repair,
+    run_resolution_accelerator,
+)
 from app.strategy_runs.service import ensure_active_default_strategy_run
 from tests.conftest import make_market, make_outcome, make_signal
 from tests.test_trading_intelligence_api import _make_paper_trade
@@ -53,6 +57,60 @@ async def test_resolution_accelerator_resolves_open_paper_trade_from_signal_reso
     assert applied["resolved_trade_count"] == 1
     assert trade.status == "resolved"
     assert trade.pnl == Decimal("60.00")
+
+
+@pytest.mark.asyncio
+async def test_duplicate_trade_hygiene_voids_later_open_trade_for_same_market(session):
+    now = datetime.now(timezone.utc)
+    strategy_run = await ensure_active_default_strategy_run(session, bootstrap_started_at=now - timedelta(days=1))
+    market = make_market(session, question="Duplicate hygiene market", end_date=now + timedelta(days=1))
+    outcome = make_outcome(session, market.id, name="Yes")
+    first_signal = make_signal(session, market.id, outcome.id, fired_at=now - timedelta(minutes=10))
+    second_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        fired_at=now - timedelta(minutes=5),
+        dedupe_bucket=(now - timedelta(minutes=5)).replace(second=0, microsecond=0),
+    )
+    kept_trade = _make_paper_trade(
+        session,
+        first_signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        status="open",
+        opened_at=now - timedelta(minutes=10),
+    )
+    duplicate_trade = _make_paper_trade(
+        session,
+        second_signal.id,
+        outcome.id,
+        market.id,
+        strategy_run_id=strategy_run.id,
+        status="open",
+        opened_at=now - timedelta(minutes=5),
+    )
+    await session.commit()
+
+    dry_run = await run_duplicate_trade_hygiene(session, apply=False)
+    assert dry_run["mode"] == "dry_run"
+    assert dry_run["candidate_count"] == 1
+    assert dry_run["voided_trade_count"] == 0
+    assert dry_run["candidates"][0]["kept_trade_id"] == str(kept_trade.id)
+    assert dry_run["candidates"][0]["duplicate_trade_id"] == str(duplicate_trade.id)
+
+    applied = await run_duplicate_trade_hygiene(session, apply=True)
+    await session.refresh(kept_trade)
+    await session.refresh(duplicate_trade)
+
+    assert applied["mode"] == "apply"
+    assert applied["candidate_count"] == 1
+    assert applied["voided_trade_count"] == 1
+    assert kept_trade.status == "open"
+    assert duplicate_trade.status == "voided"
+    assert duplicate_trade.pnl == Decimal("0")
+    assert duplicate_trade.details["duplicate_hygiene"]["kept_trade_id"] == str(kept_trade.id)
 
 
 @pytest.mark.asyncio

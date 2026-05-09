@@ -138,6 +138,7 @@ async def _duplicate_trade_rows(
             .join(StrategyRun, StrategyRun.id == PaperTrade.strategy_run_id)
             .join(Market, Market.id == PaperTrade.market_id)
             .where(StrategyRun.strategy_family.in_(KALSHI_LANE_FAMILIES))
+            .where(PaperTrade.status != "voided")
             .where(or_(PaperTrade.status == "open", PaperTrade.opened_at >= duplicate_start))
             .order_by(PaperTrade.opened_at.desc())
         )
