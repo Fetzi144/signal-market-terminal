@@ -3,14 +3,16 @@
 Enhanced in Q2 Phase 1 to capture closing_price, resolution_price, CLV, and profit_loss.
 """
 import logging
+from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.market import Market, Outcome
 from app.models.signal import Signal
-from app.models.snapshot import PriceSnapshot
+from app.models.snapshot import OrderbookSnapshot, PriceSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +90,7 @@ async def resolve_signals(session: AsyncSession, platform: str, resolved_markets
         signals = signal_result.scalars().all()
 
         # Pre-fetch closing prices for all outcomes in this market (last snapshot per outcome)
-        closing_prices = await _get_closing_prices(session, all_outcome_ids)
+        closing_prices = await _get_closing_prices(session, all_outcome_ids, before=market.end_date)
 
         for signal in signals:
             direction = (signal.details or {}).get("direction")
@@ -150,26 +152,95 @@ def _compute_clv_fields(
             signal.profit_loss = signal.price_at_fire - signal.resolution_price
 
 
-async def _get_closing_prices(session: AsyncSession, outcome_ids: list) -> dict:
+def _level_price(level: Any) -> Decimal | None:
+    raw_price = None
+    if isinstance(level, dict):
+        raw_price = level.get("price")
+    elif isinstance(level, (list, tuple)) and level:
+        raw_price = level[0]
+    if raw_price in (None, ""):
+        return None
+    try:
+        price = Decimal(str(raw_price))
+    except Exception:
+        return None
+    if price <= Decimal("0") or price >= Decimal("1"):
+        return None
+    return price
+
+
+def _orderbook_midpoint(bids: Any, asks: Any) -> Decimal | None:
+    if not isinstance(bids, list) or not isinstance(asks, list):
+        return None
+    bid = None
+    for level in bids:
+        bid = _level_price(level)
+        if bid is not None:
+            break
+    ask = None
+    for level in asks:
+        ask = _level_price(level)
+        if ask is not None:
+            break
+    if bid is None or ask is None or ask < bid:
+        return None
+    midpoint = (bid + ask) / Decimal("2")
+    if midpoint <= Decimal("0") or midpoint >= Decimal("1"):
+        return None
+    return midpoint.quantize(Decimal("0.000001"))
+
+
+async def get_closing_price(
+    session: AsyncSession,
+    outcome_id,
+    *,
+    before: datetime | None = None,
+) -> tuple[Decimal | None, str | None]:
+    """Return the best available non-terminal closing price for an outcome."""
+    price_query = select(PriceSnapshot.price).where(
+        PriceSnapshot.outcome_id == outcome_id,
+        PriceSnapshot.price > Decimal("0"),
+        PriceSnapshot.price < Decimal("1"),
+    )
+    if before is not None:
+        price_query = price_query.where(PriceSnapshot.captured_at <= before)
+    price_result = await session.execute(
+        price_query.order_by(PriceSnapshot.captured_at.desc()).limit(1)
+    )
+    price = price_result.scalar_one_or_none()
+    if price is not None:
+        return price, "price_snapshot"
+
+    orderbook_query = select(OrderbookSnapshot.bids, OrderbookSnapshot.asks).where(
+        OrderbookSnapshot.outcome_id == outcome_id,
+        OrderbookSnapshot.bids.is_not(None),
+        OrderbookSnapshot.asks.is_not(None),
+    )
+    if before is not None:
+        orderbook_query = orderbook_query.where(OrderbookSnapshot.captured_at <= before)
+    orderbook_result = await session.execute(
+        orderbook_query.order_by(OrderbookSnapshot.captured_at.desc()).limit(25)
+    )
+    for bids, asks in orderbook_result.all():
+        midpoint = _orderbook_midpoint(bids, asks)
+        if midpoint is not None:
+            return midpoint, "orderbook_midpoint"
+    return None, None
+
+
+async def _get_closing_prices(
+    session: AsyncSession,
+    outcome_ids: list,
+    *,
+    before: datetime | None = None,
+) -> dict:
     """Get the last recorded snapshot price for each outcome.
 
     Returns dict mapping outcome_id -> Decimal price.
     """
     closing_prices = {}
     for outcome_id in outcome_ids:
-        # Exclude post-settlement snapshots (price exactly 0 or 1) to get the
-        # last meaningful market price before the outcome settled.
-        result = await session.execute(
-            select(PriceSnapshot.price)
-            .where(
-                PriceSnapshot.outcome_id == outcome_id,
-                PriceSnapshot.price > Decimal("0"),
-                PriceSnapshot.price < Decimal("1"),
-            )
-            .order_by(PriceSnapshot.captured_at.desc())
-            .limit(1)
-        )
-        price = result.scalar_one_or_none()
+        price, _source = await get_closing_price(session, outcome_id, before=before)
         if price is not None:
             closing_prices[outcome_id] = price
     return closing_prices

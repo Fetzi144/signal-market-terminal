@@ -15,8 +15,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import async_session
+from app.ingestion.resolution import get_closing_price
+from app.models.market import Market
 from app.models.signal import Signal
-from app.models.snapshot import PriceSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -28,22 +29,33 @@ async def backfill_clv(session: AsyncSession) -> dict:
     """
     # Find all resolved signals without CLV data
     result = await session.execute(
-        select(Signal).where(
+        select(Signal, Market.end_date)
+        .join(Market, Market.id == Signal.market_id)
+        .where(
             Signal.resolved_correctly.isnot(None),
             Signal.clv.is_(None),
         )
     )
-    signals = result.scalars().all()
+    signal_rows = result.all()
 
-    if not signals:
+    if not signal_rows:
         logger.info("Backfill: no signals need CLV computation")
-        return {"total": 0, "updated": 0, "skipped_no_snapshot": 0, "skipped_no_price": 0}
+        return {
+            "total": 0,
+            "updated": 0,
+            "updated_from_price_snapshot": 0,
+            "updated_from_orderbook_midpoint": 0,
+            "skipped_no_snapshot": 0,
+            "skipped_no_price": 0,
+        }
 
     updated = 0
+    updated_from_price_snapshot = 0
+    updated_from_orderbook_midpoint = 0
     skipped_no_snapshot = 0
     skipped_no_price = 0
 
-    for signal in signals:
+    for signal, market_end_date in signal_rows:
         direction = (signal.details or {}).get("direction")
         if direction is None:
             continue
@@ -53,25 +65,15 @@ async def backfill_clv(session: AsyncSession) -> dict:
             skipped_no_price += 1
             continue
 
-        # Get the last snapshot price for this outcome before or at signal resolution
-        # Since we don't store resolution_time explicitly, use the most recent snapshot
         if signal.outcome_id is None:
             skipped_no_snapshot += 1
             continue
 
-        # Exclude post-settlement snapshots (price exactly 0 or 1) to get the
-        # last meaningful market price before the outcome settled.
-        snap_result = await session.execute(
-            select(PriceSnapshot.price)
-            .where(
-                PriceSnapshot.outcome_id == signal.outcome_id,
-                PriceSnapshot.price > Decimal("0"),
-                PriceSnapshot.price < Decimal("1"),
-            )
-            .order_by(PriceSnapshot.captured_at.desc())
-            .limit(1)
+        closing_price, source = await get_closing_price(
+            session,
+            signal.outcome_id,
+            before=market_end_date,
         )
-        closing_price = snap_result.scalar_one_or_none()
 
         if closing_price is None:
             skipped_no_snapshot += 1
@@ -96,13 +98,19 @@ async def backfill_clv(session: AsyncSession) -> dict:
 
         signal.resolved = True
         updated += 1
+        if source == "price_snapshot":
+            updated_from_price_snapshot += 1
+        elif source == "orderbook_midpoint":
+            updated_from_orderbook_midpoint += 1
 
     if updated > 0:
         await session.commit()
 
     summary = {
-        "total": len(signals),
+        "total": len(signal_rows),
         "updated": updated,
+        "updated_from_price_snapshot": updated_from_price_snapshot,
+        "updated_from_orderbook_midpoint": updated_from_orderbook_midpoint,
         "skipped_no_snapshot": skipped_no_snapshot,
         "skipped_no_price": skipped_no_price,
     }

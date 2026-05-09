@@ -7,7 +7,7 @@ import pytest
 
 from app.ingestion.backfill_clv import backfill_clv
 from app.ingestion.resolution import resolve_signals
-from tests.conftest import make_market, make_outcome, make_price_snapshot, make_signal
+from tests.conftest import make_market, make_orderbook_snapshot, make_outcome, make_price_snapshot, make_signal
 
 # ── Resolution CLV computation ───────��──────────────────────────────────────
 
@@ -145,6 +145,86 @@ async def test_resolution_no_snapshot_leaves_closing_price_null(session):
 
 
 @pytest.mark.asyncio
+async def test_resolution_uses_orderbook_midpoint_when_price_snapshot_missing(session):
+    """If no price snapshot exists, a pre-end orderbook midpoint can supply CLV."""
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KX-CLV-BOOK",
+        end_date=now,
+    )
+    await session.flush()
+    outcome = make_outcome(session, market.id, name="Yes", platform_outcome_id="KX-CLV-BOOK_yes")
+    await session.flush()
+
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread=0.06,
+        bids=[["0.4200", "100.00"]],
+        asks=[["0.4800", "100.00"]],
+        captured_at=now - timedelta(minutes=5),
+    )
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        price_at_fire=Decimal("0.400000"),
+        details={"direction": "up", "market_question": "Test?", "outcome_name": "Yes"},
+    )
+    await session.commit()
+
+    resolved_markets = [{"platform_id": "KX-CLV-BOOK", "winning_outcome": "yes"}]
+    count = await resolve_signals(session, "kalshi", resolved_markets)
+
+    assert count == 1
+    await session.refresh(signal)
+    assert signal.closing_price == Decimal("0.450000")
+    assert signal.clv == Decimal("0.450000") - Decimal("0.400000")
+
+
+@pytest.mark.asyncio
+async def test_resolution_ignores_orderbook_after_market_end(session):
+    """Post-end books are not used as closing prices."""
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="KX-CLV-POST-END",
+        end_date=now - timedelta(hours=1),
+    )
+    await session.flush()
+    outcome = make_outcome(session, market.id, name="Yes", platform_outcome_id="KX-CLV-POST-END_yes")
+    await session.flush()
+
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread=0.02,
+        bids=[["0.8700", "100.00"]],
+        asks=[["0.8900", "100.00"]],
+        captured_at=now,
+    )
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        price_at_fire=Decimal("0.400000"),
+        details={"direction": "up", "market_question": "Test?", "outcome_name": "Yes"},
+    )
+    await session.commit()
+
+    resolved_markets = [{"platform_id": "KX-CLV-POST-END", "winning_outcome": "yes"}]
+    count = await resolve_signals(session, "kalshi", resolved_markets)
+
+    assert count == 1
+    await session.refresh(signal)
+    assert signal.closing_price is None
+    assert signal.clv is None
+
+
+@pytest.mark.asyncio
 async def test_resolution_uses_latest_snapshot(session):
     """If multiple snapshots exist, uses the most recent one as closing price."""
     market = make_market(session, platform="polymarket", platform_id="clv-latest")
@@ -231,6 +311,47 @@ async def test_backfill_skips_signals_without_snapshot(session):
     assert summary["skipped_no_snapshot"] >= 1
     await session.refresh(signal)
     assert signal.clv is None
+
+
+@pytest.mark.asyncio
+async def test_backfill_computes_clv_from_orderbook_midpoint(session):
+    """Backfill can recover CLV from a pre-end orderbook midpoint."""
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        platform_id="bf-book",
+        end_date=now,
+    )
+    await session.flush()
+    outcome = make_outcome(session, market.id, name="Yes", platform_outcome_id="bf-book_yes")
+    await session.flush()
+
+    make_orderbook_snapshot(
+        session,
+        outcome.id,
+        spread=0.04,
+        bids=[["0.6100", "100.00"]],
+        asks=[["0.6500", "100.00"]],
+        captured_at=now - timedelta(minutes=10),
+    )
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        price_at_fire=Decimal("0.600000"),
+        details={"direction": "up", "market_question": "Test?", "outcome_name": "Yes"},
+        resolved_correctly=True,
+    )
+    await session.commit()
+
+    summary = await backfill_clv(session)
+
+    assert summary["updated"] >= 1
+    assert summary["updated_from_orderbook_midpoint"] >= 1
+    await session.refresh(signal)
+    assert signal.closing_price == Decimal("0.630000")
+    assert signal.clv == Decimal("0.630000") - Decimal("0.600000")
 
 
 @pytest.mark.asyncio

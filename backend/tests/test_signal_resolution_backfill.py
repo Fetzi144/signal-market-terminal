@@ -107,7 +107,7 @@ async def test_signal_resolution_backfill_applies_targeted_kalshi_resolution(ses
         end_date=now - timedelta(days=1),
     )
     yes = make_outcome(session, market.id, name="Yes", platform_outcome_id="KXTEST-SETTLED_yes")
-    make_price_snapshot(session, yes.id, "0.75")
+    make_price_snapshot(session, yes.id, "0.75", captured_at=now - timedelta(days=1, minutes=5))
     signal = make_signal(session, market.id, yes.id, details={"direction": "up"}, price_at_fire=Decimal("0.50"))
     await session.commit()
 
@@ -165,7 +165,7 @@ async def test_signal_resolution_backfill_applies_closed_polymarket_price_resolu
     )
     make_outcome(session, market.id, name="Yes", token_id="yes-token")
     no = make_outcome(session, market.id, name="No", token_id="no-token")
-    make_price_snapshot(session, no.id, "0.60")
+    make_price_snapshot(session, no.id, "0.60", captured_at=now - timedelta(hours=2, minutes=5))
     signal = make_signal(session, market.id, no.id, details={"direction": "up"}, price_at_fire=Decimal("0.40"))
     await session.commit()
 
