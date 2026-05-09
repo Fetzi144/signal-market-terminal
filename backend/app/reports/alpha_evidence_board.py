@@ -221,12 +221,16 @@ def _candidate_cards(alpha_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     ]
     for source, candidates in sources:
         for candidate in candidates:
-            key = str(
-                candidate.get("candidate_id")
-                or candidate.get("strategy_version")
-                or candidate.get("rule_digest")
-                or len(seen)
-            )
+            existing_lane = candidate.get("existing_lane") or {}
+            if existing_lane:
+                key = f"existing:{existing_lane.get('strategy_version') or candidate.get('strategy_version')}"
+            else:
+                key = str(
+                    candidate.get("candidate_id")
+                    or candidate.get("strategy_version")
+                    or candidate.get("rule_digest")
+                    or len(seen)
+                )
             if key in seen:
                 continue
             seen.add(key)

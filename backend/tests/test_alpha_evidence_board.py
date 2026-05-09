@@ -147,6 +147,33 @@ def test_alpha_evidence_board_keeps_existing_lanes_collecting_forward_evidence()
     assert any(action["step"] == "wait_for_forward_paper_resolutions" for action in board["next_best_actions"])
 
 
+def test_alpha_evidence_board_dedupes_existing_lane_variants_by_strategy_version():
+    first = _candidate(
+        candidate_id="kalshi_alpha_existing_a",
+        strategy_version="kalshi_down_yes_fade_v2",
+        dedupe_status="exact_existing_lane",
+        existing_lane={"family": "kalshi_down_yes_fade", "strategy_version": "kalshi_down_yes_fade_v2"},
+    )
+    second = _candidate(
+        candidate_id="kalshi_alpha_existing_b",
+        strategy_version="kalshi_down_yes_fade_v2",
+        dedupe_status="exact_existing_lane",
+        existing_lane={"family": "kalshi_down_yes_fade", "strategy_version": "kalshi_down_yes_fade_v2"},
+    )
+
+    board = build_alpha_evidence_board_from_snapshots(
+        alpha_snapshot=_alpha_snapshot(
+            queue=[],
+            top=[first, second],
+            verdict="existing_lanes_collecting_forward_evidence",
+        ),
+        lane_pulse=_lane_pulse(lanes=[_lane(open_trades=1, open_exposure=100.0)]),
+        generated_at=datetime(2026, 5, 9, tzinfo=timezone.utc),
+    )
+
+    assert [card["candidate_id"] for card in board["candidate_cards"]] == ["kalshi_alpha_existing_a"]
+
+
 @pytest.mark.asyncio
 async def test_alpha_evidence_board_artifact_generator_writes_json_and_markdown(session, monkeypatch, tmp_path: Path):
     import app.reports.alpha_evidence_board as board_module
