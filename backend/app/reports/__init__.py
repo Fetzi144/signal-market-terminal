@@ -1,3 +1,4 @@
+from app.reports.alpha_evidence_board import generate_alpha_evidence_board_artifact
 from app.reports.alpha_factory import generate_alpha_factory_artifact
 from app.reports.alpha_gauntlet import generate_alpha_gauntlet_artifact
 from app.reports.execution_policy_replay import generate_execution_policy_replay_artifact
@@ -14,6 +15,7 @@ from app.reports.strategy_review import generate_default_strategy_review
 
 __all__ = [
     "generate_alpha_factory_artifact",
+    "generate_alpha_evidence_board_artifact",
     "generate_alpha_gauntlet_artifact",
     "generate_default_strategy_review",
     "generate_execution_policy_replay_artifact",

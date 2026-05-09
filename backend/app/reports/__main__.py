@@ -4,6 +4,7 @@ import json
 
 from app.alpha_rule_specs import enabled_alpha_rule_blueprints
 from app.db import async_session
+from app.reports.alpha_evidence_board import generate_alpha_evidence_board_artifact
 from app.reports.alpha_factory import generate_alpha_factory_artifact
 from app.reports.alpha_gauntlet import generate_alpha_gauntlet_artifact
 from app.reports.api_smoke import run_evidence_api_smoke
@@ -122,6 +123,20 @@ def _parser() -> argparse.ArgumentParser:
     alpha_factory.add_argument("--min-train-sample", type=int, default=20)
     alpha_factory.add_argument("--min-validation-sample", type=int, default=10)
     alpha_factory.add_argument("--min-test-sample", type=int, default=10)
+
+    alpha_evidence_board = subparsers.add_parser(
+        "alpha-evidence-board",
+        help="Generate a concise board that ranks Alpha Factory candidates and Kalshi paper lanes.",
+    )
+    alpha_evidence_board.add_argument("--window-days", type=int, default=365)
+    alpha_evidence_board.add_argument("--max-signals", type=int, default=50_000)
+    alpha_evidence_board.add_argument("--platform", default="kalshi")
+    alpha_evidence_board.add_argument("--max-candidates", type=int, default=10)
+    alpha_evidence_board.add_argument("--min-train-sample", type=int, default=20)
+    alpha_evidence_board.add_argument("--min-validation-sample", type=int, default=10)
+    alpha_evidence_board.add_argument("--min-test-sample", type=int, default=10)
+    alpha_evidence_board.add_argument("--lane-window-hours", type=int, default=48)
+    alpha_evidence_board.add_argument("--duplicate-lookback-hours", type=int, default=72)
 
     kalshi_fade = subparsers.add_parser(
         "kalshi-low-yes-fade",
@@ -270,6 +285,23 @@ async def _main() -> None:
             )
             print(result["alpha_factory_markdown_path"])
             print(result["alpha_factory_json_path"])
+            return
+
+        if command == "alpha-evidence-board":
+            result = await generate_alpha_evidence_board_artifact(
+                session,
+                window_days=args.window_days,
+                max_signals=args.max_signals,
+                platform=args.platform,
+                max_candidates=args.max_candidates,
+                min_train_sample=args.min_train_sample,
+                min_validation_sample=args.min_validation_sample,
+                min_test_sample=args.min_test_sample,
+                lane_window_hours=args.lane_window_hours,
+                duplicate_lookback_hours=args.duplicate_lookback_hours,
+            )
+            print(result["evidence_board_markdown_path"])
+            print(result["evidence_board_json_path"])
             return
 
         if command == "kalshi-low-yes-fade":
