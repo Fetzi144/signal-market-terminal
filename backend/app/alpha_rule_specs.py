@@ -15,6 +15,12 @@ ALPHA_KALSHI_D80BDF77A9_VERSION = (
 )
 ALPHA_KALSHI_D80BDF77A9_REASON_PREFIX = "alpha_rule_d80bdf77a9"
 
+ALPHA_KALSHI_OFI_A02D519E43_FAMILY = "alpha_kalshi_ofi_ev_rank_a02d519e43"
+ALPHA_KALSHI_OFI_A02D519E43_VERSION = (
+    "alpha_kalshi_type_order_flow_imbalance_platform_kalshi_rank_0_a02d519e43_v1"
+)
+ALPHA_KALSHI_OFI_A02D519E43_REASON_PREFIX = "alpha_rule_a02d519e43"
+
 ALPHA_KALSHI_4237F81367_V1: dict[str, Any] = {
     "implementation_status": "paper_active",
     "candidate_id": "kalshi_alpha_4237f81367",
@@ -211,11 +217,92 @@ ALPHA_KALSHI_D80BDF77A9_V1: dict[str, Any] = {
     },
 }
 
+ALPHA_KALSHI_OFI_A02D519E43_V1: dict[str, Any] = {
+    "implementation_status": "paper_active",
+    "candidate_id": "kalshi_alpha_a02d519e43",
+    "strategy_family": ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+    "strategy_name": ALPHA_KALSHI_OFI_A02D519E43_VERSION,
+    "strategy_version": ALPHA_KALSHI_OFI_A02D519E43_VERSION,
+    "version_label": "Alpha Kalshi OFI EV Rank v1",
+    "lane_slug": ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+    "signal_details_key": ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+    "reason_prefix": ALPHA_KALSHI_OFI_A02D519E43_REASON_PREFIX,
+    "rule_digest": "a02d519e43",
+    "rule_label": "type=order_flow_imbalance platform=kalshi rank>=0.8 ev>=0 price>=0.05",
+    "trade_direction": "buy_yes",
+    "strategy_archetype": "follow_positive_yes_ev",
+    "paper_min_ev_threshold": "0.0",
+    "paper_only": True,
+    "live_orders_enabled": False,
+    "pilot_arming_enabled": False,
+    "thresholds_frozen": True,
+    "frozen_rule": {
+        "signal_type": "order_flow_imbalance",
+        "platform": "kalshi",
+        "direction": "all",
+        "timeframe": "all",
+        "price_bucket": "all",
+        "expected_value_bucket": "all",
+        "market_category": "all",
+        "market_tenor_bucket": "all",
+        "volume_bucket": "all",
+        "liquidity_bucket": "all",
+        "feature_family": "core",
+        "min_rank_score": 0.8,
+        "min_expected_value": 0.0,
+        "min_price_at_fire": 0.05,
+        "max_price_at_fire": None,
+        "label": "type=order_flow_imbalance platform=kalshi rank>=0.8 ev>=0 price>=0.05",
+    },
+    "frozen_dimensions": {
+        "signal_type": "order_flow_imbalance",
+        "platform": "kalshi",
+    },
+    "frozen_thresholds": {
+        "bucket_semantics": "lower_bound_inclusive_upper_bound_exclusive",
+        "explicit_thresholds": {
+            "min_rank_score": 0.8,
+            "min_expected_value": 0.0,
+            "min_price_at_fire": 0.05,
+        },
+    },
+    "current_market_precheck": {
+        "required": True,
+        "price_source": "fresh_kalshi_orderbook_midpoint",
+        "reject_if_current_price_outside_frozen_price_bucket": True,
+        "reject_if_trade_side_no_longer_has_positive_yes_edge": True,
+    },
+    "required_surfaces": [
+        "frozen_rule_evaluator",
+        "strategy_registry_seed",
+        "paper_execution_run_loop",
+        "profitability_snapshot",
+        "research_lab_lane_payload",
+        "scheduler_lane_wiring",
+    ],
+    "promotion_gates": [
+        "observe at least 30 calendar days forward",
+        "collect at least 20 resolved paper trades",
+        "require positive execution-adjusted paper P&L",
+        "require positive average CLV",
+        "pause on 5% paper drawdown or evidence outage",
+        "require operator review because the rule is directionless but EV-gated by the OFI probability model",
+    ],
+    "source_metrics": {
+        "test": {
+            "sample_count": 247,
+            "total_profit_loss": 5.815,
+            "avg_clv": 0.016316,
+        }
+    },
+}
+
 
 def enabled_alpha_rule_blueprints() -> list[dict[str, Any]]:
     return [
         deepcopy(ALPHA_KALSHI_4237F81367_V1),
         deepcopy(ALPHA_KALSHI_D80BDF77A9_V1),
+        deepcopy(ALPHA_KALSHI_OFI_A02D519E43_V1),
     ]
 
 
@@ -260,6 +347,19 @@ def alpha_rule_family_seed_rows() -> list[dict[str, Any]]:
             "description": (
                 "Paper-only frozen Alpha Factory Kalshi price-move-up candidate "
                 "with 1-2 cent YES EV and 1k-10k 24h volume."
+            ),
+            "disabled_reason": None,
+        },
+        {
+            "family": ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+            "label": "Alpha Kalshi OFI EV Rank",
+            "posture": "research_active",
+            "configured": True,
+            "review_enabled": True,
+            "primary_surface": "paper_trading",
+            "description": (
+                "Paper-only frozen Alpha Factory Kalshi order-flow-imbalance candidate "
+                "with rank >= 0.8, nonnegative YES EV, and YES price >= 5 cents."
             ),
             "disabled_reason": None,
         },

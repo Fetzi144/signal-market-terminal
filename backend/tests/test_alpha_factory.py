@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from app.alpha_rule_specs import ALPHA_KALSHI_OFI_A02D519E43_FAMILY, ALPHA_KALSHI_OFI_A02D519E43_VERSION
 from app.reports.alpha_factory import alpha_factory_lane_payload, build_alpha_factory_snapshot_from_rows
 from app.reports.alpha_gauntlet import AlphaSignalRow
 
@@ -403,6 +404,58 @@ def test_alpha_factory_blocks_non_directional_ev_unknown_candidate_from_queue():
     assert snapshot["suppressed_candidate_count"] >= 1
     assert snapshot["next_best_actions"][0]["step"] == "design_explicit_execution_model"
     assert snapshot["verdict"] == "no_executable_alpha_factory_candidates"
+
+
+def test_alpha_factory_maps_ofi_probability_gate_to_existing_alpha_lane():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                signal_type="order_flow_imbalance",
+                profit_loss=0.06,
+                clv=0.018,
+                direction="up",
+                expected_value=0.02,
+                estimated_probability=0.14,
+                price_at_fire=0.12,
+                rank_score=0.85,
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                signal_type="order_flow_imbalance",
+                profit_loss=-0.04,
+                clv=-0.012,
+                direction="down",
+                expected_value=-0.02,
+                estimated_probability=0.08,
+                price_at_fire=0.12,
+                rank_score=0.75,
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        max_candidates=200,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    candidate = next(
+        candidate
+        for candidate in snapshot["top_candidates"]
+        if (candidate.get("existing_lane") or {}).get("family") == ALPHA_KALSHI_OFI_A02D519E43_FAMILY
+    )
+
+    assert candidate["strategy_version"] == ALPHA_KALSHI_OFI_A02D519E43_VERSION
+    assert candidate["existing_lane"]["match_type"] == "exact_existing_lane"
+    assert candidate["trade_direction"] == "buy_yes"
+    assert candidate["ready_for_paper_lane"] is True
+    assert "overbroad_alpha_rule" not in candidate["blockers"]
 
 
 def test_alpha_factory_maps_cheap_yes_follow_to_existing_lane():

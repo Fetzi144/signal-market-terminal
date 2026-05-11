@@ -21,6 +21,8 @@ from app.alpha_rule_specs import (
     ALPHA_KALSHI_4237F81367_VERSION,
     ALPHA_KALSHI_D80BDF77A9_FAMILY,
     ALPHA_KALSHI_D80BDF77A9_VERSION,
+    ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+    ALPHA_KALSHI_OFI_A02D519E43_VERSION,
 )
 from app.reports.alpha_gauntlet import (
     AlphaSignalRow,
@@ -73,6 +75,7 @@ CHEAP_YES_FOLLOW_QUARANTINE = {
     ),
 }
 NON_DIRECTIONAL_SIGNAL_TYPES = {"deadline_near", "liquidity_vacuum", "spread_change"}
+PROBABILITY_GATED_DIRECTIONLESS_SIGNAL_TYPES = {"order_flow_imbalance"}
 NON_EXECUTABLE_ALPHA_BLOCKERS = {
     "covered_by_existing_lane_variant",
     "matched_quarantined_lane_family",
@@ -289,6 +292,31 @@ def _strategy_expression(rule: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _has_explicit_probability_execution_model(
+    rule: dict[str, Any],
+    *,
+    trade_direction: str | None,
+) -> bool:
+    signal_type = str(rule.get("signal_type") or "all")
+    if signal_type not in PROBABILITY_GATED_DIRECTIONLESS_SIGNAL_TYPES:
+        return False
+    if not trade_direction:
+        return False
+    if str(rule.get("platform") or "all") == "all":
+        return False
+    has_ev_gate = (
+        rule.get("min_expected_value") is not None
+        or str(rule.get("expected_value_bucket") or "all") not in {"all", "ev_unknown"}
+    )
+    has_rank_gate = rule.get("min_rank_score") is not None
+    has_price_gate = (
+        rule.get("min_price_at_fire") is not None
+        or rule.get("max_price_at_fire") is not None
+        or str(rule.get("price_bucket") or "all") not in {"all", "price_unknown"}
+    )
+    return bool(has_ev_gate and has_rank_gate and has_price_gate)
+
+
 def _execution_model_blockers(rule: dict[str, Any], expression: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     signal_type = str(rule.get("signal_type") or "all")
@@ -357,6 +385,24 @@ def _known_existing_lane(rule: dict[str, Any], *, trade_direction: str | None = 
             match_type="exact_existing_lane",
             reason_code="known_alpha_kalshi_d80bdf77a9",
             detail="Exact rule is already covered by the frozen Alpha Factory volume paper lane.",
+        )
+
+    if (
+        rule.get("signal_type") == "order_flow_imbalance"
+        and rule.get("platform") in {"kalshi", "all"}
+        and str(rule.get("direction") or "all") == "all"
+        and rule.get("min_rank_score") == 0.8
+        and rule.get("min_expected_value") == 0.0
+        and rule.get("min_price_at_fire") == 0.05
+        and rule.get("max_price_at_fire") is None
+        and trade_direction == "buy_yes"
+    ):
+        return _lane_match(
+            family=ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+            strategy_version=ALPHA_KALSHI_OFI_A02D519E43_VERSION,
+            match_type="exact_existing_lane",
+            reason_code="known_alpha_kalshi_ofi_a02d519e43",
+            detail="Exact rule is already covered by the frozen Alpha Factory OFI paper lane.",
         )
 
     is_kalshi_price_down = (
@@ -526,7 +572,10 @@ def _candidate_payload(candidate: dict[str, Any], *, platform: str, rank: int) -
         blockers.append("failed_chronological_holdout")
     if not trade_direction:
         blockers.append("ambiguous_trade_expression")
-    if rule.get("direction") == "all":
+    if rule.get("direction") == "all" and not _has_explicit_probability_execution_model(
+        rule,
+        trade_direction=trade_direction,
+    ):
         blockers.append("overbroad_alpha_rule")
     if existing_lane is not None and existing_lane.get("match_type") == "covered_existing_lane_variant":
         blockers.append("covered_by_existing_lane_variant")

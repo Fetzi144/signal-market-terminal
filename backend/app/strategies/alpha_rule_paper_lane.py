@@ -113,11 +113,16 @@ def _reason_label(reason_code: str) -> str:
         "missing_direction": "Missing price-move direction",
         "missing_outcome": "Missing outcome",
         "missing_price": "Missing YES price",
+        "missing_rank_score": "Missing rank score",
         "missing_probability": "Missing estimated probability",
         "missing_expected_value": "Missing expected value",
         "missing_liquidity": "Missing market liquidity",
         "missing_volume": "Missing market volume",
         "price_bucket": "YES price outside frozen bucket",
+        "min_rank_score": "Rank score below frozen threshold",
+        "min_expected_value": "Expected value below frozen threshold",
+        "min_price_at_fire": "YES price below frozen threshold",
+        "max_price_at_fire": "YES price above frozen threshold",
         "expected_value_bucket": "Expected value outside frozen bucket",
         "liquidity_bucket": "Market liquidity outside frozen bucket",
         "volume_bucket": "Market volume outside frozen bucket",
@@ -157,6 +162,14 @@ def _money_bucket_bounds(bucket: str) -> tuple[Decimal | None, Decimal | None] |
     return MONEY_BUCKET_RANGES.get(suffix)
 
 
+def _explicit_price_bounds(rule: dict[str, Any]) -> tuple[Decimal | None, Decimal | None] | None:
+    lower = _decimal(rule.get("min_price_at_fire"))
+    upper = _decimal(rule.get("max_price_at_fire"))
+    if lower is None and upper is None:
+        return None
+    return lower, upper
+
+
 def _platform_for_signal(signal: Signal, *, market_platform: str | None = None) -> str:
     details = _details(signal)
     return _normalize_text(signal.source_platform or market_platform or details.get("platform"))
@@ -191,6 +204,7 @@ def _build_diagnostics(
 ) -> dict[str, Any]:
     rule = _rule(blueprint)
     yes_price = _decimal(signal.price_at_fire)
+    rank_score = _decimal(signal.rank_score)
     expected_value = _decimal(signal.expected_value)
     estimated_probability = _decimal(signal.estimated_probability)
     liquidity = _market_liquidity(market)
@@ -206,6 +220,7 @@ def _build_diagnostics(
         "direction": _direction_for_signal(signal) or None,
         "timeframe": _timeframe_for_signal(signal),
         "yes_price": str(yes_price) if yes_price is not None else None,
+        "rank_score": str(rank_score) if rank_score is not None else None,
         "expected_value": str(expected_value) if expected_value is not None else None,
         "estimated_probability": str(estimated_probability) if estimated_probability is not None else None,
         "market_liquidity": str(liquidity) if liquidity is not None else None,
@@ -241,6 +256,7 @@ def evaluate_alpha_rule_signal(
     timeframe = _timeframe_for_signal(signal)
     expected_timeframe = _normalize_text(rule.get("timeframe") or "all")
     yes_price = _decimal(signal.price_at_fire)
+    rank_score = _decimal(signal.rank_score)
     expected_value = _decimal(signal.expected_value)
     estimated_probability = _decimal(signal.estimated_probability)
     trade_direction = _normalize_text(blueprint.get("trade_direction"))
@@ -294,6 +310,82 @@ def evaluate_alpha_rule_signal(
             reason_label=_reason_label("missing_outcome"),
             diagnostics=diagnostics,
         )
+
+    min_rank_score = _decimal(rule.get("min_rank_score"))
+    if min_rank_score is not None:
+        if rank_score is None:
+            return AlphaRuleEvaluation(
+                in_scope=True,
+                eligible=False,
+                reason_code=_reason_code(blueprint, "missing_rank_score"),
+                reason_label=_reason_label("missing_rank_score"),
+                diagnostics=diagnostics,
+            )
+        if rank_score < min_rank_score:
+            return AlphaRuleEvaluation(
+                in_scope=False,
+                eligible=False,
+                reason_code=f"not_{_reason_code(blueprint, 'min_rank_score')}",
+                reason_label=_reason_label("min_rank_score"),
+                diagnostics=diagnostics,
+            )
+
+    min_expected_value = _decimal(rule.get("min_expected_value"))
+    if min_expected_value is not None:
+        if expected_value is None:
+            return AlphaRuleEvaluation(
+                in_scope=True,
+                eligible=False,
+                reason_code=_reason_code(blueprint, "missing_expected_value"),
+                reason_label=_reason_label("missing_expected_value"),
+                diagnostics=diagnostics,
+            )
+        if expected_value < min_expected_value:
+            return AlphaRuleEvaluation(
+                in_scope=False,
+                eligible=False,
+                reason_code=f"not_{_reason_code(blueprint, 'min_expected_value')}",
+                reason_label=_reason_label("min_expected_value"),
+                diagnostics=diagnostics,
+            )
+
+    min_price_at_fire = _decimal(rule.get("min_price_at_fire"))
+    if min_price_at_fire is not None:
+        if yes_price is None:
+            return AlphaRuleEvaluation(
+                in_scope=True,
+                eligible=False,
+                reason_code=_reason_code(blueprint, "missing_price"),
+                reason_label=_reason_label("missing_price"),
+                diagnostics=diagnostics,
+            )
+        if yes_price < min_price_at_fire:
+            return AlphaRuleEvaluation(
+                in_scope=False,
+                eligible=False,
+                reason_code=f"not_{_reason_code(blueprint, 'min_price_at_fire')}",
+                reason_label=_reason_label("min_price_at_fire"),
+                diagnostics=diagnostics,
+            )
+
+    max_price_at_fire = _decimal(rule.get("max_price_at_fire"))
+    if max_price_at_fire is not None:
+        if yes_price is None:
+            return AlphaRuleEvaluation(
+                in_scope=True,
+                eligible=False,
+                reason_code=_reason_code(blueprint, "missing_price"),
+                reason_label=_reason_label("missing_price"),
+                diagnostics=diagnostics,
+            )
+        if yes_price > max_price_at_fire:
+            return AlphaRuleEvaluation(
+                in_scope=False,
+                eligible=False,
+                reason_code=f"not_{_reason_code(blueprint, 'max_price_at_fire')}",
+                reason_label=_reason_label("max_price_at_fire"),
+                diagnostics=diagnostics,
+            )
 
     price_bounds = _bucket_bounds(str(rule.get("price_bucket") or "all"), PRICE_BUCKET_RANGES)
     if price_bounds is not None:
@@ -538,9 +630,20 @@ async def load_unprocessed_alpha_rule_signals(
     )
     query = _apply_sql_bounds(
         query,
+        Signal.price_at_fire,
+        _explicit_price_bounds(rule),
+    )
+    query = _apply_sql_bounds(
+        query,
         Signal.expected_value,
         _bucket_bounds(str(rule.get("expected_value_bucket") or "all"), EXPECTED_VALUE_BUCKET_RANGES),
     )
+    min_rank_score = _decimal(rule.get("min_rank_score"))
+    if min_rank_score is not None:
+        query = query.where(Signal.rank_score >= min_rank_score)
+    min_expected_value = _decimal(rule.get("min_expected_value"))
+    if min_expected_value is not None:
+        query = query.where(Signal.expected_value >= min_expected_value)
     query = _apply_sql_bounds(
         query,
         Market.last_liquidity,
@@ -580,10 +683,18 @@ def _current_precheck(
         code = _reason_code(blueprint, "current_price_unavailable")
         return code, _reason_label("current_price_unavailable")
     price_bounds = _bucket_bounds(str(rule.get("price_bucket") or "all"), PRICE_BUCKET_RANGES)
+    explicit_price_bounds = _explicit_price_bounds(rule)
     reject_price_bucket = bool(
         precheck.get("reject_if_current_price_outside_frozen_price_bucket", True)
     )
     if reject_price_bucket and price_bounds is not None and not _value_in_bounds(current_midpoint, price_bounds):
+        code = _reason_code(blueprint, "current_price_outside_bucket")
+        return code, _reason_label("current_price_outside_bucket")
+    if (
+        reject_price_bucket
+        and explicit_price_bounds is not None
+        and not _value_in_bounds(current_midpoint, explicit_price_bounds)
+    ):
         code = _reason_code(blueprint, "current_price_outside_bucket")
         return code, _reason_label("current_price_outside_bucket")
     reject_edge = bool(precheck.get("reject_if_trade_side_no_longer_has_positive_yes_edge", True))

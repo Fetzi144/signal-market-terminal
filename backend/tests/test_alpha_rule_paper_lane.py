@@ -13,6 +13,9 @@ from app.alpha_rule_specs import (
     ALPHA_KALSHI_D80BDF77A9_FAMILY,
     ALPHA_KALSHI_D80BDF77A9_V1,
     ALPHA_KALSHI_D80BDF77A9_VERSION,
+    ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+    ALPHA_KALSHI_OFI_A02D519E43_V1,
+    ALPHA_KALSHI_OFI_A02D519E43_VERSION,
 )
 from app.connectors.base import RawOrderbook
 from app.models.execution_decision import ExecutionDecision
@@ -166,6 +169,74 @@ async def test_alpha_rule_evaluator_enforces_volume_bucket_for_d80_blueprint(ses
 
 
 @pytest.mark.asyncio
+async def test_alpha_rule_evaluator_enforces_ofi_explicit_thresholds(session):
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        end_date=now + timedelta(days=1),
+    )
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="order_flow_imbalance",
+        source_platform="kalshi",
+        fired_at=now,
+        details={"direction": "up", "ofi_value": "0.650", "market_question": "OFI test market?"},
+        rank_score=Decimal("0.850"),
+        price_at_fire=Decimal("0.120000"),
+        expected_value=Decimal("0.020000"),
+        estimated_probability=Decimal("0.1400"),
+    )
+
+    evaluation = evaluate_alpha_rule_signal(
+        signal,
+        blueprint=ALPHA_KALSHI_OFI_A02D519E43_V1,
+        market_platform="kalshi",
+        market=market,
+    )
+
+    assert evaluation.in_scope is True
+    assert evaluation.eligible is True
+    assert evaluation.diagnostics["rank_score"] == "0.850"
+    assert evaluation.diagnostics["edge_per_share"] == "0.020000"
+
+    signal.rank_score = Decimal("0.799")
+    evaluation = evaluate_alpha_rule_signal(
+        signal,
+        blueprint=ALPHA_KALSHI_OFI_A02D519E43_V1,
+        market_platform="kalshi",
+        market=market,
+    )
+    assert evaluation.in_scope is False
+    assert evaluation.reason_code == "not_alpha_rule_a02d519e43_min_rank_score"
+
+    signal.rank_score = Decimal("0.850")
+    signal.expected_value = Decimal("-0.001000")
+    evaluation = evaluate_alpha_rule_signal(
+        signal,
+        blueprint=ALPHA_KALSHI_OFI_A02D519E43_V1,
+        market_platform="kalshi",
+        market=market,
+    )
+    assert evaluation.in_scope is False
+    assert evaluation.reason_code == "not_alpha_rule_a02d519e43_min_expected_value"
+
+    signal.expected_value = Decimal("0.020000")
+    signal.price_at_fire = Decimal("0.049000")
+    evaluation = evaluate_alpha_rule_signal(
+        signal,
+        blueprint=ALPHA_KALSHI_OFI_A02D519E43_V1,
+        market_platform="kalshi",
+        market=market,
+    )
+    assert evaluation.in_scope is False
+    assert evaluation.reason_code == "not_alpha_rule_a02d519e43_min_price_at_fire"
+
+
+@pytest.mark.asyncio
 async def test_alpha_rule_registry_seeds_frozen_shadow_candidate(session):
     await sync_strategy_registry(session)
 
@@ -199,6 +270,21 @@ async def test_alpha_rule_registry_seeds_frozen_shadow_candidate(session):
         volume_version.config_json["rule"]["volume_bucket"]
         == "volume_001k_010k"
     )
+
+    ofi_version = await get_current_strategy_version(session, ALPHA_KALSHI_OFI_A02D519E43_FAMILY)
+
+    assert ofi_version is not None
+    assert ofi_version.version_key == ALPHA_KALSHI_OFI_A02D519E43_VERSION
+    assert ofi_version.strategy_name == ALPHA_KALSHI_OFI_A02D519E43_VERSION
+    assert ofi_version.version_status == VERSION_STATUS_CANDIDATE
+    assert ofi_version.autonomy_tier == AUTONOMY_TIER_SHADOW_ONLY
+    assert ofi_version.is_frozen is True
+    assert ofi_version.config_json["live_orders_enabled"] is False
+    assert ofi_version.config_json["trade_direction"] == "buy_yes"
+    assert ofi_version.config_json["rule_digest"] == "a02d519e43"
+    assert ofi_version.config_json["paper_min_ev_threshold"] == "0.0"
+    assert ofi_version.config_json["rule"]["signal_type"] == "order_flow_imbalance"
+    assert ofi_version.config_json["rule"]["min_rank_score"] == 0.8
 
 
 @pytest.mark.asyncio
@@ -276,6 +362,88 @@ async def test_alpha_rule_backlog_loader_prefilters_d80_volume_bucket(session):
         session,
         strategy_run,
         ALPHA_KALSHI_D80BDF77A9_V1,
+        limit=10,
+    )
+
+    assert [signal.id for signal in signals] == [eligible_signal.id]
+
+
+@pytest.mark.asyncio
+async def test_alpha_rule_backlog_loader_prefilters_ofi_explicit_thresholds(session):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    market = make_market(
+        session,
+        platform="kalshi",
+        end_date=now + timedelta(days=1),
+    )
+    outcome = make_outcome(session, market.id, name="Yes")
+    eligible_signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="order_flow_imbalance",
+        source_platform="kalshi",
+        fired_at=now,
+        details={"direction": "up", "market_question": market.question},
+        rank_score=Decimal("0.850"),
+        price_at_fire=Decimal("0.120000"),
+        expected_value=Decimal("0.020000"),
+        estimated_probability=Decimal("0.1400"),
+    )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="order_flow_imbalance",
+        source_platform="kalshi",
+        fired_at=now + timedelta(minutes=1),
+        dedupe_bucket=now + timedelta(minutes=1),
+        details={"direction": "up", "market_question": market.question},
+        rank_score=Decimal("0.790"),
+        price_at_fire=Decimal("0.120000"),
+        expected_value=Decimal("0.020000"),
+        estimated_probability=Decimal("0.1400"),
+    )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="order_flow_imbalance",
+        source_platform="kalshi",
+        fired_at=now + timedelta(minutes=2),
+        dedupe_bucket=now + timedelta(minutes=2),
+        details={"direction": "up", "market_question": market.question},
+        rank_score=Decimal("0.850"),
+        price_at_fire=Decimal("0.120000"),
+        expected_value=Decimal("-0.001000"),
+        estimated_probability=Decimal("0.1400"),
+    )
+    make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="order_flow_imbalance",
+        source_platform="kalshi",
+        fired_at=now + timedelta(minutes=3),
+        dedupe_bucket=now + timedelta(minutes=3),
+        details={"direction": "up", "market_question": market.question},
+        rank_score=Decimal("0.850"),
+        price_at_fire=Decimal("0.049000"),
+        expected_value=Decimal("0.020000"),
+        estimated_probability=Decimal("0.1400"),
+    )
+    await session.commit()
+
+    strategy_run, _created = await ensure_active_alpha_rule_run(
+        session,
+        ALPHA_KALSHI_OFI_A02D519E43_V1,
+        started_at=now - timedelta(minutes=5),
+    )
+
+    signals = await load_unprocessed_alpha_rule_signals(
+        session,
+        strategy_run,
+        ALPHA_KALSHI_OFI_A02D519E43_V1,
         limit=10,
     )
 
