@@ -448,7 +448,12 @@ def test_alpha_factory_maps_ofi_probability_gate_to_existing_alpha_lane():
     candidate = next(
         candidate
         for candidate in snapshot["top_candidates"]
-        if (candidate.get("existing_lane") or {}).get("family") == ALPHA_KALSHI_OFI_A02D519E43_FAMILY
+        if candidate["rule"]["signal_type"] == "order_flow_imbalance"
+        and candidate["rule"]["platform"] == "kalshi"
+        and candidate["rule"]["min_rank_score"] == 0.8
+        and candidate["rule"]["min_expected_value"] == 0.0
+        and candidate["rule"]["min_price_at_fire"] == 0.05
+        and candidate["rule"]["max_price_at_fire"] is None
     )
 
     assert candidate["strategy_version"] == ALPHA_KALSHI_OFI_A02D519E43_VERSION
@@ -456,6 +461,94 @@ def test_alpha_factory_maps_ofi_probability_gate_to_existing_alpha_lane():
     assert candidate["trade_direction"] == "buy_yes"
     assert candidate["ready_for_paper_lane"] is True
     assert "overbroad_alpha_rule" not in candidate["blockers"]
+
+
+def test_alpha_factory_suppresses_stricter_ofi_probability_gate_variant():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 3,
+                signal_type="order_flow_imbalance",
+                profit_loss=0.06,
+                clv=0.018,
+                direction="all",
+                expected_value=0.02,
+                estimated_probability=0.14,
+                price_at_fire=0.12,
+                rank_score=0.85,
+            )
+        )
+        rows.append(
+            _row(
+                index * 3 + 1,
+                signal_type="order_flow_imbalance",
+                profit_loss=-0.09,
+                clv=-0.03,
+                direction="all",
+                expected_value=0.02,
+                estimated_probability=0.14,
+                price_at_fire=0.03,
+                rank_score=0.85,
+            )
+        )
+        rows.append(
+            _row(
+                index * 3 + 2,
+                signal_type="order_flow_imbalance",
+                profit_loss=-0.09,
+                clv=-0.03,
+                direction="all",
+                expected_value=0.02,
+                estimated_probability=0.14,
+                price_at_fire=0.12,
+                rank_score=0.75,
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        max_candidates=500,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    exact = next(
+        candidate
+        for candidate in snapshot["top_candidates"]
+        if candidate["rule"]["signal_type"] == "order_flow_imbalance"
+        and candidate["rule"]["platform"] == "kalshi"
+        and candidate["rule"]["min_rank_score"] == 0.8
+        and candidate["rule"]["min_expected_value"] == 0.0
+        and candidate["rule"]["min_price_at_fire"] == 0.05
+        and candidate["rule"]["max_price_at_fire"] is None
+    )
+    variant = next(
+        candidate
+        for candidate in snapshot["top_candidates"]
+        if candidate["rule"]["signal_type"] == "order_flow_imbalance"
+        and candidate["rule"]["platform"] == "kalshi"
+        and candidate["rule"]["min_rank_score"] == 0.8
+        and candidate["rule"]["min_expected_value"] == 0.0
+        and candidate["rule"]["min_price_at_fire"] == 0.1
+        and candidate["rule"]["max_price_at_fire"] is None
+    )
+
+    assert exact["existing_lane"]["match_type"] == "exact_existing_lane"
+    assert exact["ready_for_paper_lane"] is True
+    assert variant["strategy_version"] == ALPHA_KALSHI_OFI_A02D519E43_VERSION
+    assert variant["existing_lane"]["family"] == ALPHA_KALSHI_OFI_A02D519E43_FAMILY
+    assert variant["existing_lane"]["match_type"] == "covered_existing_lane_variant"
+    assert variant["existing_lane"]["reason_code"] == "covered_by_alpha_kalshi_ofi_a02d519e43_variant"
+    assert variant["ready_for_paper_lane"] is False
+    assert variant["dedupe_status"] == "covered_existing_lane_variant"
+    assert variant["next_step"] == "review_existing_lane_variant"
+    assert variant["paper_lane_blueprint"] is None
+    assert "covered_by_existing_lane_variant" in variant["blockers"]
+    assert snapshot["new_ready_candidate_count"] == 0
+    assert snapshot["suppressed_candidate_count"] >= 1
 
 
 def test_alpha_factory_maps_cheap_yes_follow_to_existing_lane():

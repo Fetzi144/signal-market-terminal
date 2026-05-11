@@ -351,6 +351,40 @@ def _lane_match(
     return payload
 
 
+def _is_kalshi_ofi_a02_shape(rule: dict[str, Any], *, trade_direction: str | None) -> bool:
+    return bool(
+        rule.get("signal_type") == "order_flow_imbalance"
+        and rule.get("platform") in {"kalshi", "all"}
+        and str(rule.get("direction") or "all") == "all"
+        and trade_direction == "buy_yes"
+    )
+
+
+def _is_kalshi_ofi_a02_exact(rule: dict[str, Any], *, trade_direction: str | None) -> bool:
+    return bool(
+        _is_kalshi_ofi_a02_shape(rule, trade_direction=trade_direction)
+        and _decimal(rule.get("min_rank_score")) == Decimal("0.8")
+        and _decimal(rule.get("min_expected_value")) == Decimal("0")
+        and _decimal(rule.get("min_price_at_fire")) == Decimal("0.05")
+        and _decimal(rule.get("max_price_at_fire")) is None
+    )
+
+
+def _is_kalshi_ofi_a02_covered_variant(rule: dict[str, Any], *, trade_direction: str | None) -> bool:
+    min_rank = _decimal(rule.get("min_rank_score"))
+    min_ev = _decimal(rule.get("min_expected_value"))
+    min_price = _decimal(rule.get("min_price_at_fire"))
+    return bool(
+        _is_kalshi_ofi_a02_shape(rule, trade_direction=trade_direction)
+        and min_rank is not None
+        and min_rank >= Decimal("0.8")
+        and min_ev is not None
+        and min_ev >= Decimal("0")
+        and min_price is not None
+        and min_price >= Decimal("0.05")
+    )
+
+
 def _known_existing_lane(rule: dict[str, Any], *, trade_direction: str | None = None) -> dict[str, Any] | None:
     if (
         rule.get("signal_type") == "price_move"
@@ -387,22 +421,25 @@ def _known_existing_lane(rule: dict[str, Any], *, trade_direction: str | None = 
             detail="Exact rule is already covered by the frozen Alpha Factory volume paper lane.",
         )
 
-    if (
-        rule.get("signal_type") == "order_flow_imbalance"
-        and rule.get("platform") in {"kalshi", "all"}
-        and str(rule.get("direction") or "all") == "all"
-        and rule.get("min_rank_score") == 0.8
-        and rule.get("min_expected_value") == 0.0
-        and rule.get("min_price_at_fire") == 0.05
-        and rule.get("max_price_at_fire") is None
-        and trade_direction == "buy_yes"
-    ):
+    if _is_kalshi_ofi_a02_exact(rule, trade_direction=trade_direction):
         return _lane_match(
             family=ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
             strategy_version=ALPHA_KALSHI_OFI_A02D519E43_VERSION,
             match_type="exact_existing_lane",
             reason_code="known_alpha_kalshi_ofi_a02d519e43",
             detail="Exact rule is already covered by the frozen Alpha Factory OFI paper lane.",
+        )
+
+    if _is_kalshi_ofi_a02_covered_variant(rule, trade_direction=trade_direction):
+        return _lane_match(
+            family=ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+            strategy_version=ALPHA_KALSHI_OFI_A02D519E43_VERSION,
+            match_type="covered_existing_lane_variant",
+            reason_code="covered_by_alpha_kalshi_ofi_a02d519e43_variant",
+            detail=(
+                "Rule is a stricter OFI probability-gated variant; compare it inside the existing OFI lane "
+                "instead of spawning another paper lane."
+            ),
         )
 
     is_kalshi_price_down = (
