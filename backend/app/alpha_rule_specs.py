@@ -21,6 +21,12 @@ ALPHA_KALSHI_OFI_A02D519E43_VERSION = (
 )
 ALPHA_KALSHI_OFI_A02D519E43_REASON_PREFIX = "alpha_rule_a02d519e43"
 
+ALPHA_KALSHI_34A330F460_FAMILY = "alpha_kalshi_price_move_up_short_34a330f460"
+ALPHA_KALSHI_34A330F460_VERSION = (
+    "alpha_kalshi_type_price_move_platform_kalshi_direction_up_pri_34a330f460_v1"
+)
+ALPHA_KALSHI_34A330F460_REASON_PREFIX = "alpha_rule_34a330f460"
+
 ALPHA_KALSHI_4237F81367_V1: dict[str, Any] = {
     "implementation_status": "paper_active",
     "candidate_id": "kalshi_alpha_4237f81367",
@@ -297,12 +303,115 @@ ALPHA_KALSHI_OFI_A02D519E43_V1: dict[str, Any] = {
     },
 }
 
+ALPHA_KALSHI_34A330F460_V1: dict[str, Any] = {
+    "implementation_status": "paper_active",
+    "candidate_id": "kalshi_alpha_34a330f460",
+    "strategy_family": ALPHA_KALSHI_34A330F460_FAMILY,
+    "strategy_name": ALPHA_KALSHI_34A330F460_VERSION,
+    "strategy_version": ALPHA_KALSHI_34A330F460_VERSION,
+    "version_label": "Alpha Kalshi Price Move Up Short Tenor v1",
+    "lane_slug": ALPHA_KALSHI_34A330F460_FAMILY,
+    "signal_details_key": ALPHA_KALSHI_34A330F460_FAMILY,
+    "reason_prefix": ALPHA_KALSHI_34A330F460_REASON_PREFIX,
+    "rule_digest": "34a330f460",
+    "rule_label": (
+        "type=price_move platform=kalshi direction=up price_bucket=p050_080 "
+        "ev_bucket=ev_005_plus tenor=tenor_0_1d family=tenor_price_ev"
+    ),
+    "trade_direction": "buy_yes",
+    "strategy_archetype": "follow_positive_yes_ev",
+    "paper_only": True,
+    "live_orders_enabled": False,
+    "pilot_arming_enabled": False,
+    "thresholds_frozen": True,
+    "frozen_rule": {
+        "signal_type": "price_move",
+        "platform": "kalshi",
+        "direction": "up",
+        "timeframe": "all",
+        "price_bucket": "p050_080",
+        "expected_value_bucket": "ev_005_plus",
+        "market_category": "all",
+        "market_tenor_bucket": "tenor_0_1d",
+        "volume_bucket": "all",
+        "liquidity_bucket": "all",
+        "feature_family": "tenor_price_ev",
+        "min_rank_score": None,
+        "min_expected_value": None,
+        "min_price_at_fire": None,
+        "max_price_at_fire": None,
+        "label": (
+            "type=price_move platform=kalshi direction=up price_bucket=p050_080 "
+            "ev_bucket=ev_005_plus tenor=tenor_0_1d family=tenor_price_ev"
+        ),
+    },
+    "frozen_dimensions": {
+        "signal_type": "price_move",
+        "platform": "kalshi",
+        "direction": "up",
+        "market_tenor_bucket": "tenor_0_1d",
+        "feature_family": "tenor_price_ev",
+    },
+    "frozen_thresholds": {
+        "bucket_semantics": "lower_bound_inclusive_upper_bound_exclusive",
+        "price_at_fire": {
+            "bucket": "p050_080",
+            "min_inclusive": 0.50,
+            "max_exclusive": 0.80,
+            "unit": "yes_price",
+        },
+        "expected_value": {
+            "bucket": "ev_005_plus",
+            "min_inclusive": 0.05,
+            "max_exclusive": None,
+            "unit": "yes_expected_value",
+        },
+        "market_tenor": {
+            "bucket": "tenor_0_1d",
+            "min_inclusive": 0.0,
+            "max_exclusive": 24.0,
+            "unit": "hours_to_market_end",
+        },
+    },
+    "current_market_precheck": {
+        "required": True,
+        "price_source": "fresh_kalshi_orderbook_midpoint",
+        "reject_if_current_price_outside_frozen_price_bucket": True,
+        "reject_if_trade_side_no_longer_has_positive_yes_edge": True,
+    },
+    "required_surfaces": [
+        "frozen_rule_evaluator",
+        "strategy_registry_seed",
+        "paper_execution_run_loop",
+        "profitability_snapshot",
+        "research_lab_lane_payload",
+        "scheduler_lane_wiring",
+    ],
+    "promotion_gates": [
+        "observe at least 30 calendar days forward",
+        "collect at least 20 resolved paper trades",
+        "require positive execution-adjusted paper P&L",
+        "require positive average CLV",
+        "pause on 5% paper drawdown or evidence outage",
+        "require operator review because holdout signal P&L was thin and drawdown was high",
+    ],
+    "source_metrics": {
+        "test": {
+            "sample_count": 290,
+            "total_profit_loss": 0.24,
+            "avg_clv": 0.051759,
+            "max_drawdown": 29.205,
+        }
+    },
+}
+
 
 def enabled_alpha_rule_blueprints() -> list[dict[str, Any]]:
     return [
         deepcopy(ALPHA_KALSHI_4237F81367_V1),
         deepcopy(ALPHA_KALSHI_D80BDF77A9_V1),
         deepcopy(ALPHA_KALSHI_OFI_A02D519E43_V1),
+        deepcopy(ALPHA_KALSHI_34A330F460_V1),
     ]
 
 
@@ -360,6 +469,19 @@ def alpha_rule_family_seed_rows() -> list[dict[str, Any]]:
             "description": (
                 "Paper-only frozen Alpha Factory Kalshi order-flow-imbalance candidate "
                 "with rank >= 0.8, nonnegative YES EV, and YES price >= 5 cents."
+            ),
+            "disabled_reason": None,
+        },
+        {
+            "family": ALPHA_KALSHI_34A330F460_FAMILY,
+            "label": "Alpha Kalshi Price Move Up Short Tenor",
+            "posture": "research_active",
+            "configured": True,
+            "review_enabled": True,
+            "primary_surface": "paper_trading",
+            "description": (
+                "Paper-only frozen Alpha Factory Kalshi price-move-up candidate "
+                "with 50-80 cent YES price, 5+ cent YES EV, and market end within 24 hours."
             ),
             "disabled_reason": None,
         },

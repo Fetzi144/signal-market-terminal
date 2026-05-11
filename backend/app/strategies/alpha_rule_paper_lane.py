@@ -56,6 +56,14 @@ MONEY_BUCKET_RANGES: dict[str, tuple[Decimal | None, Decimal | None]] = {
     "010k_100k": (Decimal("10000"), Decimal("100000")),
     "100k_plus": (Decimal("100000"), None),
 }
+TENOR_BUCKET_RANGES_HOURS: dict[str, tuple[Decimal | None, Decimal | None]] = {
+    "tenor_expired": (None, Decimal("0")),
+    "tenor_0_1d": (Decimal("0"), Decimal("24")),
+    "tenor_1_3d": (Decimal("24"), Decimal("72")),
+    "tenor_3_7d": (Decimal("72"), Decimal("168")),
+    "tenor_7_30d": (Decimal("168"), Decimal("720")),
+    "tenor_30d_plus": (Decimal("720"), None),
+}
 
 
 @dataclass(frozen=True)
@@ -118,12 +126,14 @@ def _reason_label(reason_code: str) -> str:
         "missing_expected_value": "Missing expected value",
         "missing_liquidity": "Missing market liquidity",
         "missing_volume": "Missing market volume",
+        "missing_market_end_date": "Missing market end date",
         "price_bucket": "YES price outside frozen bucket",
         "min_rank_score": "Rank score below frozen threshold",
         "min_expected_value": "Expected value below frozen threshold",
         "min_price_at_fire": "YES price below frozen threshold",
         "max_price_at_fire": "YES price above frozen threshold",
         "expected_value_bucket": "Expected value outside frozen bucket",
+        "market_tenor_bucket": "Market tenor outside frozen bucket",
         "liquidity_bucket": "Market liquidity outside frozen bucket",
         "volume_bucket": "Market volume outside frozen bucket",
         "probability_not_above_price": "Probability is not above YES price",
@@ -162,6 +172,12 @@ def _money_bucket_bounds(bucket: str) -> tuple[Decimal | None, Decimal | None] |
     return MONEY_BUCKET_RANGES.get(suffix)
 
 
+def _tenor_bucket_bounds(bucket: str) -> tuple[Decimal | None, Decimal | None] | None:
+    if bucket in {"", "all", "unknown", "tenor_unknown"}:
+        return None
+    return TENOR_BUCKET_RANGES_HOURS.get(bucket)
+
+
 def _explicit_price_bounds(rule: dict[str, Any]) -> tuple[Decimal | None, Decimal | None] | None:
     lower = _decimal(rule.get("min_price_at_fire"))
     upper = _decimal(rule.get("max_price_at_fire"))
@@ -195,6 +211,17 @@ def _market_volume(market: Market | None) -> Decimal | None:
     return _decimal(market.last_volume_24h)
 
 
+def _hours_to_market_end(signal: Signal, market: Market | None) -> Decimal | None:
+    if market is None or market.end_date is None or signal.fired_at is None:
+        return None
+    fired_at = _ensure_utc(signal.fired_at)
+    end_date = _ensure_utc(market.end_date)
+    if fired_at is None or end_date is None:
+        return None
+    seconds = Decimal(str((end_date - fired_at).total_seconds()))
+    return seconds / Decimal("3600")
+
+
 def _build_diagnostics(
     signal: Signal,
     *,
@@ -209,6 +236,8 @@ def _build_diagnostics(
     estimated_probability = _decimal(signal.estimated_probability)
     liquidity = _market_liquidity(market)
     volume = _market_volume(market)
+    hours_to_end = _hours_to_market_end(signal, market)
+    market_end_date = _ensure_utc(market.end_date) if market is not None else None
     return {
         "strategy_family": blueprint.get("strategy_family"),
         "strategy_version": blueprint.get("strategy_version"),
@@ -225,6 +254,10 @@ def _build_diagnostics(
         "estimated_probability": str(estimated_probability) if estimated_probability is not None else None,
         "market_liquidity": str(liquidity) if liquidity is not None else None,
         "market_volume_24h": str(volume) if volume is not None else None,
+        "market_end_date": market_end_date.isoformat() if market_end_date is not None else None,
+        "hours_to_market_end": str(hours_to_end.quantize(Decimal("0.000001")))
+        if hours_to_end is not None
+        else None,
         "intended_direction": blueprint.get("trade_direction"),
         "frozen_rule": rule,
     }
@@ -465,6 +498,26 @@ def evaluate_alpha_rule_signal(
                 diagnostics=diagnostics,
             )
 
+    tenor_bounds = _tenor_bucket_bounds(str(rule.get("market_tenor_bucket") or "all"))
+    if tenor_bounds is not None:
+        hours_to_end = _hours_to_market_end(signal, market)
+        if hours_to_end is None:
+            return AlphaRuleEvaluation(
+                in_scope=True,
+                eligible=False,
+                reason_code=_reason_code(blueprint, "missing_market_end_date"),
+                reason_label=_reason_label("missing_market_end_date"),
+                diagnostics=diagnostics,
+            )
+        if not _value_in_bounds(hours_to_end, tenor_bounds):
+            return AlphaRuleEvaluation(
+                in_scope=False,
+                eligible=False,
+                reason_code=f"not_{_reason_code(blueprint, 'market_tenor_bucket')}",
+                reason_label=_reason_label("market_tenor_bucket"),
+                diagnostics=diagnostics,
+            )
+
     if yes_price is None:
         return AlphaRuleEvaluation(
             in_scope=True,
@@ -654,6 +707,8 @@ async def load_unprocessed_alpha_rule_signals(
         Market.last_volume_24h,
         _money_bucket_bounds(str(rule.get("volume_bucket") or "all")),
     )
+    if _tenor_bucket_bounds(str(rule.get("market_tenor_bucket") or "all")) is not None:
+        query = query.where(Market.end_date.is_not(None))
     if exclude_ids:
         query = query.where(Signal.id.not_in(exclude_ids))
     rows = (await session.execute(query)).all()

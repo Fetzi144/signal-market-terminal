@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.alpha_rule_specs import ALPHA_KALSHI_OFI_A02D519E43_FAMILY, ALPHA_KALSHI_OFI_A02D519E43_VERSION
+from app.alpha_rule_specs import (
+    ALPHA_KALSHI_34A330F460_FAMILY,
+    ALPHA_KALSHI_34A330F460_VERSION,
+    ALPHA_KALSHI_OFI_A02D519E43_FAMILY,
+    ALPHA_KALSHI_OFI_A02D519E43_VERSION,
+)
 from app.reports.alpha_factory import alpha_factory_lane_payload, build_alpha_factory_snapshot_from_rows
 from app.reports.alpha_gauntlet import AlphaSignalRow
 
@@ -247,6 +252,64 @@ def test_alpha_factory_maps_d80_volume_rule_to_existing_alpha_lane():
             if candidate.get("existing_lane")
         )
     )
+
+
+def test_alpha_factory_maps_short_tenor_price_move_to_existing_alpha_lane():
+    rows = []
+    for index in range(90):
+        rows.append(
+            _row(
+                index * 2,
+                signal_type="price_move",
+                profit_loss=0.05,
+                clv=0.03,
+                direction="up",
+                expected_value=0.08,
+                estimated_probability=0.72,
+                price_at_fire=0.65,
+                market_tenor_bucket="tenor_0_1d",
+            )
+        )
+        rows.append(
+            _row(
+                index * 2 + 1,
+                signal_type="price_move",
+                profit_loss=-0.06,
+                clv=-0.02,
+                direction="down",
+                expected_value=-0.02,
+                estimated_probability=0.32,
+                price_at_fire=0.34,
+                market_tenor_bucket="tenor_3_7d",
+            )
+        )
+
+    snapshot = build_alpha_factory_snapshot_from_rows(
+        rows,
+        platform="kalshi",
+        max_candidates=200,
+        min_train_sample=10,
+        min_validation_sample=10,
+        min_test_sample=10,
+    )
+
+    candidate = next(
+        candidate
+        for candidate in snapshot["top_candidates"]
+        if candidate["rule"]["signal_type"] == "price_move"
+        and candidate["rule"]["platform"] == "kalshi"
+        and candidate["rule"]["direction"] == "up"
+        and candidate["rule"]["price_bucket"] == "p050_080"
+        and candidate["rule"]["expected_value_bucket"] == "ev_005_plus"
+        and candidate["rule"]["market_tenor_bucket"] == "tenor_0_1d"
+    )
+
+    assert candidate["strategy_version"] == ALPHA_KALSHI_34A330F460_VERSION
+    assert candidate["existing_lane"]["family"] == ALPHA_KALSHI_34A330F460_FAMILY
+    assert candidate["existing_lane"]["match_type"] == "exact_existing_lane"
+    assert candidate["trade_direction"] == "buy_yes"
+    assert candidate["ready_for_paper_lane"] is True
+    assert candidate["candidate_queue_status"] == "existing_lane_forward_collection"
 
 
 def test_alpha_factory_maps_very_low_price_down_fade_to_existing_lane():

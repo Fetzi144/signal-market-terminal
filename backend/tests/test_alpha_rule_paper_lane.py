@@ -7,6 +7,9 @@ import pytest
 from sqlalchemy import select
 
 from app.alpha_rule_specs import (
+    ALPHA_KALSHI_34A330F460_FAMILY,
+    ALPHA_KALSHI_34A330F460_V1,
+    ALPHA_KALSHI_34A330F460_VERSION,
     ALPHA_KALSHI_4237F81367_FAMILY,
     ALPHA_KALSHI_4237F81367_V1,
     ALPHA_KALSHI_4237F81367_VERSION,
@@ -237,6 +240,62 @@ async def test_alpha_rule_evaluator_enforces_ofi_explicit_thresholds(session):
 
 
 @pytest.mark.asyncio
+async def test_alpha_rule_evaluator_enforces_short_tenor_price_move_rule(session):
+    now = datetime.now(timezone.utc)
+    market = make_market(
+        session,
+        platform="kalshi",
+        end_date=now + timedelta(hours=12),
+    )
+    outcome = make_outcome(session, market.id, name="Yes")
+    signal = make_signal(
+        session,
+        market.id,
+        outcome.id,
+        signal_type="price_move",
+        source_platform="kalshi",
+        fired_at=now,
+        details={"direction": "up", "market_question": "Short-tenor alpha market?"},
+        price_at_fire=Decimal("0.650000"),
+        expected_value=Decimal("0.080000"),
+        estimated_probability=Decimal("0.7200"),
+    )
+
+    evaluation = evaluate_alpha_rule_signal(
+        signal,
+        blueprint=ALPHA_KALSHI_34A330F460_V1,
+        market_platform="kalshi",
+        market=market,
+    )
+
+    assert evaluation.in_scope is True
+    assert evaluation.eligible is True
+    assert evaluation.diagnostics["hours_to_market_end"] == "12.000000"
+    assert evaluation.diagnostics["edge_per_share"] == "0.070000"
+
+    market.end_date = now + timedelta(hours=25)
+    evaluation = evaluate_alpha_rule_signal(
+        signal,
+        blueprint=ALPHA_KALSHI_34A330F460_V1,
+        market_platform="kalshi",
+        market=market,
+    )
+    assert evaluation.in_scope is False
+    assert evaluation.reason_code == "not_alpha_rule_34a330f460_market_tenor_bucket"
+
+    market.end_date = None
+    evaluation = evaluate_alpha_rule_signal(
+        signal,
+        blueprint=ALPHA_KALSHI_34A330F460_V1,
+        market_platform="kalshi",
+        market=market,
+    )
+    assert evaluation.in_scope is True
+    assert evaluation.eligible is False
+    assert evaluation.reason_code == "alpha_rule_34a330f460_missing_market_end_date"
+
+
+@pytest.mark.asyncio
 async def test_alpha_rule_registry_seeds_frozen_shadow_candidate(session):
     await sync_strategy_registry(session)
 
@@ -285,6 +344,20 @@ async def test_alpha_rule_registry_seeds_frozen_shadow_candidate(session):
     assert ofi_version.config_json["paper_min_ev_threshold"] == "0.0"
     assert ofi_version.config_json["rule"]["signal_type"] == "order_flow_imbalance"
     assert ofi_version.config_json["rule"]["min_rank_score"] == 0.8
+
+    short_tenor_version = await get_current_strategy_version(session, ALPHA_KALSHI_34A330F460_FAMILY)
+
+    assert short_tenor_version is not None
+    assert short_tenor_version.version_key == ALPHA_KALSHI_34A330F460_VERSION
+    assert short_tenor_version.strategy_name == ALPHA_KALSHI_34A330F460_VERSION
+    assert short_tenor_version.version_status == VERSION_STATUS_CANDIDATE
+    assert short_tenor_version.autonomy_tier == AUTONOMY_TIER_SHADOW_ONLY
+    assert short_tenor_version.is_frozen is True
+    assert short_tenor_version.config_json["live_orders_enabled"] is False
+    assert short_tenor_version.config_json["trade_direction"] == "buy_yes"
+    assert short_tenor_version.config_json["rule_digest"] == "34a330f460"
+    assert short_tenor_version.config_json["rule"]["price_bucket"] == "p050_080"
+    assert short_tenor_version.config_json["rule"]["market_tenor_bucket"] == "tenor_0_1d"
 
 
 @pytest.mark.asyncio
@@ -444,6 +517,83 @@ async def test_alpha_rule_backlog_loader_prefilters_ofi_explicit_thresholds(sess
         session,
         strategy_run,
         ALPHA_KALSHI_OFI_A02D519E43_V1,
+        limit=10,
+    )
+
+    assert [signal.id for signal in signals] == [eligible_signal.id]
+
+
+@pytest.mark.asyncio
+async def test_alpha_rule_backlog_loader_filters_short_tenor_rule(session):
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    eligible_market = make_market(
+        session,
+        platform="kalshi",
+        end_date=now + timedelta(hours=12),
+    )
+    long_tenor_market = make_market(
+        session,
+        platform="kalshi",
+        end_date=now + timedelta(hours=25),
+    )
+    low_price_market = make_market(
+        session,
+        platform="kalshi",
+        end_date=now + timedelta(hours=12),
+    )
+    eligible_outcome = make_outcome(session, eligible_market.id, name="Yes")
+    long_tenor_outcome = make_outcome(session, long_tenor_market.id, name="Yes")
+    low_price_outcome = make_outcome(session, low_price_market.id, name="Yes")
+    eligible_signal = make_signal(
+        session,
+        eligible_market.id,
+        eligible_outcome.id,
+        signal_type="price_move",
+        source_platform="kalshi",
+        fired_at=now,
+        details={"direction": "up", "market_question": eligible_market.question},
+        price_at_fire=Decimal("0.650000"),
+        expected_value=Decimal("0.080000"),
+        estimated_probability=Decimal("0.7200"),
+    )
+    make_signal(
+        session,
+        long_tenor_market.id,
+        long_tenor_outcome.id,
+        signal_type="price_move",
+        source_platform="kalshi",
+        fired_at=now + timedelta(minutes=1),
+        dedupe_bucket=now + timedelta(minutes=1),
+        details={"direction": "up", "market_question": long_tenor_market.question},
+        price_at_fire=Decimal("0.650000"),
+        expected_value=Decimal("0.080000"),
+        estimated_probability=Decimal("0.7200"),
+    )
+    make_signal(
+        session,
+        low_price_market.id,
+        low_price_outcome.id,
+        signal_type="price_move",
+        source_platform="kalshi",
+        fired_at=now + timedelta(minutes=2),
+        dedupe_bucket=now + timedelta(minutes=2),
+        details={"direction": "up", "market_question": low_price_market.question},
+        price_at_fire=Decimal("0.490000"),
+        expected_value=Decimal("0.080000"),
+        estimated_probability=Decimal("0.7200"),
+    )
+    await session.commit()
+
+    strategy_run, _created = await ensure_active_alpha_rule_run(
+        session,
+        ALPHA_KALSHI_34A330F460_V1,
+        started_at=now - timedelta(minutes=5),
+    )
+
+    signals = await load_unprocessed_alpha_rule_signals(
+        session,
+        strategy_run,
+        ALPHA_KALSHI_34A330F460_V1,
         limit=10,
     )
 
@@ -795,3 +945,12 @@ async def test_strategy_profitability_reports_alpha_rule_snapshot(client):
     assert volume_snapshot["paper_only"] is True
     assert volume_snapshot["live_submission_permitted"] is False
     assert "paper_lane_not_populated" not in volume_snapshot["profitability_blockers"]
+
+    short_tenor_snapshot = next(
+        row for row in snapshots if row["family"] == ALPHA_KALSHI_34A330F460_FAMILY
+    )
+    assert short_tenor_snapshot["strategy_version"] == ALPHA_KALSHI_34A330F460_VERSION
+    assert short_tenor_snapshot["source_kind"] == "alpha_rule_paper_lane_snapshot"
+    assert short_tenor_snapshot["paper_only"] is True
+    assert short_tenor_snapshot["live_submission_permitted"] is False
+    assert "paper_lane_not_populated" not in short_tenor_snapshot["profitability_blockers"]

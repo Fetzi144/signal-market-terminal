@@ -17,6 +17,8 @@ from typing import Any, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.alpha_rule_specs import (
+    ALPHA_KALSHI_34A330F460_FAMILY,
+    ALPHA_KALSHI_34A330F460_VERSION,
     ALPHA_KALSHI_4237F81367_FAMILY,
     ALPHA_KALSHI_4237F81367_VERSION,
     ALPHA_KALSHI_D80BDF77A9_FAMILY,
@@ -385,6 +387,28 @@ def _is_kalshi_ofi_a02_covered_variant(rule: dict[str, Any], *, trade_direction:
     )
 
 
+def _is_kalshi_34a330f460_shape(rule: dict[str, Any], *, trade_direction: str | None) -> bool:
+    return bool(
+        rule.get("signal_type") == "price_move"
+        and rule.get("platform") in {"kalshi", "all"}
+        and rule.get("direction") == "up"
+        and rule.get("price_bucket") == "p050_080"
+        and rule.get("expected_value_bucket") == "ev_005_plus"
+        and rule.get("market_tenor_bucket") == "tenor_0_1d"
+        and trade_direction == "buy_yes"
+    )
+
+
+def _is_kalshi_34a330f460_exact(rule: dict[str, Any], *, trade_direction: str | None) -> bool:
+    return bool(
+        _is_kalshi_34a330f460_shape(rule, trade_direction=trade_direction)
+        and str(rule.get("timeframe") or "all") == "all"
+        and str(rule.get("market_category") or "all") == "all"
+        and str(rule.get("volume_bucket") or "all") == "all"
+        and str(rule.get("liquidity_bucket") or "all") == "all"
+    )
+
+
 def _known_existing_lane(rule: dict[str, Any], *, trade_direction: str | None = None) -> dict[str, Any] | None:
     if (
         rule.get("signal_type") == "price_move"
@@ -438,6 +462,27 @@ def _known_existing_lane(rule: dict[str, Any], *, trade_direction: str | None = 
             reason_code="covered_by_alpha_kalshi_ofi_a02d519e43_variant",
             detail=(
                 "Rule is a stricter OFI probability-gated variant; compare it inside the existing OFI lane "
+                "instead of spawning another paper lane."
+            ),
+        )
+
+    if _is_kalshi_34a330f460_exact(rule, trade_direction=trade_direction):
+        return _lane_match(
+            family=ALPHA_KALSHI_34A330F460_FAMILY,
+            strategy_version=ALPHA_KALSHI_34A330F460_VERSION,
+            match_type="exact_existing_lane",
+            reason_code="known_alpha_kalshi_34a330f460",
+            detail="Exact rule is already covered by the frozen Alpha Factory short-tenor paper lane.",
+        )
+
+    if _is_kalshi_34a330f460_shape(rule, trade_direction=trade_direction):
+        return _lane_match(
+            family=ALPHA_KALSHI_34A330F460_FAMILY,
+            strategy_version=ALPHA_KALSHI_34A330F460_VERSION,
+            match_type="covered_existing_lane_variant",
+            reason_code="covered_by_alpha_kalshi_34a330f460_variant",
+            detail=(
+                "Rule is a stricter short-tenor price-move-up variant; compare it inside the existing lane "
                 "instead of spawning another paper lane."
             ),
         )
